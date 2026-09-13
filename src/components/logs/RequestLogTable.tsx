@@ -12,7 +12,7 @@ export function RequestLogTable({ requests, onSelect }: RequestLogTableProps) {
   const { t } = useI18n();
 
   return (
-    <div className="overflow-x-auto rounded-xl border border-border bg-card">
+    <div className="surface-scroll rounded-md border border-border bg-card">
       <table className="w-full text-left text-xs">
         <thead>
           <tr className="border-b border-border text-text-muted">

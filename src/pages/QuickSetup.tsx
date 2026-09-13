@@ -10,6 +10,8 @@ import {
   ArrowRight,
   Clipboard,
   X,
+  Eye,
+  EyeOff,
   Terminal,
 } from "lucide-react";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
@@ -70,6 +72,7 @@ export function QuickSetup() {
     probeOk: true,
     hadClientTarget: false,
   });
+  const [showKey, setShowKey] = useState(false);
   /// 剪贴板里有可识别的 key 时显示「填入」banner。null = 没建议
   /// （包括读不到剪贴板、识别失败、被用户关掉这三种情况）。
   const [clipboardHint, setClipboardHint] = useState<{
@@ -433,7 +436,7 @@ export function QuickSetup() {
   };
 
   return (
-    <div className="mx-auto max-w-lg">
+    <div className="desktop-page mx-auto w-full max-w-lg">
       {/* Step indicators */}
       <div className="mb-8 flex items-center justify-center gap-3">
         {[
@@ -476,10 +479,7 @@ export function QuickSetup() {
 
       {/* Step 1: API Key */}
       {step === "key" && (
-        <div
-          className="rounded-xl border border-border bg-card p-6 space-y-5"
-          style={{ boxShadow: "var(--shadow-sm)" }}
-        >
+        <div className="surface-panel space-y-5 p-6">
           <div>
             <h2 className="text-base font-semibold text-text-primary mb-1">
               {t("onboarding.welcome")}
@@ -504,7 +504,7 @@ export function QuickSetup() {
                 <button
                   type="button"
                   onClick={acceptClipboardKey}
-                  className="rounded bg-accent px-2 py-1 text-[11px] font-medium text-white hover:bg-accent/90"
+                  className="rounded bg-accent px-2 py-1 text-xs font-medium text-on-accent hover:bg-accent/90"
                 >
                   {t("onboarding.clipboard_use")}
                 </button>
@@ -520,13 +520,34 @@ export function QuickSetup() {
             </div>
           )}
 
-          <input
-            value={apiKey}
-            onChange={(e) => handleKeyChange(e.target.value)}
-            placeholder="sk-xxx / tp-xxx / deepseek-xxx / sk-ant-xxx ..."
-            className="form-input text-sm"
-            autoFocus
-          />
+          <div className="relative">
+            <input
+              type={showKey ? "text" : "password"}
+              value={apiKey}
+              onChange={(e) => handleKeyChange(e.target.value)}
+              placeholder="sk-xxx / tp-xxx / deepseek-xxx / sk-ant-xxx ..."
+              className="form-input pr-10 text-sm"
+              autoComplete="off"
+              autoFocus
+            />
+            <button
+              type="button"
+              onClick={() => setShowKey((v) => !v)}
+              aria-label={
+                showKey ? t("providers.hide_key") : t("providers.show_key")
+              }
+              title={
+                showKey ? t("providers.hide_key") : t("providers.show_key")
+              }
+              className="absolute right-2 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded text-text-muted transition-colors hover:bg-card-secondary hover:text-text-primary"
+            >
+              {showKey ? (
+                <EyeOff className="h-4 w-4" />
+              ) : (
+                <Eye className="h-4 w-4" />
+              )}
+            </button>
+          </div>
 
           {detectedProvider && (
             <div className="flex items-center gap-2 rounded-lg bg-success-soft px-3 py-2 text-xs text-success">
@@ -554,7 +575,7 @@ export function QuickSetup() {
                   </option>
                 ))}
               </select>
-              <p className="text-[11px] text-text-muted">
+              <p className="text-xs text-text-muted">
                 {t("onboarding.provider_hint")}
               </p>
             </div>
@@ -574,10 +595,7 @@ export function QuickSetup() {
 
       {/* Step 2: Tools */}
       {step === "tools" && (
-        <div
-          className="rounded-xl border border-border bg-card p-6 space-y-5"
-          style={{ boxShadow: "var(--shadow-sm)" }}
-        >
+        <div className="surface-panel space-y-5 p-6">
           <div>
             <h2 className="text-base font-semibold text-text-primary mb-1">
               {t("onboarding.select_tools")}
@@ -615,12 +633,12 @@ export function QuickSetup() {
                   className={`h-4 w-4 rounded border flex items-center justify-center ${tool.checked ? "bg-accent border-accent" : "border-border"}`}
                 >
                   {tool.checked && (
-                    <CheckCircle className="h-3 w-3 text-white" />
+                    <CheckCircle className="h-3 w-3 text-on-accent" />
                   )}
                 </div>
                 <span className="text-sm text-text-primary">{tool.name}</span>
                 {tool.detected && (
-                  <span className="ml-auto text-[10px] text-success">
+                  <span className="ml-auto text-xs text-success">
                     {t("tools.config_found")}
                   </span>
                 )}
@@ -644,10 +662,7 @@ export function QuickSetup() {
 
       {/* Step 3+4: Progress & Done */}
       {(step === "setup" || step === "done") && (
-        <div
-          className="rounded-xl border border-border bg-card p-6 space-y-5"
-          style={{ boxShadow: "var(--shadow-sm)" }}
-        >
+        <div className="surface-panel space-y-5 p-6">
           <h2 className="text-base font-semibold text-text-primary">
             {step === "done"
               ? setupComplete
@@ -710,7 +725,7 @@ export function QuickSetup() {
                             className="flex items-center justify-between gap-2 rounded-md border border-border bg-card px-3 py-2"
                           >
                             <div className="min-w-0">
-                              <div className="text-[10px] uppercase tracking-wide text-text-muted">
+                              <div className="text-xs uppercase tracking-wide text-text-muted">
                                 {cmd.name}
                               </div>
                               <code className="block truncate font-mono text-xs text-text-primary">
@@ -722,7 +737,7 @@ export function QuickSetup() {
                         ))}
                       </ul>
                     )}
-                    <p className="text-[11px] text-text-muted">
+                    <p className="text-xs text-text-muted">
                       {t("onboarding.first_request_after")}
                     </p>
                   </div>
@@ -747,7 +762,7 @@ export function QuickSetup() {
                     <p className="text-xs font-medium text-warning">
                       {t("onboarding.recovery_title")}
                     </p>
-                    <p className="mt-1 text-[11px] leading-relaxed text-text-secondary">
+                    <p className="mt-1 text-xs leading-relaxed text-text-secondary">
                       {t("onboarding.recovery_desc")}
                     </p>
                   </div>

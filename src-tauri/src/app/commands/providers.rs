@@ -11,11 +11,12 @@ use crate::storage;
 // ── Provider Commands ──────────────────────────────────────────
 
 /// Discover local Ollama / LM Studio / common OpenAI-compatible ports.
+/// 探测是阻塞 TCP + 阻塞 HTTP(最长约 2.4s),放到 blocking 线程,不占主线程。
 #[tauri::command]
 #[specta::specta]
-pub fn discover_local_endpoints(
+pub async fn discover_local_endpoints(
 ) -> Result<Vec<crate::tools::local_discovery::LocalEndpoint>, AppError> {
-    Ok(crate::tools::local_discovery::discover())
+    super::run_blocking(|| Ok(crate::tools::local_discovery::discover())).await
 }
 
 /// Refiner recommendation for a provider type (never force-on).
@@ -84,11 +85,11 @@ pub fn autofill_provider_capabilities(
 
     let mut filled = 0usize;
     for model in targets {
-        if !matrix.contains_key(&model) {
+        if let std::collections::hash_map::Entry::Vacant(slot) = matrix.entry(model) {
             let caps =
-                crate::providers::capabilities::seed_for_model(&provider.provider_type, &model);
+                crate::providers::capabilities::seed_for_model(&provider.provider_type, slot.key());
             if !caps.is_empty() {
-                matrix.insert(model, caps);
+                slot.insert(caps);
                 filled += 1;
             }
         }

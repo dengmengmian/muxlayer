@@ -29,7 +29,7 @@ export function DataTab({
 }: Props) {
   return (
     <>
-      <section className="rounded-xl border border-border bg-card p-5">
+      <section className="surface-panel p-5">
         <h3 className="mb-4 text-sm font-semibold text-text-primary">
           {t("settings.data")}
         </h3>

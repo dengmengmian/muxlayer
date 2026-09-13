@@ -143,14 +143,27 @@ pub fn store_turn(
         evict_to_byte_budget(map, MAX_L1_BYTES);
     });
 
-    // L2 persist (best effort)
-    let _ = with_l2(|conn| {
-        let _ = conn.execute(
-            "INSERT OR REPLACE INTO sessions (response_id, data, created_at) VALUES (?1, ?2, ?3)",
-            rusqlite::params![response_id, data_str, chrono::Utc::now().to_rfc3339()],
-        );
-        maybe_cleanup_l2(conn);
-    });
+    // L2 persist (best effort)。L2 是全局 Mutex + 同步 SQLite,流式任务在 tokio
+    // worker 上直接写会卡住 worker;在 runtime 里就挪到 blocking 线程池,同步调用方
+    // (CLI / 单测)就地写。L1 已同步写入,紧接着的 previous_response_id 查询不受影响。
+    let response_id = response_id.to_string();
+    let persist = move || {
+        let _ = with_l2(|conn| {
+            if let Err(e) = conn.execute(
+                "INSERT OR REPLACE INTO sessions (response_id, data, created_at) VALUES (?1, ?2, ?3)",
+                rusqlite::params![response_id, data_str, chrono::Utc::now().to_rfc3339()],
+            ) {
+                tracing::warn!(error = %e, "session_store L2 persist failed");
+            }
+            maybe_cleanup_l2(conn);
+        });
+    };
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            handle.spawn_blocking(persist);
+        }
+        Err(_) => persist(),
+    }
 }
 
 fn maybe_cleanup_l2(conn: &rusqlite::Connection) {
@@ -306,6 +319,31 @@ mod tests {
         assert_eq!(history.len(), 2);
         assert_eq!(history[0].role, "user");
         assert_eq!(history[1].role, "assistant");
+        cleanup(&temp);
+    }
+
+    #[tokio::test]
+    async fn store_turn_in_runtime_writes_l1_now_and_l2_off_worker() {
+        let _guard = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_l1();
+        let temp = setup_temp_home();
+        let (msgs, asst) = dummy_messages();
+        store_turn("resp_runtime", msgs, asst, None);
+        assert!(
+            get_history("resp_runtime").is_some(),
+            "L1 must be written before store_turn returns"
+        );
+
+        // L2 在 blocking 线程池里落盘;清掉 L1 后应能从 L2 读回。
+        clear_l1();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while get_history("resp_runtime").is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "L2 persist never landed"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
         cleanup(&temp);
     }
 

@@ -19,6 +19,7 @@
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "desktop")]
 use crate::errors::AppError;
 use crate::models::provider::Provider;
 
@@ -212,6 +213,8 @@ pub async fn probe(provider: &Provider) -> ProviderSpeedReport {
 /// input. Errors per-provider are captured in the report's `error` field;
 /// the function itself only returns Err for catastrophic setup failure
 /// (currently: nothing — kept for API symmetry).
+/// 只被桌面端(测速命令 / 后台健康探测)使用,cli 构建不编译。
+#[cfg(feature = "desktop")]
 pub async fn probe_many(providers: &[Provider]) -> Result<Vec<ProviderSpeedReport>, AppError> {
     let futures: Vec<_> = providers.iter().map(probe).collect();
     Ok(futures::future::join_all(futures).await)

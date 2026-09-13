@@ -163,19 +163,13 @@ pub fn sanitize_tool_name(name: &str) -> Cow<'_, str> {
     sanitize_identifier(name, MAX_TOOL_NAME_LEN, "unknown_tool")
 }
 
+// 去掉模型 id 的 `[1m]` / `[...]` 限定后缀,得到能力矩阵的 key(矩阵按 base id 存)。
+// 唯一实现在 `providers::model_id`;保留此名供 gateway 既有调用点使用。
+pub(crate) use crate::providers::model_id::strip_qualifier as model_base;
+
 /// Convert Responses API tools to Chat Completions tools format —— 简化入口，
 /// 适用于不需要 provider-type / capability matrix 的场景（如 Anthropic
 /// fallback 转 Chat 时）。完整能力请走 [`convert_tools_with_matrix`]。
-/// 去掉模型 id 的 `[1m]` / `[...]` 限定后缀,得到能力矩阵的 key(矩阵按 base id 存)。
-pub(crate) fn model_base(model: &str) -> &str {
-    if let Some(stripped) = model.strip_suffix(']') {
-        if let Some(open) = stripped.rfind('[') {
-            return &stripped[..open];
-        }
-    }
-    model
-}
-
 pub fn convert_tools(tools: &[Value], clean_for_deepseek: bool) -> Vec<Value> {
     convert_tools_with_matrix(tools, clean_for_deepseek, "", "", &Default::default())
 }
@@ -664,27 +658,16 @@ fn flatten_namespace_into(tool: &Value, clean_for_deepseek: bool, result: &mut V
 }
 
 fn convert_function_tool(tool: &Value, clean_for_deepseek: bool) -> Option<Value> {
-    // Structure B: already has "function" wrapper
-    if let Some(func) = tool.get("function") {
-        let mut result = json!({ "type": "function", "function": func.clone() });
-        if clean_for_deepseek {
-            if let Some(params) = result
-                .get_mut("function")
-                .and_then(|f| f.get_mut("parameters"))
-            {
-                clean_schema_for_deepseek(params);
-            }
-        }
-        return Some(result);
-    }
-
-    // Structure A: flat name/description/parameters
-    let name = tool.get("name").and_then(|n| n.as_str()).unwrap_or("");
-    let desc = tool
+    // Structure B `{type, function:{name, description, parameters}}` 与
+    // Structure A `{type, name, description, parameters}` 只是包裹层不同，
+    // 统一只取 name / description / parameters 三个字段，产出完全一致。
+    let func = tool.get("function").unwrap_or(tool);
+    let name = func.get("name").and_then(|n| n.as_str()).unwrap_or("");
+    let desc = func
         .get("description")
         .and_then(|d| d.as_str())
         .unwrap_or("");
-    let mut params = tool.get("parameters").cloned().unwrap_or(json!({}));
+    let mut params = func.get("parameters").cloned().unwrap_or(json!({}));
 
     if clean_for_deepseek {
         clean_schema_for_deepseek(&mut params);
@@ -734,26 +717,26 @@ pub fn convert_tool_choice(tc: &Value) -> Value {
 /// Use this when you want the safety net of valid tool_calls topology without
 /// the stricter reordering that `fix_tool_message_order` performs.
 pub fn synthesize_orphan_tool_outputs(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
+    // 一次遍历记下每个 tool_call_id 最后一次出现的位置；assistant(i) 的某个调用
+    // "在其后被应答" 等价于 last_answer[id] > i。避免每个 assistant 重扫后缀的 O(n²)。
+    let mut last_answer: HashMap<&str, usize> = HashMap::new();
+    for (i, msg) in messages.iter().enumerate() {
+        if msg.role == "tool" {
+            if let Some(ref tcid) = msg.tool_call_id {
+                last_answer.insert(tcid.as_str(), i);
+            }
+        }
+    }
+
     let mut out: Vec<ChatMessage> = Vec::with_capacity(messages.len());
-    let len = messages.len();
-    let mut i = 0;
-    while i < len {
-        let msg = &messages[i];
+    for (i, msg) in messages.iter().enumerate() {
         out.push(msg.clone());
 
         if msg.role == "assistant" {
             if let Some(ref tcs) = msg.tool_calls {
-                // Collect all tool_call_ids present anywhere after this assistant.
-                let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-                for later in &messages[i + 1..] {
-                    if later.role == "tool" {
-                        if let Some(ref tcid) = later.tool_call_id {
-                            seen.insert(tcid.clone());
-                        }
-                    }
-                }
                 for tc in tcs {
-                    if !seen.contains(&tc.id) {
+                    let answered_later = last_answer.get(tc.id.as_str()).is_some_and(|&p| p > i);
+                    if !answered_later {
                         out.push(ChatMessage {
                             role: "tool".to_string(),
                             content: Some(serde_json::Value::String(String::new())),
@@ -766,7 +749,6 @@ pub fn synthesize_orphan_tool_outputs(messages: Vec<ChatMessage>) -> Vec<ChatMes
                 }
             }
         }
-        i += 1;
     }
     out
 }
@@ -1025,6 +1007,35 @@ mod tests {
     }
 
     #[test]
+    fn test_convert_function_tool_structures_a_and_b_normalize_identically() {
+        // 两种结构必须产出同一套字段；B 不能把 strict 等额外字段整体 clone 过去。
+        let params = json!({"type": "object", "properties": {"q": {"type": "string"}}});
+        let a = json!({
+            "type": "function", "name": "search", "description": "d",
+            "parameters": params, "strict": true
+        });
+        let b = json!({
+            "type": "function",
+            "function": {"name": "search", "description": "d", "parameters": params, "strict": true}
+        });
+        for clean in [false, true] {
+            assert_eq!(
+                convert_function_tool(&a, clean),
+                convert_function_tool(&b, clean),
+                "clean={clean}"
+            );
+        }
+        // B 缺 description/parameters 时与 A 一样补默认值
+        assert_eq!(
+            convert_function_tool(
+                &json!({"type": "function", "function": {"name": "x"}}),
+                false
+            ),
+            convert_function_tool(&json!({"type": "function", "name": "x"}), false)
+        );
+    }
+
+    #[test]
     fn test_convert_tools_namespace() {
         let tools = vec![json!({
             "type": "namespace",
@@ -1189,8 +1200,8 @@ mod tests {
                 namespace: None
             })
         );
-        assert!(map.get("functions__exec").is_none());
-        assert!(map.get("functions__wait").is_none());
+        assert!(!map.contains_key("functions__exec"));
+        assert!(!map.contains_key("functions__wait"));
     }
 
     #[test]

@@ -5,12 +5,23 @@ import fs from "node:fs";
 const repo = process.env.GITHUB_REPOSITORY;
 const token = process.env.GITHUB_TOKEN;
 const tag = process.env.GITHUB_REF_NAME;
+// release.yml 的 create-release job 传入草稿 release 的 id;不传时按 tag 在列表里找。
+const releaseId = process.env.RELEASE_ID;
 
 if (!repo || !token || !tag) {
   throw new Error("GITHUB_REPOSITORY, GITHUB_TOKEN and GITHUB_REF_NAME are required");
 }
 
-const apiBase = `https://api.github.com/repos/${repo}`;
+const version = tag.replace(/^v/, "");
+
+// 纵深防御:latest.json 的 version 取自 tag,若与 app 自身版本(tauri.conf.json)不一致,
+// 已安装的客户端会永远认为有新版本。preflight 已查过一次,这里发布前再硬校验。
+const appVersion = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8")).version;
+if (appVersion !== version) {
+  throw new Error(`Tag ${tag} (version ${version}) does not match src-tauri/tauri.conf.json version ${appVersion}`);
+}
+
+const apiBase = `${process.env.GITHUB_API_URL || "https://api.github.com"}/repos/${repo}`;
 const headers = {
   "Accept": "application/vnd.github+json",
   "Authorization": `Bearer ${token}`,
@@ -18,7 +29,7 @@ const headers = {
 };
 
 async function gh(path, options = {}) {
-  const res = await fetch(`${apiBase}${path}`, { headers: { ...headers, ...(options.headers || {}) }, ...options });
+  const res = await fetch(`${apiBase}${path}`, { ...options, headers: { ...headers, ...(options.headers || {}) } });
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`${options.method || "GET"} ${path} failed: ${res.status} ${body}`);
@@ -38,8 +49,8 @@ function assetUrl(name) {
 async function signatureFor(asset, assets) {
   const sig = assets.find((candidate) => candidate.name === `${asset.name}.sig`);
   if (!sig) throw new Error(`Missing signature asset for ${asset.name}`);
-  const res = await fetch(sig.browser_download_url);
-  if (!res.ok) throw new Error(`Failed to download ${sig.name}: ${res.status}`);
+  // 草稿 release 的 browser_download_url 匿名访问是 404,走带鉴权的 asset API 下载。
+  const res = await gh(`/releases/assets/${sig.id}`, { headers: { Accept: "application/octet-stream" } });
   return (await res.text()).trim();
 }
 
@@ -64,9 +75,29 @@ function releaseNotes(version) {
   return lines.slice(start + 1, end < 0 ? undefined : end).join("\n").trim() || `Release ${tag}`;
 }
 
-const release = await getJson(`/releases/tags/${encodeURIComponent(tag)}`);
+// 草稿 release 不会出现在 /releases/tags/{tag},只能按 id 取,或翻列表按 tag_name 匹配。
+async function findRelease() {
+  if (releaseId) {
+    const release = await getJson(`/releases/${encodeURIComponent(releaseId)}`);
+    if (release.tag_name !== tag) {
+      throw new Error(`Release ${releaseId} has tag ${release.tag_name}, expected ${tag}`);
+    }
+    return release;
+  }
+  const matches = [];
+  for (let page = 1; ; page += 1) {
+    const releases = await getJson(`/releases?per_page=100&page=${page}`);
+    matches.push(...releases.filter((candidate) => candidate.tag_name === tag));
+    if (releases.length < 100) break;
+  }
+  if (matches.length !== 1) {
+    throw new Error(`Expected exactly one release for ${tag}, found ${matches.length}`);
+  }
+  return matches[0];
+}
+
+const release = await findRelease();
 const assets = release.assets;
-const version = tag.replace(/^v/, "");
 
 const macArchives = assets.filter((asset) => /\.app\.tar\.gz$/.test(asset.name));
 const macArm = macArchives.find((asset) => /(aarch64|arm64)/i.test(asset.name)) || (macArchives.length === 1 ? macArchives[0] : null);
@@ -102,13 +133,17 @@ const latest = {
   platforms,
 };
 
-for (const asset of assets.filter((asset) => asset.name === "latest.json")) {
+// 替换顺序:先以临时名上传新文件,再删旧 latest.json,最后把新文件改名。
+// 不先删后传,避免上传失败时 release 上没有 latest.json。正常流程里 release 还是草稿,
+// 客户端看不到;只有对已发布 release 重跑时,删旧与改名之间才有一次 API 调用的空窗。
+const tempName = "latest.json.tmp";
+for (const asset of assets.filter((asset) => asset.name === tempName)) {
   await gh(`/releases/assets/${asset.id}`, { method: "DELETE" });
 }
 
 const body = JSON.stringify(latest, null, 2);
 const uploadUrl = release.upload_url.replace(/\{.*$/, "");
-const upload = await fetch(`${uploadUrl}?name=latest.json`, {
+const upload = await fetch(`${uploadUrl}?name=${tempName}`, {
   method: "POST",
   headers: {
     ...headers,
@@ -119,7 +154,18 @@ const upload = await fetch(`${uploadUrl}?name=latest.json`, {
 });
 
 if (!upload.ok) {
-  throw new Error(`Upload latest.json failed: ${upload.status} ${await upload.text()}`);
+  throw new Error(`Upload ${tempName} failed: ${upload.status} ${await upload.text()}`);
 }
+const uploaded = await upload.json();
+
+for (const asset of assets.filter((asset) => asset.name === "latest.json")) {
+  await gh(`/releases/assets/${asset.id}`, { method: "DELETE" });
+}
+
+await gh(`/releases/assets/${uploaded.id}`, {
+  method: "PATCH",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ name: "latest.json" }),
+});
 
 console.log(`Published latest.json for ${Object.keys(platforms).join(", ")}`);

@@ -172,7 +172,26 @@ async fn handle_non_stream(
     session_id: Option<&str>,
     provider_id: Option<&str>,
 ) -> Result<Response, AppError> {
-    let resp = crate::providers::adapter::send_with_net_retry(
+    let trace = json!({
+        "mode": trace_mode,
+        "client_protocol": client_protocol,
+        "provider_protocol": client_protocol,
+        "model_resolution": model_resolution,
+        "route": route,
+        "target_url": target_url,
+    });
+    let log = PassThroughLog {
+        db,
+        client_type,
+        route,
+        request_id,
+        provider: &config.name,
+        model,
+        raw_request: &sanitize(raw_body, config.api_key()),
+        start,
+    };
+
+    let sent = crate::providers::adapter::send_with_net_retry(
         || {
             let b = http_client
                 .post(target_url)
@@ -186,38 +205,56 @@ async fn handle_non_stream(
         },
         1,
     )
-    .await
-    .map_err(|e| {
-        AppError::new(
-            crate::errors::codes::PASS_THROUGH_REQUEST_FAILED,
-            format!("Failed to connect to provider: {e}"),
-        )
-    })?;
+    .await;
+    let resp = match sent {
+        Ok(r) => r,
+        Err(e) => {
+            let err = AppError::new(
+                crate::errors::codes::PASS_THROUGH_REQUEST_FAILED,
+                format!("Failed to connect to provider: {e}"),
+            );
+            return Err(log.error(err, &trace));
+        }
+    };
 
     let upstream_status = resp.status();
-    let body_text = resp.text().await.unwrap_or_default();
+    let body_text = match crate::gateway::http_client::read_text_capped(resp).await {
+        Ok(t) => t,
+        Err(err) => return Err(log.error(err, &trace)),
+    };
     let sanitized_response = sanitize(&body_text, config.api_key());
     let latency = start.elapsed().as_millis() as i64;
 
-    let trace = json!({
-        "mode": trace_mode,
-        "client_protocol": client_protocol,
-        "provider_protocol": client_protocol,
-        "model_resolution": model_resolution,
-        "route": route,
-        "target_url": target_url,
-        "upstream_status": upstream_status.as_u16(),
-    })
-    .to_string();
+    let mut trace = trace;
+    trace["upstream_status"] = json!(upstream_status.as_u16());
+    let trace = trace.to_string();
 
-    let status_code = upstream_status.as_u16() as i64;
-    let error_msg = if upstream_status.is_success() {
-        None
-    } else {
-        Some(truncate(&sanitized_response, 2000))
-    };
+    if !upstream_status.is_success() {
+        let err = upstream_http_error(
+            crate::errors::codes::UPSTREAM_NON_STREAM_ERROR,
+            upstream_status,
+            &sanitized_response,
+            body_text,
+        );
+        log_to_db(
+            db,
+            client_type,
+            route,
+            request_id,
+            &config.name,
+            model,
+            log.raw_request,
+            &sanitized_response,
+            Some(&truncate(&sanitized_response, 2000)),
+            &trace,
+            upstream_status.as_u16() as i64,
+            latency,
+            Default::default(),
+        );
+        return Err(err);
+    }
 
-    if upstream_status.is_success() {
+    {
         if let (Some(sid), Some(pid)) = (session_id, provider_id) {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body_text) {
                 if let Some(usage) = v.get("usage") {
@@ -234,22 +271,78 @@ async fn handle_non_stream(
         request_id,
         &config.name,
         model,
-        &sanitize(raw_body, config.api_key()),
+        log.raw_request,
         &sanitized_response,
-        error_msg.as_deref(),
+        None,
         &trace,
-        status_code,
+        upstream_status.as_u16() as i64,
         latency,
+        usage_from_json_body(
+            &body_text,
+            crate::gateway::usage::InputCacheSemantics::IncludesCacheRead,
+        ),
     );
 
-    let axum_status =
-        StatusCode::from_u16(upstream_status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-
     Ok(Response::builder()
-        .status(axum_status)
+        .status(upstream_status.as_u16())
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(body_text))
         .unwrap())
+}
+
+/// 上游非 2xx:当作 provider 失败交给 route 的 failover 驱动(记熔断、按状态码决定
+/// 是否切下一个)。原始状态码 + body 挂在错误上,最后一跳时原样回给客户端。
+fn upstream_http_error(
+    code: &str,
+    status: reqwest::StatusCode,
+    sanitized_body: &str,
+    raw_body: String,
+) -> AppError {
+    AppError::new(code, format!("Provider returned HTTP {status}"))
+        .with_detail(truncate(sanitized_body, 2000))
+        .with_upstream_response(status.as_u16(), raw_body)
+}
+
+/// 直通请求在拿到上游正常响应前就失败(连不上、读 body 失败、bootstrap 错误帧)
+/// 时的日志上下文。route 不再重复记这些错误,由这里统一落一条。
+struct PassThroughLog<'a> {
+    db: &'a crate::storage::db::DbPool,
+    client_type: &'a str,
+    route: &'a str,
+    request_id: &'a str,
+    provider: &'a str,
+    model: &'a str,
+    raw_request: &'a str,
+    start: Instant,
+}
+
+impl PassThroughLog<'_> {
+    /// 记一条错误日志,再把错误原样交还给调用方。
+    fn error(&self, err: AppError, trace: &serde_json::Value) -> AppError {
+        let mut trace = trace.clone();
+        trace["error_code"] = json!(err.code);
+        let status = crate::gateway::failover::upstream_status_of(&err).unwrap_or(502);
+        log_to_db(
+            self.db,
+            self.client_type,
+            self.route,
+            self.request_id,
+            self.provider,
+            self.model,
+            self.raw_request,
+            "",
+            Some(&format!(
+                "{}: {}",
+                err.message,
+                err.detail.as_deref().unwrap_or("")
+            )),
+            &trace.to_string(),
+            status as i64,
+            self.start.elapsed().as_millis() as i64,
+            Default::default(),
+        );
+        err
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -271,7 +364,25 @@ async fn handle_stream(
     session_id: Option<&str>,
     provider_id: Option<&str>,
 ) -> Result<Response, AppError> {
-    let resp = crate::providers::adapter::send_with_net_retry(
+    let trace = json!({
+        "mode": trace_mode,
+        "client_protocol": client_protocol,
+        "provider_protocol": client_protocol,
+        "model_resolution": model_resolution,
+        "route": route,
+        "target_url": target_url,
+    });
+    let log = PassThroughLog {
+        db,
+        client_type,
+        route,
+        request_id,
+        provider: &config.name,
+        model,
+        raw_request: &sanitize(raw_body, config.api_key()),
+        start,
+    };
+    let sent = crate::providers::adapter::send_with_net_retry(
         || {
             let b = http_client
                 .post(target_url)
@@ -286,31 +397,27 @@ async fn handle_stream(
         },
         1,
     )
-    .await
-    .map_err(|e| {
-        AppError::new(
-            crate::errors::codes::PASS_THROUGH_STREAM_FAILED,
-            format!("Failed to connect to provider: {e}"),
-        )
-    })?;
+    .await;
+    let resp = match sent {
+        Ok(r) => r,
+        Err(e) => {
+            let err = AppError::new(
+                crate::errors::codes::PASS_THROUGH_STREAM_FAILED,
+                format!("Failed to connect to provider: {e}"),
+            );
+            return Err(log.error(err, &trace));
+        }
+    };
 
     let upstream_status = resp.status();
     if !upstream_status.is_success() {
-        let body_text = resp.text().await.unwrap_or_default();
+        let body_text = match crate::gateway::http_client::read_text_capped(resp).await {
+            Ok(t) => t,
+            Err(err) => return Err(log.error(err, &trace)),
+        };
         let sanitized = sanitize(&body_text, config.api_key());
-        let latency = start.elapsed().as_millis() as i64;
-
-        let trace = json!({
-            "mode": trace_mode,
-            "client_protocol": client_protocol,
-            "provider_protocol": client_protocol,
-            "model_resolution": model_resolution,
-            "route": route,
-            "target_url": target_url,
-            "upstream_status": upstream_status.as_u16(),
-        })
-        .to_string();
-
+        let mut trace = trace;
+        trace["upstream_status"] = json!(upstream_status.as_u16());
         log_to_db(
             db,
             client_type,
@@ -318,29 +425,30 @@ async fn handle_stream(
             request_id,
             &config.name,
             model,
-            &sanitize(raw_body, config.api_key()),
+            log.raw_request,
             "",
             Some(&truncate(&sanitized, 2000)),
-            &trace,
+            &trace.to_string(),
             upstream_status.as_u16() as i64,
-            latency,
+            start.elapsed().as_millis() as i64,
+            Default::default(),
         );
-
-        let axum_status =
-            StatusCode::from_u16(upstream_status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-
-        return Ok(Response::builder()
-            .status(axum_status)
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(body_text))
-            .unwrap());
+        return Err(upstream_http_error(
+            crate::errors::codes::UPSTREAM_STREAM_ERROR,
+            upstream_status,
+            &sanitized,
+            body_text,
+        ));
     }
 
     // Bootstrap-validate the stream before committing to forwarding: catches
     // HTTP-200-with-error-frame failures (quota / rate-limit emitted mid-
     // stream by GLM / MiMo even on direct pass-through) and turns them into
     // a clean Err so the outer route loop can fail over.
-    let boot = crate::gateway::sse_bootstrap::bootstrap_detect(resp).await?;
+    let boot = match crate::gateway::sse_bootstrap::bootstrap_detect(resp).await {
+        Ok(b) => b,
+        Err(err) => return Err(log.error(err, &trace)),
+    };
 
     // Stream: pipe upstream SSE to client, log asynchronously
     let (tx, rx) = mpsc::channel::<String>(512);
@@ -367,6 +475,8 @@ async fn handle_stream(
             &mut utf8_pending,
             &boot.prefix,
         );
+        // 短响应可能整段都在 bootstrap 前缀里(含 usage 终块),usage 解析要带上前缀。
+        let usage_tail_from_prefix = prefix_text.clone();
         let mut sse_log = String::new();
         let mut sse_size: usize = 0;
 
@@ -387,7 +497,8 @@ async fn handle_stream(
         let mut stream = boot.stream;
         // 末尾缓冲：usage chunk 在流末尾，而 sse_log 到上限就丢后面、会截掉 usage。
         // 单独保留最后 ~16KB 专门解析 usage（够装最后的 usage chunk）。旁路，不碰转发。
-        let mut usage_tail = String::new();
+        let mut usage_tail = usage_tail_from_prefix;
+        let mut client_gone = false;
         while let Some(chunk_result) = stream.next().await {
             match chunk_result {
                 Ok(bytes) => {
@@ -419,6 +530,7 @@ async fn handle_stream(
                     // 显式 break——不然 reqwest 仍在从上游读，浪费 token + 占
                     // 用 keep-alive 连接。
                     if tx.send(text).await.is_err() {
+                        client_gone = true;
                         break;
                     }
                 }
@@ -435,7 +547,7 @@ async fn handle_stream(
         }
 
         let latency = start.elapsed().as_millis() as i64;
-        let trace = serde_json::json!({
+        let mut trace = serde_json::json!({
             "mode": &trace_mode_owned,
             "client_protocol": &client_protocol_owned,
             "provider_protocol": &client_protocol_owned,
@@ -444,8 +556,9 @@ async fn handle_stream(
             "target_url": &target,
             "stream": true,
             "sse_bytes": sse_size,
-        })
-        .to_string();
+        });
+        let (status, error_message) = stream_end_status(client_gone, &mut trace);
+        let trace = trace.to_string();
 
         let sanitized_sse = sanitize(&sse_log, &api_key);
         if let (Some(sid), Some(pid), Some(usage)) = (
@@ -455,42 +568,48 @@ async fn handle_stream(
         ) {
             crate::gateway::session_affinity::record_if_cache_hit(sid, pid, &usage);
         }
-        if let Some(conn) = lock_db(&db_clone) {
-            // 旁路解析直通响应里的 token usage（流已原样转发，这里只读不改），
-            // 有则记 token + 算成本；解析不出保持现状（None）。
-            let (inp, out) = match parse_chat_usage(&usage_tail) {
-                Some((i, o)) => (Some(i), Some(o)),
-                None => (None, None),
-            };
+        // 旁路解析直通响应里的 token usage（流已原样转发，这里只读不改），
+        // 有则记 token + 算成本；解析不出保持现状（None）。
+        let (inp, out) = match parse_chat_usage(&usage_tail) {
+            Some((i, o)) => (Some(i), Some(o)),
+            None => (None, None),
+        };
+        // Chat / Responses 直通:input 已含 cached_tokens(OpenAI 口径)。
+        let cache_read = parse_chat_usage_value(&usage_tail)
+            .as_ref()
+            .and_then(|u| crate::storage::request_logs::extract_cache_tokens(u).1);
+        let usage = crate::gateway::usage::TokenUsage {
+            input: inp,
+            output: out,
+            cache_write: None,
+            cache_read,
+            input_semantics: crate::gateway::usage::InputCacheSemantics::IncludesCacheRead,
+        };
+        let sse_events = truncate(&sanitized_sse, MAX_SSE_LOG);
+        crate::runtime::db_blocking_detached(&db_clone, "pass_through_stream_log", move |conn| {
             let cost = if inp.is_some() || out.is_some() {
-                crate::storage::pricing::calculate_cost_for_request(
-                    &conn,
-                    &provider_name,
-                    &model_clone,
-                    inp,
-                    out,
-                )
+                crate::gateway::usage::cost_for_request(conn, &provider_name, &model_clone, &usage)
             } else {
                 None
             };
-            let _ = crate::storage::request_logs::insert(
-                &conn,
+            crate::storage::request_logs::insert(
+                conn,
                 &req_id,
                 &client_type_owned,
                 &provider_name,
                 &model_clone,
                 &route_owned,
-                200,
+                status,
                 latency,
                 Some(&raw_req),
                 None,
                 None,
                 None,
-                Some(&truncate(&sanitized_sse, MAX_SSE_LOG)),
+                Some(&sse_events),
                 None,
-                None,
+                error_message.as_deref(),
                 Some(&with_route_decision(
-                    &conn,
+                    conn,
                     &route_owned,
                     &provider_name,
                     &model_clone,
@@ -501,12 +620,12 @@ async fn handle_stream(
                 out,
                 cost,
                 None,
-                None, // no cache tokens
+                cache_read,
                 Some("gateway"),
                 None,
                 Some(&req_id),
-            );
-        }
+            )
+        });
     });
 
     let stream = ReceiverStream::new(rx);
@@ -523,11 +642,22 @@ async fn handle_stream(
         .unwrap())
 }
 
-/// 从连接池借一个连接,池满 / 超时返回 None(调用方决定怎么兜底)。
-fn lock_db(
-    db: &crate::storage::db::DbPool,
-) -> Option<r2d2::PooledConnection<r2d2_sqlite::SqliteConnectionManager>> {
-    db.get().ok()
+/// 直通流结束时的日志状态:客户端中途断开记 499 + CLIENT_DISCONNECTED(与转换路径一致,
+/// 不算上游失败),否则 200。usage / 成本照常按已解析的记。
+fn stream_end_status(client_gone: bool, trace: &mut serde_json::Value) -> (i64, Option<String>) {
+    if !client_gone {
+        return (200, None);
+    }
+    let err = crate::gateway::routes::shared::client_disconnected_error();
+    trace["error_code"] = json!(err.code);
+    (
+        crate::gateway::routes::shared::CLIENT_DISCONNECTED_STATUS,
+        Some(format!(
+            "{}: {}",
+            err.message,
+            err.detail.as_deref().unwrap_or("")
+        )),
+    )
 }
 
 /// 给直通日志的 trace 补 route_decision（按协议反推默认 profile），让「按策略」统计
@@ -641,12 +771,41 @@ fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_string();
     }
-    // Find the last char boundary at or before `max` to avoid panic on multibyte chars
-    let mut boundary = max;
-    while boundary > 0 && !s.is_char_boundary(boundary) {
-        boundary -= 1;
+    format!(
+        "{}...(truncated)",
+        crate::gateway::stream_utf8::truncate_at_char_boundary(s, max)
+    )
+}
+
+/// 从直通的非流式响应 body 里读 token usage(只读不改)。解析不出返回 Default(全 None)。
+fn usage_from_json_body(
+    body_text: &str,
+    semantics: crate::gateway::usage::InputCacheSemantics,
+) -> crate::gateway::usage::TokenUsage {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(body_text) else {
+        return Default::default();
+    };
+    let Some(u) = v.get("usage") else {
+        return Default::default();
+    };
+    usage_from_value(u, semantics)
+}
+
+/// usage 对象 → TokenUsage。Chat(prompt/completion_tokens)与 Responses / Anthropic
+/// (input/output_tokens)两套字段名都认;缓存字段交给 extract_cache_tokens。
+fn usage_from_value(
+    u: &serde_json::Value,
+    semantics: crate::gateway::usage::InputCacheSemantics,
+) -> crate::gateway::usage::TokenUsage {
+    let read = |keys: &[&str]| keys.iter().find_map(|k| u.get(*k).and_then(|v| v.as_i64()));
+    let (cache_write, cache_read) = crate::storage::request_logs::extract_cache_tokens(u);
+    crate::gateway::usage::TokenUsage {
+        input: read(&["prompt_tokens", "input_tokens"]),
+        output: read(&["completion_tokens", "output_tokens"]),
+        cache_write,
+        cache_read,
+        input_semantics: semantics,
     }
-    format!("{}...(truncated)", &s[..boundary])
 }
 
 fn log_to_db(
@@ -662,12 +821,10 @@ fn log_to_db(
     trace_json: &str,
     status_code: i64,
     latency_ms: i64,
+    usage: crate::gateway::usage::TokenUsage,
 ) {
     // 异步 fire-and-forget：把 SQLite INSERT 挪出响应路径，
-    // 不让客户端等几毫秒的盘 IO。rusqlite 是同步 API,用 spawn_blocking
-    // 走专门的 blocking thread pool,不卡 tokio async worker。
-    // DbPool 内部是 Arc,clone 廉价。
-    let db = db.clone();
+    // 不让客户端等几毫秒的盘 IO，也不卡 tokio async worker。
     let client_type = client_type.to_string();
     let route = route.to_string();
     let request_id = request_id.to_string();
@@ -678,41 +835,44 @@ fn log_to_db(
     let error_message = error_message.map(|s| s.to_string());
     let trace_json = trace_json.to_string();
 
-    tokio::task::spawn_blocking(move || {
-        if let Some(conn) = lock_db(&db) {
-            let enriched =
-                with_route_decision(&conn, &route, &provider, &model, &raw_request, &trace_json);
-            let _ = crate::storage::request_logs::insert(
-                &conn,
-                &request_id,
-                &client_type,
-                &provider,
-                &model,
-                &route,
-                status_code,
-                latency_ms,
-                Some(&raw_request),
-                None,
-                if raw_response.is_empty() {
-                    None
-                } else {
-                    Some(raw_response.as_str())
-                },
-                None,
-                None,
-                None,
-                error_message.as_deref(),
-                Some(&enriched),
-                None,
-                None,
-                None,
-                None,
-                None,
-                Some("gateway"),
-                None,
-                Some(&request_id),
-            );
-        }
+    crate::runtime::db_blocking_detached(db, "pass_through_log", move |conn| {
+        let enriched =
+            with_route_decision(conn, &route, &provider, &model, &raw_request, &trace_json);
+        let cost = if usage.input.is_some() || usage.output.is_some() {
+            crate::gateway::usage::cost_for_request(conn, &provider, &model, &usage)
+        } else {
+            None
+        };
+        crate::storage::request_logs::insert(
+            conn,
+            &request_id,
+            &client_type,
+            &provider,
+            &model,
+            &route,
+            status_code,
+            latency_ms,
+            Some(&raw_request),
+            None,
+            if raw_response.is_empty() {
+                None
+            } else {
+                Some(raw_response.as_str())
+            },
+            None,
+            None,
+            None,
+            error_message.as_deref(),
+            Some(&enriched),
+            usage.input,
+            usage.output,
+            cost,
+            usage.cache_write,
+            usage.cache_read,
+            Some("gateway"),
+            None,
+            Some(&request_id),
+        )
     });
 }
 
@@ -759,14 +919,31 @@ pub async fn handle_anthropic(
     if auto_cache {
         crate::transform::responses_to_anthropic::inject_cache_control(&mut body_json);
     }
+    let trace = json!({"mode":trace_mode,"target":target_url,"model_resolution":model_resolution});
+    let log = PassThroughLog {
+        db,
+        client_type,
+        route: "/v1/messages",
+        request_id,
+        provider: &config.name,
+        model: &model,
+        raw_request: &sanitize(raw_body, config.api_key()),
+        start,
+    };
     // Copilot:api_key 字段存的是 GitHub OAuth token(gho_/ghu_),先交换成
     // 短期 Copilot bearer token(进程内缓存);同时按请求体分类 x-initiator
     // ——agent(工具续写/压缩)不计 premium 额度。交换失败直接返回带建议的
     // AppError,不静默降级。
     let copilot_auth = if crate::providers::copilot::is_copilot(&config.provider_type) {
-        let token =
-            crate::providers::copilot::get_copilot_token(http_client, config.select_api_key())
-                .await?;
+        let token = match crate::providers::copilot::get_copilot_token(
+            http_client,
+            config.select_api_key(),
+        )
+        .await
+        {
+            Ok(t) => t,
+            Err(err) => return Err(log.error(err, &trace)),
+        };
         let initiator = crate::providers::copilot::classify_initiator(&body_json);
         Some((token, initiator))
     } else {
@@ -810,20 +987,24 @@ pub async fn handle_anthropic(
 
     if is_stream {
         // Stream pass-through
-        let resp = crate::providers::adapter::send_with_net_retry(&build_request, 1)
-            .await
-            .map_err(|e| {
-                AppError::new(
-                    crate::errors::codes::PASS_THROUGH_REQUEST_FAILED,
+        let resp = match crate::providers::adapter::send_with_net_retry(&build_request, 1).await {
+            Ok(r) => r,
+            Err(e) => {
+                let err = AppError::new(
+                    crate::errors::codes::PASS_THROUGH_STREAM_FAILED,
                     format!("Failed: {e}"),
-                )
-            })?;
+                );
+                return Err(log.error(err, &trace));
+            }
+        };
 
         let status = resp.status();
         if !status.is_success() {
-            let body_text = resp.text().await.unwrap_or_default();
+            let body_text = match crate::gateway::http_client::read_text_capped(resp).await {
+                Ok(t) => t,
+                Err(err) => return Err(log.error(err, &trace)),
+            };
             let sanitized = sanitize(&body_text, config.api_key());
-            let latency = start.elapsed().as_millis() as i64;
             log_to_db(
                 db,
                 client_type,
@@ -831,22 +1012,28 @@ pub async fn handle_anthropic(
                 request_id,
                 &config.name,
                 &model,
-                &sanitize(raw_body, config.api_key()),
+                log.raw_request,
                 "",
                 Some(&truncate(&sanitized, 2000)),
-                &json!({"mode":trace_mode,"target":target_url,"model_resolution":model_resolution})
-                    .to_string(),
+                &trace.to_string(),
                 status.as_u16() as i64,
-                latency,
+                start.elapsed().as_millis() as i64,
+                Default::default(),
             );
-            let axum_status =
-                StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-            return Ok(Response::builder()
-                .status(axum_status)
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(body_text))
-                .unwrap());
+            return Err(upstream_http_error(
+                crate::errors::codes::UPSTREAM_STREAM_ERROR,
+                status,
+                &sanitized,
+                body_text,
+            ));
         }
+
+        // 与 OpenAI 直通流一致:先扫首批字节。HTTP 200 + 首帧 `event: error`
+        // (overloaded / rate limit)变成可 failover 的 Err,而不是把坏流当 200 透传。
+        let boot = match crate::gateway::sse_bootstrap::bootstrap_detect(resp).await {
+            Ok(b) => b,
+            Err(err) => return Err(log.error(err, &trace)),
+        };
 
         // Pipe SSE stream
         let (tx, rx) = mpsc::channel::<String>(512);
@@ -854,7 +1041,7 @@ pub async fn handle_anthropic(
         let provider_name = config.name.clone();
         let model = model.clone();
         let req_id = request_id.to_string();
-        let raw_req = sanitize(raw_body, config.api_key());
+        let raw_req = log.raw_request.to_string();
         let target = target_url.to_string();
         let api_key = config.api_key().to_string();
         let client_type_owned = client_type.to_string();
@@ -864,12 +1051,22 @@ pub async fn handle_anthropic(
         let provider_id_owned = provider_id.map(str::to_string);
 
         tokio::spawn(async move {
-            let mut stream = resp.bytes_stream();
             let mut utf8_pending: Vec<u8> = Vec::new();
             let mut sse_log = String::new();
             let mut sse_size: usize = 0;
             let mut usage_tail = String::new();
-            while let Some(chunk_result) = stream.next().await {
+            let mut pending_chunk = Some(bytes::Bytes::from(boot.prefix));
+            let mut stream = boot.stream;
+            let mut client_gone = false;
+            loop {
+                // bootstrap 已经读走的前缀先回放,再继续拉活流。
+                let chunk_result = match pending_chunk.take() {
+                    Some(prefix) => Ok(prefix),
+                    None => match stream.next().await {
+                        Some(r) => r,
+                        None => break,
+                    },
+                };
                 match chunk_result {
                     Ok(bytes) => {
                         let mut text = String::new();
@@ -878,6 +1075,9 @@ pub async fn handle_anthropic(
                             &mut utf8_pending,
                             &bytes,
                         );
+                        if text.is_empty() {
+                            continue;
+                        }
                         if sse_size < MAX_SSE_LOG {
                             let slice = crate::gateway::stream_utf8::truncate_at_char_boundary(
                                 &text,
@@ -897,6 +1097,7 @@ pub async fn handle_anthropic(
                         }
                         // Client 断开则提前退出，省 upstream token。
                         if tx.send(text).await.is_err() {
+                            client_gone = true;
                             break;
                         }
                     }
@@ -912,7 +1113,9 @@ pub async fn handle_anthropic(
                 }
             }
             let latency = start.elapsed().as_millis() as i64;
-            let trace = json!({"mode":&trace_mode_owned,"target":&target,"model_resolution":&model_resolution_owned,"stream":true}).to_string();
+            let mut trace = json!({"mode":&trace_mode_owned,"target":&target,"model_resolution":&model_resolution_owned,"stream":true});
+            let (status, error_message) = stream_end_status(client_gone, &mut trace);
+            let trace = trace.to_string();
             let sanitized_sse = sanitize(&sse_log, &api_key);
             if let (Some(sid), Some(pid), Some(usage)) = (
                 session_id_owned.as_deref(),
@@ -921,41 +1124,66 @@ pub async fn handle_anthropic(
             ) {
                 crate::gateway::session_affinity::record_if_cache_hit(sid, pid, &usage);
             }
-            if let Some(conn) = lock_db(&db_clone) {
-                let _ = crate::storage::request_logs::insert(
-                    &conn,
-                    &req_id,
-                    client_type_owned.as_str(),
-                    &provider_name,
-                    &model,
-                    "/v1/messages",
-                    200,
-                    latency,
-                    Some(&raw_req),
-                    None,
-                    None,
-                    None,
-                    Some(&truncate(&sanitized_sse, MAX_SSE_LOG)),
-                    None,
-                    None,
-                    Some(&with_route_decision(
-                        &conn,
-                        "/v1/messages",
+            let sse_events = truncate(&sanitized_sse, MAX_SSE_LOG);
+            // message_start(input / 缓存 token)在流开头,长流时早已滚出 usage_tail;
+            // 开头部分在 sse_log 里。先读开头再读尾部,message_delta 的 output_tokens 覆盖。
+            let usage = parse_anthropic_usage_value(&format!("{sse_log}\n{usage_tail}"))
+                .map(|u| {
+                    usage_from_value(
+                        &u,
+                        crate::gateway::usage::InputCacheSemantics::ExcludesCache,
+                    )
+                })
+                .unwrap_or_default();
+            crate::runtime::db_blocking_detached(
+                &db_clone,
+                "anthropic_pass_through_stream_log",
+                move |conn| {
+                    let cost = if usage.input.is_some() || usage.output.is_some() {
+                        crate::gateway::usage::cost_for_request(
+                            conn,
+                            &provider_name,
+                            &model,
+                            &usage,
+                        )
+                    } else {
+                        None
+                    };
+                    crate::storage::request_logs::insert(
+                        conn,
+                        &req_id,
+                        client_type_owned.as_str(),
                         &provider_name,
                         &model,
-                        &raw_req,
-                        &trace,
-                    )),
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    Some("gateway"),
-                    None,
-                    Some(&req_id),
-                );
-            }
+                        "/v1/messages",
+                        status,
+                        latency,
+                        Some(&raw_req),
+                        None,
+                        None,
+                        None,
+                        Some(&sse_events),
+                        None,
+                        error_message.as_deref(),
+                        Some(&with_route_decision(
+                            conn,
+                            "/v1/messages",
+                            &provider_name,
+                            &model,
+                            &raw_req,
+                            &trace,
+                        )),
+                        usage.input,
+                        usage.output,
+                        cost,
+                        usage.cache_write,
+                        usage.cache_read,
+                        Some("gateway"),
+                        None,
+                        Some(&req_id),
+                    )
+                },
+            );
         });
 
         let stream = ReceiverStream::new(rx);
@@ -970,21 +1198,24 @@ pub async fn handle_anthropic(
             .unwrap())
     } else {
         // Non-stream
-        let resp = crate::providers::adapter::send_with_net_retry(&build_request, 1)
-            .await
-            .map_err(|e| {
-                AppError::new(
+        let sent = crate::providers::adapter::send_with_net_retry(&build_request, 1).await;
+        let resp = match sent {
+            Ok(r) => r,
+            Err(e) => {
+                let err = AppError::new(
                     crate::errors::codes::PASS_THROUGH_REQUEST_FAILED,
                     format!("Failed: {e}"),
-                )
-            })?;
+                );
+                return Err(log.error(err, &trace));
+            }
+        };
         let status = resp.status();
-        let body_text = resp.text().await.unwrap_or_default();
+        let body_text = match crate::gateway::http_client::read_text_capped(resp).await {
+            Ok(t) => t,
+            Err(err) => return Err(log.error(err, &trace)),
+        };
         let sanitized = sanitize(&body_text, config.api_key());
         let latency = start.elapsed().as_millis() as i64;
-        let trace =
-            json!({"mode":trace_mode,"target":target_url,"model_resolution":model_resolution})
-                .to_string();
         let err_msg = if status.is_success() {
             None
         } else {
@@ -1006,16 +1237,31 @@ pub async fn handle_anthropic(
             request_id,
             &config.name,
             &model,
-            &sanitize(raw_body, config.api_key()),
+            log.raw_request,
             &sanitized,
             err_msg.as_deref(),
-            &trace,
+            &trace.to_string(),
             status.as_u16() as i64,
             latency,
+            if status.is_success() {
+                usage_from_json_body(
+                    &body_text,
+                    crate::gateway::usage::InputCacheSemantics::ExcludesCache,
+                )
+            } else {
+                Default::default()
+            },
         );
-        let axum_status = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+        if !status.is_success() {
+            return Err(upstream_http_error(
+                crate::errors::codes::UPSTREAM_NON_STREAM_ERROR,
+                status,
+                &sanitized,
+                body_text,
+            ));
+        }
         Ok(Response::builder()
-            .status(axum_status)
+            .status(status.as_u16())
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(body_text))
             .unwrap())

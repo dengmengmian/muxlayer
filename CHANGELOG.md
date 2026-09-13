@@ -1,5 +1,25 @@
 # Changelog / 更新日志
 
+## [2.0.6] - 2026-09-14
+
+### Fixed / 修复
+
+- **Failover really switches / 自动切换真的会切** —— A 429 or 5xx from a provider now moves to the backup on all four entry points, including Claude Code and Gemini CLI. Request errors like "prompt is too long" go back to you and don't bench the provider. A reply that has started is never retried. 上游 429、5xx 会切到备用，Claude Code 和 Gemini CLI 的入口也会切。「prompt 太长」这类请求错误原样返回，不会把 provider 踢出去。已经开始回内容的请求不重试。
+- **Switch back keeps your changes / 切回官方保留你的改动** —— Only what MuxLayer wrote is removed; MCP servers, hooks, and trust added later stay. Unreadable config files are no longer overwritten. OpenCode keeps other providers and Gemini keeps the rest of `.env`. 只删 MuxLayer 写的部分，后来加的 MCP、hook、信任都在。读不了的配置不再被覆盖。OpenCode 保留其它 provider，Gemini 保留 `.env` 里其它变量。
+- **Stop process and Restart Codex / 结束进程与重启 Codex** —— Claude Desktop, the Grok app, and ChatGPT's built-in Codex are no longer listed. Restart Codex no longer quits ChatGPT and only shows when Codex Desktop is installed. 不再把 Claude Desktop、Grok 桌面版、ChatGPT 里的 Codex 列进来。重启 Codex 不再关 ChatGPT，没装桌面端时不显示。
+- **Protocol conversion / 协议转换** —— Chat clients can use `reasoning_effort` with Claude; long Chinese replies no longer cut off; Claude Code no longer double-counts cached tokens on OpenAI-style providers; Gemini CLI tool calls keep their arguments and ids; requests without `stream` routed to Claude work. Chat 客户端能给 Claude 开思考；长中文回复不再中断；Claude Code 接 OpenAI 形态上游不再把缓存算两遍；Gemini CLI 工具调用参数和 id 不再丢；不带 `stream` 的请求路由到 Claude 时能用。
+- **Costs / 花费** —— Claude Code pass-through traffic and prompt cache are counted, and "today" follows your local day (set `TZ` in Docker). 直通 Anthropic 的流量和提示缓存计入花费，「今天」按本地日期算（Docker 里要设 `TZ`）。
+
+### Improvements / 改进
+
+- **Smoother under load / 高并发更顺** —— Logging and database work no longer block requests; hourly cleanup no longer rewrites the whole database; clearing logs, big stats, and client detection don't freeze the window. 写日志、查库不卡请求；清理不再每小时重写数据库；清日志、看统计、检测客户端不卡界面。
+- **Page errors are recoverable / 页面出错可恢复** —— A message with a retry button instead of a blank window. 出错显示提示和重试按钮，不再白屏。
+- **Easier to read / 更好读** —— Light and dark themes only (old themes migrate automatically), bigger small text, colors pass contrast checks. 只保留浅色和深色主题（旧主题自动迁移），小字调大，颜色过了对比度检查。
+
+### Security / 安全
+
+- **Safer defaults / 默认更安全** —— Database and token files are owner-only; exports hide keys without known prefixes; cross-host redirects aren't followed; the app window has a CSP; `docker-compose.yml` listens on `127.0.0.1`; `/metrics` needs the token; rate limiting trusts `X-Forwarded-For` only with `MUXLAYER_TRUST_PROXY=1`. 数据库和 token 文件只有自己能读；导出会遮住无前缀的 key；不跟随跨域重定向；窗口加了 CSP；compose 默认只监听本机；`/metrics` 要带 token；只有设了 `MUXLAYER_TRUST_PROXY=1` 才信 `X-Forwarded-For`。
+
 ## [2.0.5] - 2026-09-04
 
 ### Fixed / 修复

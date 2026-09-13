@@ -14,7 +14,11 @@ import { JsonCodeBlock } from "@/components/common/JsonCodeBlock";
 import { ErrorExplanationCard } from "@/components/common/ErrorExplanationCard";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { toast } from "@/components/common/Toast";
-import { formatTimestamp, formatOptionalLatency } from "@/lib/utils";
+import {
+  formatCost,
+  formatTimestamp,
+  formatOptionalLatency,
+} from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 import { sourceLabel } from "@/components/logs/RequestLogTable";
 import { buildReproPackage, pairBodies } from "@/lib/requestLogDebug";
@@ -324,13 +328,6 @@ function parseTrace(traceJson: string | null): RequestTrace | null {
   } catch {
     return null;
   }
-}
-
-function formatCost(cost: number | null): string {
-  if (cost == null) return "—";
-  if (cost <= 0) return "$0.00";
-  if (cost < 0.01) return `$${cost.toFixed(4)}`;
-  return `$${cost.toFixed(2)}`;
 }
 
 function Metric({ label, value }: { label: string; value: string }) {

@@ -111,6 +111,15 @@ fn try_refresh(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// `refresh_tray` 含同步 SQLite 查询 + `defaults read` 子进程(locale 探测),
+/// 放到 blocking 线程执行,不阻塞 async runtime 的 worker。
+pub async fn refresh_tray_blocking(app: &AppHandle) {
+    let app = app.clone();
+    if let Err(e) = tauri::async_runtime::spawn_blocking(move || refresh_tray(&app)).await {
+        eprintln!("[tray] refresh task failed: {e}");
+    }
+}
+
 /// Spawn a 30 s repeating task that calls `refresh_tray`. Started once during
 /// app setup; rides the app lifetime via the captured `AppHandle`.
 pub fn start_periodic_refresh(app: AppHandle) {
@@ -120,7 +129,7 @@ pub fn start_periodic_refresh(app: AppHandle) {
         ticker.tick().await;
         loop {
             ticker.tick().await;
-            refresh_tray(&app);
+            refresh_tray_blocking(&app).await;
         }
     });
 }
@@ -415,14 +424,15 @@ pub fn handle_switch_active(app: &AppHandle, menu_id: &str) {
     };
     let provider_id = provider_id.to_string();
     let app_clone = app.clone();
-    tauri::async_runtime::spawn(async move {
+    // 同步 SQLite 写 + 托盘重建,放 blocking 线程。
+    tauri::async_runtime::spawn_blocking(move || {
         let state: tauri::State<'_, AppState> = app_clone.state();
-        let result = {
-            let conn = match state.db.get() {
-                Ok(c) => c,
-                Err(_) => return,
-            };
-            storage::providers::set_active(&conn, &provider_id)
+        let result = match state.db.get() {
+            Ok(conn) => storage::providers::set_active(&conn, &provider_id),
+            Err(e) => {
+                eprintln!("[tray] set_active({provider_id}) failed: DB pool: {e}");
+                return;
+            }
         };
         if let Err(e) = result {
             eprintln!("[tray] set_active({provider_id}) failed: {e:?}");
@@ -434,7 +444,8 @@ pub fn handle_switch_active(app: &AppHandle, menu_id: &str) {
 pub fn handle_wake_toggle(app: &AppHandle, menu_id: &str) {
     let menu_id = menu_id.to_string();
     let app_clone = app.clone();
-    tauri::async_runtime::spawn(async move {
+    // 同步 SQLite 读写 + 托盘重建,放 blocking 线程。
+    tauri::async_runtime::spawn_blocking(move || {
         let state: tauri::State<'_, AppState> = app_clone.state();
         if !state.wake.status().supported {
             refresh_tray(&app_clone);

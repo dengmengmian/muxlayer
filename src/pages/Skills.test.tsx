@@ -52,7 +52,7 @@ describe("Skills", () => {
     );
 
     await waitFor(() => expect(api.listSkills).toHaveBeenCalled());
-    expect(screen.getByText("skills.console")).toBeInTheDocument();
+    expect(screen.getByText("skills.title")).toBeInTheDocument();
     expect(screen.getByText("skills.source_matrix")).toBeInTheDocument();
     expect(screen.getByText("writer")).toBeInTheDocument();
   });

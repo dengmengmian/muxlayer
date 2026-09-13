@@ -31,7 +31,7 @@ export function GrokBuildDetail({
   );
 
   return (
-    <div className="rounded-xl border border-border bg-card p-5">
+    <div className="surface-panel p-5">
       <DetailHeader
         clientId="grok_build"
         name={t("tools.grok_build")}

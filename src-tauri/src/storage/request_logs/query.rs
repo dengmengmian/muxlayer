@@ -116,7 +116,9 @@ pub(super) fn apply_log_filter(
     }
     if let Some(ref route_profile_id) = filter.route_profile_id {
         sql.push_str(&format!(
-            " AND COALESCE(route_profile_id, json_extract(trace_json, '$.route_decision.profile_id')) = ?{idx}"
+            // 写入路径与 v11 回填都已填好 route_profile_id,直接等值匹配;
+            // 显式带上 `!= ''` 让查询条件蕴含部分索引的 WHERE,才能用上该索引。
+            " AND route_profile_id = ?{idx} AND route_profile_id != ''"
         ));
         param_values.push(Box::new(route_profile_id.clone()));
         *idx += 1;
@@ -165,9 +167,10 @@ pub(super) fn apply_log_filter(
         apply_error_type_filter(error_type, sql);
     }
     if let Some(ref keyword) = filter.keyword {
-        let like = format!("%{keyword}%");
+        // 转义 LIKE 通配符,让用户输入的 `%` / `_` 按字面匹配(如搜 "100%")。
+        let like = format!("%{}%", escape_like(keyword));
         sql.push_str(&format!(
-            " AND (request_id LIKE ?{idx} OR error_message LIKE ?{} OR model LIKE ?{} OR route LIKE ?{})",
+            " AND (request_id LIKE ?{idx} ESCAPE '\\' OR error_message LIKE ?{} ESCAPE '\\' OR model LIKE ?{} ESCAPE '\\' OR route LIKE ?{} ESCAPE '\\')",
             *idx + 1, *idx + 2, *idx + 3
         ));
         param_values.push(Box::new(like.clone()));
@@ -176,6 +179,17 @@ pub(super) fn apply_log_filter(
         param_values.push(Box::new(like));
         *idx += 4;
     }
+}
+
+fn escape_like(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        if matches!(ch, '\\' | '%' | '_') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
 }
 
 fn apply_error_type_filter(error_type: &str, sql: &mut String) {

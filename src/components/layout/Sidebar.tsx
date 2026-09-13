@@ -107,7 +107,7 @@ export function Sidebar() {
   return (
     <aside
       className={cn(
-        "flex shrink-0 flex-col border-r border-border bg-sidebar transition-[width] duration-150",
+        "flex h-full min-h-0 shrink-0 flex-col border-r border-border bg-sidebar transition-[width] duration-150",
         collapsed ? "w-14" : "w-52"
       )}
     >
@@ -158,7 +158,7 @@ export function Sidebar() {
       {/* Navigation */}
       <nav
         className={cn(
-          "flex flex-1 flex-col gap-0.5 pt-3",
+          "flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto overscroll-contain py-3",
           collapsed ? "px-2" : "px-3"
         )}
       >
@@ -193,7 +193,7 @@ export function Sidebar() {
             className={cn(groupIndex > 0 && (collapsed ? "mt-2" : "mt-3"))}
           >
             {!collapsed && (
-              <div className="mb-1 px-3 text-[10px] font-semibold uppercase tracking-wide text-text-muted/70">
+              <div className="mb-1 px-3 text-xs font-semibold uppercase tracking-wide text-text-muted">
                 {t(group.labelKey)}
               </div>
             )}
@@ -234,13 +234,13 @@ export function Sidebar() {
 
       {/* Footer */}
       {!collapsed && (
-        <div className="border-t border-border px-5 py-3.5">
+        <div className="shrink-0 border-t border-border px-5 py-3.5">
           <div className="flex items-center justify-between gap-3">
-            <span className="text-[11px] font-medium text-text-secondary">
+            <span className="text-xs font-medium text-text-secondary">
               MuxLayer
             </span>
             {version && (
-              <span className="rounded bg-hover px-1.5 py-0.5 font-mono text-[10px] text-text-muted">
+              <span className="rounded bg-hover px-1.5 py-0.5 font-mono text-xs text-text-muted">
                 v{version}
               </span>
             )}

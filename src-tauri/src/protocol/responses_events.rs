@@ -1,19 +1,29 @@
 use serde_json::{json, Value};
-use std::sync::atomic::{AtomicU64, Ordering};
 
-static SEQ: AtomicU64 = AtomicU64::new(0);
-
-fn next_seq() -> u64 {
-    SEQ.fetch_add(1, Ordering::Relaxed)
-}
-
-pub fn reset_sequence() {
-    SEQ.store(0, Ordering::Relaxed);
-}
-
-fn sse(event_type: &str, mut data: Value) -> String {
-    data["sequence_number"] = json!(next_seq());
+/// 事件在这里生成时不带 sequence_number:序号属于单条流,由流的发送端
+/// (`gateway::sse::EventTx`)在发送时用 [`with_sequence`] 盖上。进程级全局计数器
+/// 会让并发流互相重置、交错。
+fn sse(event_type: &str, data: Value) -> String {
     format!("event: {event_type}\ndata: {}\n\n", data)
+}
+
+/// 给 [`sse`] 生成的事件插入本流的 `sequence_number`(作为 data 对象的首个字段)。
+pub fn with_sequence(event: &str, seq: u64) -> String {
+    const DATA_OBJECT: &str = "\ndata: {";
+    let Some(pos) = event.find(DATA_OBJECT) else {
+        return event.to_string();
+    };
+    let at = pos + DATA_OBJECT.len();
+    let sep = if event[at..].starts_with('}') {
+        ""
+    } else {
+        ","
+    };
+    format!(
+        "{}\"sequence_number\":{seq}{sep}{}",
+        &event[..at],
+        &event[at..]
+    )
 }
 
 /// Full response envelope matching Codex protocol expectations.
@@ -653,27 +663,34 @@ mod tests {
 
     #[test]
     fn response_created_format() {
-        reset_sequence();
         let s = response_created("r1", "gpt-4");
         assert!(s.starts_with("event: response.created"));
         assert!(s.contains("\"id\":\"r1\""));
         assert!(s.contains("\"status\":\"in_progress\""));
-        assert!(s.contains("\"sequence_number\":"));
+        assert!(with_sequence(&s, 0).contains("\"sequence_number\":0"));
     }
 
     #[test]
     fn output_text_delta_format() {
-        reset_sequence();
-        let _ = response_created("r1", "gpt-4"); // consumes a seq
         let s = output_text_delta("i1", 0, 0, "hello");
         assert!(s.starts_with("event: response.output_text.delta"));
         assert!(s.contains("\"delta\":\"hello\""));
-        assert!(s.contains("\"sequence_number\":"));
+        let stamped = with_sequence(&s, 1);
+        let data: Value = serde_json::from_str(
+            stamped
+                .lines()
+                .nth(1)
+                .unwrap()
+                .strip_prefix("data: ")
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(data["sequence_number"], 1);
+        assert_eq!(data["delta"], "hello");
     }
 
     #[test]
     fn response_completed_includes_usage() {
-        reset_sequence();
         let usage = json!({"input_tokens": 10, "output_tokens": 20});
         let s = response_completed("r1", "gpt-4", Some(&usage));
         assert!(s.starts_with("event: response.completed"));
@@ -728,7 +745,6 @@ mod tests {
 
     #[test]
     fn response_completed_with_max_tokens_status() {
-        reset_sequence();
         let s = response_completed_with_stop_reason("r1", "claude", None, Some("max_tokens"), &[]);
         assert!(s.contains("\"status\":\"incomplete\""));
         assert!(s.contains("\"reason\":\"max_output_tokens\""));
@@ -736,7 +752,6 @@ mod tests {
 
     #[test]
     fn response_failed_format() {
-        reset_sequence();
         let s = response_failed("r1", "gpt-4", "rate limit");
         assert!(s.starts_with("event: response.failed"));
         assert!(s.contains("\"status\":\"failed\""));
@@ -745,7 +760,6 @@ mod tests {
 
     #[test]
     fn function_call_events_format() {
-        reset_sequence();
         let s1 = function_call_added("i1", 0, "c1", "get_weather");
         assert!(s1.contains("\"type\":\"function_call\""));
         let s2 = function_call_arguments_delta("i1", 0, r#"{"city":"B""#);
@@ -759,7 +773,6 @@ mod tests {
 
     #[test]
     fn output_item_done_with_reasoning() {
-        reset_sequence();
         let s = output_item_done_message("i1", 0, "result", Some("<think>trace</think>"));
         assert!(s.contains("result"));
         assert!(s.contains("<think>trace</think>"));
@@ -808,13 +821,15 @@ mod tests {
     }
 
     #[test]
-    fn sequence_number_increments() {
-        reset_sequence();
-        let s1 = response_created("r1", "m1");
-        let s2 = response_in_progress("r1", "m1");
-        let s3 = output_item_added_message("i1", 0);
-        assert!(s1.contains("\"sequence_number\":"));
-        assert!(s2.contains("\"sequence_number\":"));
-        assert!(s3.contains("\"sequence_number\":"));
+    fn with_sequence_stamps_valid_json_without_global_state() {
+        let s1 = with_sequence(&response_created("r1", "m1"), 7);
+        let s2 = with_sequence(&output_item_added_message("i1", 0), 8);
+        for (s, n) in [(s1, 7), (s2, 8)] {
+            let data = s.lines().nth(1).unwrap().strip_prefix("data: ").unwrap();
+            let v: Value = serde_json::from_str(data).unwrap();
+            assert_eq!(v["sequence_number"], n);
+        }
+        // 不是 sse 事件形态时原样返回
+        assert_eq!(with_sequence(": ping\n\n", 3), ": ping\n\n");
     }
 }

@@ -9,13 +9,15 @@ use crate::protocol::chat_completions::{
 };
 use crate::transform::reasoning_store;
 
+/// `model` 是目标上游模型，用作 reasoning_store 的分区键（与响应侧 store 一致）。
 pub(super) fn convert_input(
     input: &Value,
+    model: &str,
     diagnostic_events: &mut Vec<CapabilityDegradationEvent>,
 ) -> Result<Vec<ChatMessage>, AppError> {
     match input {
         Value::String(s) => Ok(vec![msg("user", Value::String(s.clone()))]),
-        Value::Array(items) => convert_input_array(items, diagnostic_events),
+        Value::Array(items) => convert_input_array(items, model, diagnostic_events),
         Value::Object(_) => {
             let content = extract_content(Some(input));
             Ok(vec![msg("user", content)])
@@ -26,6 +28,7 @@ pub(super) fn convert_input(
 
 pub(super) fn convert_input_array(
     items: &[Value],
+    model: &str,
     diagnostic_events: &mut Vec<CapabilityDegradationEvent>,
 ) -> Result<Vec<ChatMessage>, AppError> {
     if !items.is_empty() && items.iter().all(is_content_part) {
@@ -48,6 +51,7 @@ pub(super) fn convert_input_array(
                     &mut messages,
                     &mut pending_tool_calls,
                     &mut pending_reasoning,
+                    model,
                 );
 
                 let role = map_role(item.get("role").and_then(|r| r.as_str()).unwrap_or("user"));
@@ -118,7 +122,7 @@ pub(super) fn convert_input_array(
                             // Look up from reasoning store by content hash
                             let text = extract_content(item.get("content"));
                             let text_str = text.as_str().unwrap_or("");
-                            reasoning_store::lookup_by_content(text_str)
+                            reasoning_store::lookup_by_content(model, text_str)
                         })
                 } else {
                     None
@@ -228,6 +232,7 @@ pub(super) fn convert_input_array(
                     &mut messages,
                     &mut pending_tool_calls,
                     &mut pending_reasoning,
+                    model,
                 );
 
                 let call_id = item.get("call_id").and_then(|c| c.as_str());
@@ -263,6 +268,7 @@ pub(super) fn convert_input_array(
                     &mut messages,
                     &mut pending_tool_calls,
                     &mut pending_reasoning,
+                    model,
                 );
                 let summary = item
                     .get("summary")
@@ -335,6 +341,7 @@ pub(super) fn convert_input_array(
                         &mut messages,
                         &mut pending_tool_calls,
                         &mut pending_reasoning,
+                        model,
                     );
                     let content = extract_content(item.get("content"));
                     messages.push(ChatMessage {
@@ -356,6 +363,7 @@ pub(super) fn convert_input_array(
         &mut messages,
         &mut pending_tool_calls,
         &mut pending_reasoning,
+        model,
     );
 
     Ok(messages)
@@ -365,6 +373,7 @@ fn flush_tool_calls(
     messages: &mut Vec<ChatMessage>,
     pending: &mut Vec<ToolCall>,
     reasoning: &mut Option<String>,
+    model: &str,
 ) {
     if pending.is_empty() {
         return;
@@ -372,7 +381,7 @@ fn flush_tool_calls(
     // Try to find reasoning from store by tool_call_id if not already available
     let rc = reasoning.take().or_else(|| {
         for tc in pending.iter() {
-            if let Some(r) = reasoning_store::lookup_by_tool_call_id(&tc.id) {
+            if let Some(r) = reasoning_store::lookup_by_tool_call_id(model, &tc.id) {
                 return Some(r);
             }
         }

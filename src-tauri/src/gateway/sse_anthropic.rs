@@ -1,7 +1,10 @@
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
+use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
+use crate::gateway::sse::EventTx;
 use crate::protocol::responses_events as ev;
 
 const MAX_EVENTS_LOG_SIZE: usize = 1_000_000;
@@ -39,6 +42,8 @@ pub struct AnthropicSseAccumulator {
     pub stop_reason: Option<String>,
     pub tool_call_resolution: crate::transform::tool_calls::ToolCallResolutionMap,
     finalized: bool,
+    /// 本流的事件序号(从 0 开始,每条流独立)。
+    sequence: Arc<AtomicU64>,
 }
 
 impl AnthropicSseAccumulator {
@@ -63,6 +68,7 @@ impl AnthropicSseAccumulator {
             stop_reason: None,
             tool_call_resolution: Default::default(),
             finalized: false,
+            sequence: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -85,7 +91,7 @@ pub async fn process_anthropic_stream(
 ) -> Result<(), String> {
     use futures::StreamExt;
 
-    crate::protocol::responses_events::reset_sequence();
+    let tx = EventTx::new(tx, acc.sequence.clone());
 
     // Seed buffer with the bootstrap prefix; first loop iteration parses any
     // complete frames already present without pulling from the live stream.
@@ -99,6 +105,10 @@ pub async fn process_anthropic_stream(
 
     loop {
         if bootstrap_replayed {
+            // 客户端已断开:停止读上游,不再继续烧 token。
+            if tx.is_closed() {
+                return Err(crate::gateway::sse::CLIENT_DISCONNECTED.to_string());
+            }
             let chunk = match stream.next().await {
                 Some(Ok(b)) => b,
                 Some(Err(e)) => {
@@ -378,11 +388,7 @@ pub async fn process_anthropic_stream(
 
 /// 发送一段 reasoning 增量（Anthropic thinking_delta → Responses API delta）。
 /// 首次调用占位 output_item.added(reasoning) 并抢占 output_index。
-async fn stream_reasoning_delta(
-    tx: &mpsc::Sender<String>,
-    acc: &mut AnthropicSseAccumulator,
-    delta: &str,
-) {
+async fn stream_reasoning_delta(tx: &EventTx, acc: &mut AnthropicSseAccumulator, delta: &str) {
     if delta.is_empty() {
         return;
     }
@@ -407,7 +413,7 @@ async fn stream_reasoning_delta(
     .await;
 }
 
-async fn finalize(acc: &mut AnthropicSseAccumulator, tx: &mpsc::Sender<String>) {
+async fn finalize(acc: &mut AnthropicSseAccumulator, tx: &EventTx) {
     if acc.finalized {
         return;
     }
@@ -415,7 +421,12 @@ async fn finalize(acc: &mut AnthropicSseAccumulator, tx: &mpsc::Sender<String>) 
     // Store reasoning for multi-turn
     if !acc.reasoning_content.is_empty() {
         let tc_ids: Vec<String> = acc.tool_calls.values().map(|tc| tc.id.clone()).collect();
-        crate::transform::reasoning_store::store(&acc.full_text, &acc.reasoning_content, &tc_ids);
+        crate::transform::reasoning_store::store(
+            &acc.model,
+            &acc.full_text,
+            &acc.reasoning_content,
+            &tc_ids,
+        );
     }
 
     // Close streamed reasoning summary, if any. Emitted before text/tool dones
@@ -502,8 +513,9 @@ async fn finalize(acc: &mut AnthropicSseAccumulator, tx: &mpsc::Sender<String>) 
     .await;
 }
 
-async fn send(tx: &mpsc::Sender<String>, event: &str) {
-    let _ = tx.send(event.to_string()).await;
+async fn send(tx: &EventTx, event: &str) {
+    // 发送失败 = 客户端断开;读循环的 is_closed 检查负责停止读上游。
+    let _ = tx.send(event).await;
 }
 
 #[cfg(test)]
@@ -550,6 +562,35 @@ mod tests {
             })
             .to_string(),
         )
+    }
+
+    #[tokio::test]
+    async fn client_disconnect_stops_reading_upstream() {
+        use futures::StreamExt;
+        let polled = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = polled.clone();
+        let frame = format!(
+            "event: content_block_delta\ndata: {}\n\n",
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"x"}})
+        );
+        let stream = futures::stream::iter(0..200)
+            .map(move |_| {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok::<_, reqwest::Error>(bytes::Bytes::from(frame.clone()))
+            })
+            .boxed();
+        let boot = crate::gateway::sse_bootstrap::Bootstrap {
+            prefix: Vec::new(),
+            stream,
+        };
+        let (tx, rx) = mpsc::channel::<String>(1024);
+        drop(rx);
+        let mut acc = AnthropicSseAccumulator::new("resp_gone".into(), "claude".into());
+
+        let result = process_anthropic_stream(boot, tx, &mut acc).await;
+
+        assert!(result.is_err());
+        assert!(polled.load(std::sync::atomic::Ordering::SeqCst) < 200);
     }
 
     #[tokio::test]

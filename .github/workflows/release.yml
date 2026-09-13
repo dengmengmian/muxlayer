@@ -5,27 +5,37 @@ on:
     tags:
       - 'v*'
 
+# 默认只读;需要建 release / 传资产 / 改 release 状态的 job 各自单独申请 contents: write。
 permissions:
-  contents: write
+  contents: read
 
+# 发版流程:preflight → create-release(草稿)→ build / updater-json / cli 全部往草稿上传
+# → publish 最后一步转正式并标 latest → homebrew-cask。
+# 任何一个平台失败,release 都停在草稿,releases/latest/download/latest.json 仍指向上一个
+# 正式版,已安装的客户端不会检查更新 404。修好后 re-run 失败的 job 即可继续。
 jobs:
   preflight:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      # 第一道闸:tag 版本必须和 package.json / Cargo.toml / tauri.conf.json / Cargo.lock /
+      # 官网 HTML 一致,否则 latest.json 的 version 与 app 自身版本对不上,更新器会一直提示新版本。
+      - name: Version consistency check (tag)
+        run: bash scripts/check-version-consistency.sh "${GITHUB_REF_NAME#v}"
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: 24
+          node-version: 22
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
-          version: 10
+          version: 11.13.0
 
       - name: Install frontend dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Provider catalog drift check
         run: pnpm provider:catalog:check
@@ -41,10 +51,12 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
 
       - name: Rust cache
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: src-tauri
           key: preflight-fixture
@@ -62,8 +74,68 @@ jobs:
       - name: Docker preflight
         run: bash scripts/release-preflight.sh
 
-  build:
+  # 单独一个 job 先建草稿 release,把 id 传给后面所有 job。
+  # 不让 4 个 build 各自 getOrCreate:草稿不会被 GitHub 按 tag 去重,并发创建会出现多个同 tag 草稿。
+  create-release:
     needs: preflight
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.release.outputs.id }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+
+      - name: Create or reuse draft release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+
+          # 草稿 release 查不到 /releases/tags/{tag},只能翻 release 列表按 tag_name 匹配。
+          find_ids() {
+            gh api --paginate "repos/${GH_REPO}/releases?per_page=100" \
+              --jq ".[] | select(.tag_name == \"${TAG}\") | .id"
+          }
+
+          ids="$(find_ids)"
+          if [ -z "$ids" ]; then
+            node scripts/extract-release-notes.mjs "$VERSION" > "$RUNNER_TEMP/release-notes.md"
+            # 等价于 gh release create --verify-tag:tag 必须已在远端存在。
+            gh api "repos/${GH_REPO}/git/ref/tags/${TAG}" --silent
+            # id 直接取创建响应:创建后立刻翻 release 列表可能因最终一致性查不到新草稿。
+            ids="$(gh api -X POST "repos/${GH_REPO}/releases" \
+              -f tag_name="$TAG" \
+              -f name="$TAG" \
+              -f body="$(cat "$RUNNER_TEMP/release-notes.md")" \
+              -F draft=true \
+              --jq .id)"
+          else
+            # re-run 场景:复用已有 release(草稿或已发布),不重复创建。
+            echo "Reusing existing release for ${TAG}"
+          fi
+
+          count="$(printf '%s\n' "$ids" | grep -c . || true)"
+          if [ "$count" -ne 1 ]; then
+            echo "::error::expected exactly one release for ${TAG}, found ${count}: ${ids}"
+            exit 1
+          fi
+          echo "release id=${ids}"
+          echo "id=${ids}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: create-release
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -83,7 +155,7 @@ jobs:
 
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Install dependencies (Ubuntu)
         if: matrix.platform == 'ubuntu-22.04'
@@ -96,27 +168,28 @@ jobs:
         run: choco install wixtoolset nsis -y --no-progress
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: 24
+          node-version: 22
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
-          version: 10
+          version: 11.13.0
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.rust_target }}
 
       - name: Rust cache
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: src-tauri
 
       - name: Install frontend dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Build frontend
         run: pnpm build
@@ -138,17 +211,6 @@ jobs:
           printf '%s' "$APPLE_API_KEY_CONTENT" > "$api_key_path"
           echo "APPLE_API_KEY_PATH=$api_key_path" >> "$GITHUB_ENV"
 
-      - name: Extract release notes
-        id: notes
-        shell: bash
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          NOTES=$(node scripts/extract-release-notes.mjs "$VERSION")
-          EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
-          echo "body<<$EOF" >> "$GITHUB_OUTPUT"
-          echo "$NOTES" >> "$GITHUB_OUTPUT"
-          echo "$EOF" >> "$GITHUB_OUTPUT"
-
       - name: Check updater signing key
         shell: bash
         env:
@@ -159,8 +221,10 @@ jobs:
             exit 1
           fi
 
+      # 这一步 env 里有签名私钥 / Apple 证书密码 / 公证 key,action 必须钉死 commit SHA。
+      # 传 releaseId 后 tauri-action 只往这个草稿上传,不再自己建 release。
       - name: Build Tauri
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -173,30 +237,35 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: ${{ github.ref_name }}
-          releaseBody: ${{ steps.notes.outputs.body }}
-          releaseDraft: false
-          prerelease: false
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          # 4 个平台并行各自删/传 latest.json 会撞 422 同名冲突;latest.json 统一由
+          # 下面 updater-json job 的 scripts/publish-updater-json.mjs 合并生成。
+          includeUpdaterJson: false
           args: ${{ matrix.args }} --config src-tauri/tauri.ci.conf.json
 
   updater-json:
-    needs: build
+    needs: [create-release, build]
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: 24
+          node-version: 22
 
       - name: Publish merged updater JSON
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
         run: node scripts/publish-updater-json.mjs
 
   cli:
     needs: updater-json
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -222,7 +291,7 @@ jobs:
     env:
       CARGO_TARGET_DIR: src-tauri/target/cli-${{ matrix.target }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Install dependencies (Ubuntu)
         if: matrix.platform == 'ubuntu-22.04'
@@ -231,12 +300,13 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
       - name: Rust cache
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: src-tauri
           key: cli-${{ matrix.target }}
@@ -258,19 +328,45 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Compress-Archive -Path "$env:CARGO_TARGET_DIR/${{ matrix.target }}/release/${{ matrix.bin }}" -DestinationPath "dist/${{ matrix.archive }}"
 
+      # gh 按 tag 能找到草稿 release,这里仍往草稿上传。
       - name: Upload CLI to release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "${{ github.ref_name }}" "dist/${{ matrix.archive }}" --clobber
 
+  # 最后一步才把草稿转正式并标 latest:此时桌面安装包、签名、latest.json、CLI 包都已就位。
+  # 等 cli 一起完成,避免公开的 release 缺 CLI 资产。
+  publish:
+    needs: [updater-json, cli]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Publish draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # No checkout on this job — force gh to the release repo (not cwd).
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          assets="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+          if ! printf '%s\n' "$assets" | grep -qx 'latest.json'; then
+            echo "::error::latest.json is missing on ${TAG}; refusing to publish"
+            printf '%s\n' "$assets"
+            exit 1
+          fi
+          gh release edit "$TAG" --draft=false --latest
+          echo "Published ${TAG}"
+
   # 发布成功后自动更新 Homebrew tap 的 cask(version + 两个 dmg 的 sha256)。
   # 需要仓库 Secret HOMEBREW_TAP_SSH_KEY:dengmengmian/homebrew-tap 上一把带写权限的
   # deploy key 私钥。用 deploy key 而不是 PAT,是因为 fine-grained PAT 强制带过期时间
   # (最长 366 天),到期后这个 job 会在 clone 处静默失效;deploy key 不过期,且只能动
-  # 这一个仓库。
-  # needs updater-json so multi-arch upload races settle before we hash DMGs.
+  # 这一个仓库。push 走 SSH deploy key,GITHUB_TOKEN 只需读 release,继承顶层 contents: read。
+  # needs publish:cask 只能指向已公开的 release,草稿的 dmg 用户下不到。
   homebrew-cask:
-    needs: [build, updater-json]
+    needs: publish
     runs-on: ubuntu-22.04
     steps:
       - name: Update tap cask

@@ -39,6 +39,21 @@ pub fn env_value(current: &str, legacy: &str) -> Option<String> {
     prefer_current_env(current_value.as_deref(), legacy_value.as_deref())
 }
 
+/// 布尔开关环境变量(新名优先,兼容旧 AGENTGATE_* 名):`1` / `true` / `yes` / `on`
+/// (不分大小写)为开,其余(含未设置)为关。
+pub fn env_flag(current: &str, legacy: &str) -> bool {
+    flag_enabled(env_value(current, legacy).as_deref())
+}
+
+fn flag_enabled(value: Option<&str>) -> bool {
+    value.is_some_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -87,6 +102,23 @@ mod tests {
         assert_eq!(default_cli_data_dir(&home), current);
 
         let _ = fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn flag_values_are_opt_in() {
+        for on in ["1", "true", "TRUE", " yes ", "on"] {
+            assert!(flag_enabled(Some(on)), "{on}");
+        }
+        for off in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("false"),
+            Some("no"),
+            Some("2"),
+        ] {
+            assert!(!flag_enabled(off), "{off:?}");
+        }
     }
 
     #[test]

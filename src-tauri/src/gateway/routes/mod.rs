@@ -15,12 +15,13 @@ pub mod shared;
 pub(crate) use shared::{anthropic_request_has_images, chat_request_has_images};
 #[allow(unused_imports)]
 pub(crate) use shared::{
-    anthropic_request_has_images_value, chat_request_has_images_value, detect_client_from_ua,
-    enrich_trace_with_route_decision, get_active_provider, lock_db, log_request_error,
-    log_request_error_full, log_request_success, native_model_override, refine_struct_body,
-    refine_value_body, request_body_or_gateway_error, request_contains_images,
+    anthropic_request_has_images_value, chat_request_has_images_value, check_budget,
+    detect_client_from_ua, enrich_trace_with_route_decision, get_active_provider,
+    log_request_error, log_request_error_full, log_request_success, native_model_override,
+    refine_struct_body, refine_value_body, request_body_or_gateway_error, request_contains_images,
     request_contains_images_pub, route_candidate_skip_reasons, route_fallback_chain, sanitize_body,
-    trace_with_degradation_events, truncate_str, validate_auth, GatewayError,
+    select_providers, trace_with_degradation_events, truncate_str, validate_auth, validate_token,
+    GatewayError,
 };
 #[allow(unused_imports)]
 pub(crate) use shared::{host_is_allowed, origin_is_allowed, validate_request_boundary};
@@ -38,6 +39,8 @@ pub struct GatewayState {
     pub db: crate::storage::db::DbPool,
     pub http_client: reqwest::Client,
     pub active_requests: Arc<AtomicU64>,
+    /// 请求体上限(字节)。压缩请求解压后也按这个上限封顶。
+    pub request_body_limit: usize,
 }
 
 #[cfg(test)]
@@ -306,16 +309,6 @@ mod tests {
             StatusCode::UNAUTHORIZED
         );
     }
-
-    #[test]
-    fn test_lock_db_normal() {
-        let manager = r2d2_sqlite::SqliteConnectionManager::memory();
-        let pool = r2d2::Pool::builder().max_size(1).build(manager).unwrap();
-        assert!(lock_db(&pool).is_some());
-    }
-
-    // 旧 "test_lock_db_recovers_from_poison" 已删——r2d2::Pool 不存在 Mutex poison 概念,
-    // 连接获取失败只可能是超时 / 池满,语义不再对应。
 
     #[test]
     fn route_candidate_skip_reasons_explain_unavailable_cooldown_and_vision() {
@@ -710,8 +703,8 @@ mod tests {
         assert!(!anthropic_request_has_images(&body));
     }
 
-    /// 挡住「只加在 Responses」：预算闸、请求分析、选路必须出现在四个入口。
-    /// Gemini 走 Responses profile，没有独立 failover 循环，但预算和分析不能缺。
+    /// 挡住「只加在 Responses」：预算闸、请求分析、选路、共用 failover 驱动
+    /// 必须出现在四个入口(预算 / 选路收敛在 shared::check_budget / select_providers)。
     #[test]
     fn protocol_entries_share_budget_analysis_and_selection() {
         let handlers = [
@@ -721,32 +714,31 @@ mod tests {
             ("gemini", include_str!("gemini.rs")),
         ];
         for (name, src) in handlers {
+            assert!(src.contains("check_budget("), "{name} 入口缺少日预算闸");
             assert!(
-                src.contains("budget::check_new_request"),
-                "{name} 入口缺少日预算闸"
+                src.contains("select_providers("),
+                "{name} 入口缺少共用选路 select_providers"
             );
             assert!(
-                src.contains("select_for_failover"),
-                "{name} 入口缺少 select_for_failover"
-            );
-            assert!(
-                src.contains("Some(&analysis)"),
+                src.contains("analysis.clone()"),
                 "{name} 入口选路未传入请求分析，条件/视觉会失效"
             );
-        }
-        for (name, src) in [
-            ("chat", include_str!("chat.rs")),
-            ("messages", include_str!("messages.rs")),
-            ("responses", include_str!("responses.rs")),
-        ] {
             assert!(
                 src.contains("failover::build_attempt_order"),
                 "{name} 入口缺少共用 vision/failover 排序"
+            );
+            assert!(
+                src.contains("failover::run_attempts"),
+                "{name} 入口缺少共用 failover 驱动(熔断 / 切换)"
             );
             assert!(
                 src.contains("request_has_images"),
                 "{name} 入口未把带图标记交给 failover"
             );
         }
+        let shared = include_str!("shared.rs");
+        assert!(shared.contains("budget::check_new_request_with_conn"));
+        assert!(shared.contains("select_for_failover_with_conn"));
+        assert!(shared.contains("Some(&analysis)"));
     }
 }

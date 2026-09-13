@@ -8,7 +8,7 @@
 //!   - `.credentials.yaml` → `MUXLAYER_TOKEN`（settings 只引用，不落明文到 settings）
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -18,39 +18,68 @@ use serde_yaml::Value;
 
 use crate::errors::AppError;
 use crate::security::local_token;
+use crate::tools::client_files as cf;
 
 const CRED_REF: &str = "MUXLAYER_TOKEN";
 const PROVIDER_ID: &str = "muxlayer";
 const MODEL_ID: &str = "muxlayer";
 
-fn home() -> PathBuf {
-    std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .map(PathBuf::from)
-        .unwrap_or_default()
-}
-
-pub fn data_dir() -> PathBuf {
-    std::env::var("DSH_HOME")
+pub fn data_dir() -> Result<PathBuf, AppError> {
+    if let Some(dir) = std::env::var("DSH_HOME")
         .ok()
         .filter(|s| !s.trim().is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| home().join(".dsh"))
+    {
+        return Ok(dir);
+    }
+    Ok(crate::fsutil::home_dir()?.join(".dsh"))
 }
 
-pub fn settings_path() -> PathBuf {
-    data_dir().join("settings.yaml")
+pub fn settings_path() -> Result<PathBuf, AppError> {
+    Ok(data_dir()?.join("settings.yaml"))
 }
 
-pub fn credentials_path() -> PathBuf {
-    data_dir().join(".credentials.yaml")
+pub fn credentials_path() -> Result<PathBuf, AppError> {
+    Ok(data_dir()?.join(".credentials.yaml"))
 }
 
 pub fn snapshot_paths() -> Vec<(&'static str, PathBuf)> {
-    vec![
+    [
         ("settings.yaml", settings_path()),
         (".credentials.yaml", credentials_path()),
     ]
+    .into_iter()
+    .filter_map(|(name, p)| p.ok().map(|p| (name, p)))
+    .collect()
+}
+
+/// 结构化识别 settings.yaml:`llm-pi-ai.providers.muxlayer.apiKeyEnv == MUXLAYER_TOKEN`。
+fn settings_is_ours(content: &str) -> bool {
+    serde_yaml::from_str::<Value>(content)
+        .ok()
+        .and_then(|root| {
+            root.get("llm-pi-ai")?
+                .get("providers")?
+                .get(PROVIDER_ID)?
+                .get("apiKeyEnv")?
+                .as_str()
+                .map(|v| v == CRED_REF)
+        })
+        .unwrap_or(false)
+}
+
+/// 结构化识别 .credentials.yaml:`MUXLAYER_TOKEN`(versioned `refs` 或扁平格式)
+/// 的值是本地 token。注释里出现 ag_local_ 不算。
+fn credentials_is_ours(content: &str) -> bool {
+    let Ok(root) = serde_yaml::from_str::<Value>(content) else {
+        return false;
+    };
+    let token = root
+        .get("refs")
+        .and_then(|r| r.get(CRED_REF))
+        .or_else(|| root.get(CRED_REF))
+        .and_then(|v| v.as_str());
+    token.is_some_and(cf::is_local_token)
 }
 
 #[derive(Debug, Clone, Serialize, specta::Type)]
@@ -71,15 +100,14 @@ pub struct ApplyConfigResult {
 }
 
 pub fn detect() -> DeepSeekHarnessConfigStatus {
-    let path = settings_path();
+    // 只读探测:家目录不可用时路径为空,按「不存在」展示。
+    let path = settings_path().unwrap_or_default();
+    let creds_path = credentials_path().unwrap_or_default();
     let path_str = path.to_string_lossy().to_string();
-    let exists = path.exists() || credentials_path().exists();
+    let exists = path.is_file() || creds_path.is_file();
     let settings = fs::read_to_string(&path).unwrap_or_default();
-    let creds = fs::read_to_string(credentials_path()).unwrap_or_default();
-    let has_agentgate = settings.contains("muxlayer")
-        || settings.contains("ag_local_")
-        || creds.contains(CRED_REF)
-        || creds.contains("ag_local_");
+    let creds = fs::read_to_string(&creds_path).unwrap_or_default();
+    let has_agentgate = settings_is_ours(&settings) || credentials_is_ours(&creds);
     DeepSeekHarnessConfigStatus {
         config_path: path_str,
         exists,
@@ -89,8 +117,10 @@ pub fn detect() -> DeepSeekHarnessConfigStatus {
 }
 
 pub fn apply(host: &str, port: i64) -> Result<ApplyConfigResult, AppError> {
+    // 整个读 → 改 → 写期间持有客户端配置锁,防止并发命令互相覆盖(见 fsutil)。
+    let _config_lock = crate::fsutil::lock_client_configs();
     let token = local_token::ensure_token()?;
-    let dir = data_dir();
+    let dir = data_dir()?;
     fs::create_dir_all(&dir).map_err(|e| {
         AppError::new(
             crate::errors::codes::DSH_CONFIG_WRITE_FAILED,
@@ -102,35 +132,28 @@ pub fn apply(host: &str, port: i64) -> Result<ApplyConfigResult, AppError> {
         let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
     }
 
-    let settings = settings_path();
-    let existing = if settings.exists() {
-        fs::read_to_string(&settings).unwrap_or_default()
-    } else {
-        String::new()
-    };
+    // 两个文件都先读:任何一个读不出来(权限 / 编码)都中止,绝不拿空内容覆盖。
+    let settings = settings_path()?;
+    let creds_path = credentials_path()?;
+    let existing = cf::read_for_update(&settings, crate::errors::codes::DSH_CONFIG_WRITE_FAILED)?;
+    let creds_existing =
+        cf::read_for_update(&creds_path, crate::errors::codes::DSH_CONFIG_WRITE_FAILED)?;
     let merged = merge_settings(&existing, host, port)?;
-    atomic_write(
+    let creds = upsert_credential(&creds_existing, CRED_REF, &token)?;
+
+    cf::write_verified(
         &settings,
         merged.as_bytes(),
+        None,
         crate::errors::codes::DSH_CONFIG_WRITE_FAILED,
     )?;
-
-    let creds_path = credentials_path();
-    let creds_existing = if creds_path.exists() {
-        fs::read_to_string(&creds_path).unwrap_or_default()
-    } else {
-        String::new()
-    };
-    let creds = upsert_credential(&creds_existing, CRED_REF, &token)?;
-    atomic_write(
+    // 凭据文件从创建起就是 0600,没有先宽后收的窗口。
+    cf::write_verified(
         &creds_path,
         creds.as_bytes(),
+        Some(cf::SECRET_FILE_MODE),
         crate::errors::codes::DSH_CONFIG_WRITE_FAILED,
     )?;
-    #[cfg(unix)]
-    {
-        let _ = fs::set_permissions(&creds_path, fs::Permissions::from_mode(0o600));
-    }
 
     Ok(ApplyConfigResult {
         success: true,
@@ -264,19 +287,8 @@ fn upsert_credential(existing: &str, key: &str, value: &str) -> Result<String, A
     })
 }
 
-fn atomic_write(path: &Path, bytes: &[u8], code: &'static str) -> Result<(), AppError> {
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, bytes).map_err(|e| AppError::new(code, format!("Failed to write: {e}")))?;
-    fs::rename(&tmp, path).map_err(|e| {
-        let _ = fs::remove_file(&tmp);
-        AppError::new(code, format!("Failed to replace: {e}"))
-    })?;
-    crate::tools::config_verify::verify_written(path, bytes).map_err(|e| AppError::new(code, e))?;
-    Ok(())
-}
-
 pub fn open_config() -> Result<(), AppError> {
-    let path = settings_path();
+    let path = settings_path()?;
     if !path.exists() {
         return Err(AppError::new(
             crate::errors::codes::DSH_CONFIG_NOT_FOUND,
@@ -303,6 +315,40 @@ mod tests {
     use crate::test_utils::{cleanup, setup_temp_home, FS_LOCK};
 
     #[test]
+    fn detect_ignores_decoy_muxlayer_mentions() {
+        let _guard = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let temp = setup_temp_home();
+        std::env::remove_var("DSH_HOME");
+        std::fs::create_dir_all(data_dir().unwrap()).unwrap();
+        std::fs::write(
+            settings_path().unwrap(),
+            "# muxlayer notes\nmcp:\n  muxlayer-docs:\n    command: npx\n",
+        )
+        .unwrap();
+        std::fs::write(
+            credentials_path().unwrap(),
+            "# ag_local_ tokens go here\nDEEPSEEK_API_KEY: sk-x\n",
+        )
+        .unwrap();
+        assert!(!detect().has_agentgate);
+        cleanup(&temp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn apply_refuses_to_overwrite_unreadable_settings() {
+        let _guard = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let temp = setup_temp_home();
+        std::env::remove_var("DSH_HOME");
+        std::fs::create_dir_all(data_dir().unwrap()).unwrap();
+        let bad: &[u8] = b"llm-pi-ai: {}\n\xff";
+        std::fs::write(settings_path().unwrap(), bad).unwrap();
+        assert!(apply("127.0.0.1", 9090).is_err());
+        assert_eq!(std::fs::read(settings_path().unwrap()).unwrap(), bad);
+        cleanup(&temp);
+    }
+
+    #[test]
     fn test_detect_no_config() {
         let _guard = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = setup_temp_home();
@@ -318,7 +364,7 @@ mod tests {
         let temp = setup_temp_home();
         let result = apply("127.0.0.1", 9090).unwrap();
         assert!(result.success);
-        let settings = std::fs::read_to_string(settings_path()).unwrap();
+        let settings = std::fs::read_to_string(settings_path().unwrap()).unwrap();
         assert!(settings.contains("muxlayer"));
         assert!(settings.contains("openai-completions"));
         assert!(settings.contains("127.0.0.1:9090/v1"));
@@ -336,7 +382,7 @@ mod tests {
             !settings.contains("ag_local_"),
             "token must not land in settings.yaml"
         );
-        let creds = std::fs::read_to_string(credentials_path()).unwrap();
+        let creds = std::fs::read_to_string(credentials_path().unwrap()).unwrap();
         assert!(creds.contains("MUXLAYER_TOKEN"));
         assert!(creds.contains("ag_local_"));
         assert!(detect().has_agentgate);
@@ -347,14 +393,14 @@ mod tests {
     fn test_apply_keeps_other_pi_ai_providers() {
         let _guard = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = setup_temp_home();
-        std::fs::create_dir_all(data_dir()).unwrap();
+        std::fs::create_dir_all(data_dir().unwrap()).unwrap();
         std::fs::write(
-            settings_path(),
+            settings_path().unwrap(),
             "llm-pi-ai:\n  providers:\n    anthropic:\n      apiKeyEnv: ANTHROPIC_API_KEY\n",
         )
         .unwrap();
         apply("127.0.0.1", 9090).unwrap();
-        let settings = std::fs::read_to_string(settings_path()).unwrap();
+        let settings = std::fs::read_to_string(settings_path().unwrap()).unwrap();
         assert!(settings.contains("anthropic"));
         assert!(settings.contains("ANTHROPIC_API_KEY"));
         assert!(settings.contains("muxlayer"));

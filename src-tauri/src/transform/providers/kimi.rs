@@ -94,17 +94,10 @@ impl super::ProviderTransform for KimiProvider {
 
 /// Platform ID `kimi-k3` and Kimi Code ID `k3` (plus optional `[1m]` qualifier).
 fn is_k3_model(model: &str) -> bool {
-    matches!(strip_model_qualifier(model), "k3" | "kimi-k3")
-}
-
-fn strip_model_qualifier(model: &str) -> &str {
-    let model = model.trim();
-    if let Some(stripped) = model.strip_suffix(']') {
-        if let Some(open) = stripped.rfind('[') {
-            return &stripped[..open];
-        }
-    }
-    model
+    matches!(
+        crate::providers::model_id::strip_qualifier(model.trim()),
+        "k3" | "kimi-k3"
+    )
 }
 
 /// Map client effort vocabulary onto K3's documented buckets.

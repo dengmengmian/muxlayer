@@ -98,7 +98,7 @@ mod tests {
         let manager = SqliteConnectionManager::file(&db_path);
         let pool = Pool::builder().max_size(2).build(manager).unwrap();
         let conn = pool.get().unwrap();
-        crate::storage::migrations::run_migrations(&*conn).unwrap();
+        crate::storage::migrations::run_migrations(&conn).unwrap();
         (pool, temp)
     }
 

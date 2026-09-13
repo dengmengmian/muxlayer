@@ -1,5 +1,6 @@
 use crate::errors::AppError;
 use crate::protocol::chat_completions::{ChatCompletionsRequest, ChatMessage};
+use crate::providers::model_id::strip_qualifier;
 use crate::transform::{degradation, reasoning_store, tool_calls};
 use serde_json::Value;
 
@@ -24,18 +25,15 @@ const MIMO_NO_WEB_SEARCH: &[&str] = &["mimo-v2-omni"];
 // images for non-vision targets so the request body remains valid.
 const MIMO_VISION_MODELS: &[&str] = &["mimo-v2.5", "mimo-v2-omni"];
 
-fn strip_qualifier(model: &str) -> &str {
-    if let Some(stripped) = model.strip_suffix(']') {
-        if let Some(open) = stripped.rfind('[') {
-            return &stripped[..open];
-        }
-    }
-    model
-}
-
 impl super::ProviderTransform for MimoProvider {
     fn process_messages(&self, messages: Vec<ChatMessage>) -> Result<Vec<ChatMessage>, AppError> {
-        let mut messages = tool_calls::fix_tool_message_order(messages)?;
+        tool_calls::fix_tool_message_order(messages)
+    }
+
+    fn finalize_request(&self, req: &mut ChatCompletionsRequest, _tools: &Option<Vec<Value>>) {
+        // Strip [1m]/[...] qualifier before comparing against the capability lists.
+        let base_model = strip_qualifier(req.model.as_str()).to_string();
+        let model = base_model.as_str();
 
         // MiMo thinking-mode multi-turn invariant: 历史里**所有** assistant 消息
         // 都必须带 reasoning_content。原代码只兜底带 tool_calls 的 assistant，
@@ -50,27 +48,21 @@ impl super::ProviderTransform for MimoProvider {
         // 占位（lookup_store 命中优先，否则用 "(this turn ran without thinking
         // mode)" 显式占位——比 " " 单空格更可读，也告诉模型这条历史是非
         // thinking 模式产出，不要据此推 reasoning 链）。
-        for msg in &mut messages {
+        // 放在 finalize_request 而非 process_messages：reasoning_store 按模型分区，
+        // 只有这里拿得到目标模型。
+        for msg in &mut req.messages {
             if msg.role == "assistant" && msg.reasoning_content.is_none() {
                 let text = msg.content.as_ref().and_then(|c| c.as_str()).unwrap_or("");
-                let stored = reasoning_store::lookup_by_content(text).or_else(|| {
+                let stored = reasoning_store::lookup_by_content(model, text).or_else(|| {
                     msg.tool_calls.as_ref().and_then(|tcs| {
                         tcs.iter()
-                            .find_map(|tc| reasoning_store::lookup_by_tool_call_id(&tc.id))
+                            .find_map(|tc| reasoning_store::lookup_by_tool_call_id(model, &tc.id))
                     })
                 });
                 msg.reasoning_content =
                     stored.or_else(|| Some("(this turn ran without thinking mode)".to_string()));
             }
         }
-
-        Ok(messages)
-    }
-
-    fn finalize_request(&self, req: &mut ChatCompletionsRequest, _tools: &Option<Vec<Value>>) {
-        // Strip [1m]/[...] qualifier before comparing against the capability lists.
-        let base_model = strip_qualifier(req.model.as_str()).to_string();
-        let model = base_model.as_str();
 
         // Strip historic image_url parts when the resolved model lacks vision.
         // Codex replays full conversation history including prior images; if
@@ -316,10 +308,11 @@ mod tests {
 
     #[test]
     fn reasoning_content_backfilled_for_assistant_with_tool_calls() {
-        let msg = assistant_with_tool_call(Some("text"), "tc-1");
-        let out = MimoProvider.process_messages(vec![msg]).unwrap();
+        let mut r = req("mimo-v2.5-pro");
+        r.messages = vec![assistant_with_tool_call(Some("text"), "tc-1")];
+        MimoProvider.finalize_request(&mut r, &None);
         assert!(
-            out[0].reasoning_content.is_some(),
+            r.messages[0].reasoning_content.is_some(),
             "missing reasoning_content must be backfilled to avoid 400 in MiMo thinking mode"
         );
     }
@@ -328,8 +321,13 @@ mod tests {
     fn reasoning_content_preserved_when_present() {
         let mut msg = assistant_with_tool_call(Some("text"), "tc-2");
         msg.reasoning_content = Some("original trace".into());
-        let out = MimoProvider.process_messages(vec![msg]).unwrap();
-        assert_eq!(out[0].reasoning_content.as_deref(), Some("original trace"));
+        let mut r = req("mimo-v2.5-pro");
+        r.messages = vec![msg];
+        MimoProvider.finalize_request(&mut r, &None);
+        assert_eq!(
+            r.messages[0].reasoning_content.as_deref(),
+            Some("original trace")
+        );
     }
 
     #[test]

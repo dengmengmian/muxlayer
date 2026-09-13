@@ -21,10 +21,10 @@ pub fn token_dir() -> PathBuf {
     if let Some(dir) = crate::compat::env_value("MUXLAYER_DB_PATH", "AGENTGATE_DB_PATH") {
         return PathBuf::from(dir);
     }
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_default();
-    crate::compat::default_cli_data_dir(std::path::Path::new(&home))
+    // 无 HOME / USERPROFILE 时沿用旧行为回落到相对目录(与 serve 的数据目录一致);
+    // 写 token 前 write_token_file 会把它转成基于 cwd 的绝对路径。
+    let home = crate::fsutil::home_dir().unwrap_or_default();
+    crate::compat::default_cli_data_dir(&home)
 }
 
 /// Get the token file path.
@@ -95,21 +95,26 @@ pub fn ensure_token() -> Result<String, AppError> {
     })?;
 
     let token = generate_token();
-    fs::write(&path, &token).map_err(|e| {
+    write_token_file(&path, &token).map_err(|e| {
         AppError::new(
             crate::errors::codes::LOCAL_ACCESS_TOKEN_GENERATE_FAILED,
             format!("Cannot write token file: {e}"),
         )
     })?;
 
-    // Set file permissions to 0600 on Unix
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
-    }
-
     Ok(token)
+}
+
+/// token 文件从创建起就是 0600(原子写 + OpenOptions mode),不存在先 0644 写入
+/// 再 chmod 的窗口。token_dir 在无 HOME 的 headless 环境可能是相对路径(与
+/// serve 的数据目录回落一致),这里先按 cwd 转成绝对路径再写。
+fn write_token_file(path: &std::path::Path, token: &str) -> std::io::Result<()> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    crate::fsutil::atomic_write(&absolute, token.as_bytes(), Some(0o600))
 }
 
 /// Read the current token. Returns error if not found.
@@ -136,6 +141,19 @@ pub fn read_token() -> Result<String, AppError> {
 
 /// Regenerate the token. Old token is immediately invalidated.
 pub fn regenerate_token() -> Result<String, AppError> {
+    regenerate_token_with_env(env_token())
+}
+
+/// `env` 为环境变量注入的 token。env 模式下 token 由部署方管理:写文件不会生效
+/// (read_token 永远优先 env),必须明确报错,不能假装已重新生成。
+fn regenerate_token_with_env(env: Option<String>) -> Result<String, AppError> {
+    if env.is_some() {
+        return Err(AppError::new(
+            crate::errors::codes::LOCAL_ACCESS_TOKEN_REGENERATE_FAILED,
+            "Token is managed by environment variable MUXLAYER_TOKEN / AGENTGATE_TOKEN; \
+             change or unset it and restart to rotate the token",
+        ));
+    }
     let dir = token_dir();
     fs::create_dir_all(&dir).map_err(|e| {
         AppError::new(
@@ -146,18 +164,12 @@ pub fn regenerate_token() -> Result<String, AppError> {
 
     let token = generate_token();
     let path = token_path();
-    fs::write(&path, &token).map_err(|e| {
+    write_token_file(&path, &token).map_err(|e| {
         AppError::new(
             crate::errors::codes::LOCAL_ACCESS_TOKEN_REGENERATE_FAILED,
             format!("Cannot write token: {e}"),
         )
     })?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
-    }
 
     Ok(token)
 }
@@ -231,6 +243,46 @@ mod tests {
         let t2 = regenerate_token().unwrap();
         assert_ne!(t1, t2);
         assert!(t2.starts_with(TOKEN_PREFIX));
+        cleanup(&temp);
+    }
+
+    /// 回归:MUXLAYER_TOKEN / AGENTGATE_TOKEN 生效时,regenerate 只写了文件,
+    /// 环境变量仍然优先 → UI 显示「已重新生成」但旧 token 继续可用。
+    #[test]
+    fn regenerate_refuses_when_token_comes_from_env() {
+        let _guard = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let temp = setup_temp_home();
+        let err = regenerate_token_with_env(Some("ag_local_from_env".to_string())).unwrap_err();
+        assert_eq!(err.code, "LOCAL_ACCESS_TOKEN_REGENERATE_FAILED");
+        assert!(err.message.contains("MUXLAYER_TOKEN"), "{}", err.message);
+        assert!(
+            !token_path().exists(),
+            "must not write a token file that never takes effect"
+        );
+        cleanup(&temp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn token_file_is_owner_only_after_ensure_and_regenerate() {
+        use std::os::unix::fs::PermissionsExt;
+        let _guard = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let temp = setup_temp_home();
+        ensure_token().unwrap();
+        let mode = std::fs::metadata(token_path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+        std::fs::set_permissions(token_path(), std::fs::Permissions::from_mode(0o644)).unwrap();
+        regenerate_token_with_env(None).unwrap();
+        let mode = std::fs::metadata(token_path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
         cleanup(&temp);
     }
 

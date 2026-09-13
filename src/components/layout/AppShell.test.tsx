@@ -77,3 +77,39 @@ describe("AppShell", () => {
     ).not.toBeInTheDocument();
   });
 });
+
+function Boom(): never {
+  throw new Error("page crashed");
+}
+
+describe("AppShell error boundary", () => {
+  beforeEach(() => {
+    __resetGlobalStoresForTest();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    useProviders.setState({ items: [], loading: false, error: null });
+    useGatewayStatus.setState({
+      value: { running: true, host: "127.0.0.1", port: 8080 } as GatewayStatus,
+      loading: false,
+      error: null,
+    });
+  });
+
+  it("keeps sidebar and topbar when a routed page throws", async () => {
+    await act(async () => {
+      renderWithProviders(
+        <Routes>
+          <Route path="/" element={<AppShell />}>
+            <Route path="/tools" element={<Boom />} />
+          </Route>
+        </Routes>,
+        { route: "/tools" }
+      );
+    });
+
+    expect(screen.getByText("page crashed")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Overview" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Back to overview" })
+    ).toBeInTheDocument();
+  });
+});

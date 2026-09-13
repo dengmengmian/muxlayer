@@ -33,7 +33,7 @@ export function GeminiDetail({
   );
 
   return (
-    <div className="rounded-xl border border-border bg-card p-5">
+    <div className="surface-panel p-5">
       <DetailHeader
         clientId="gemini_cli"
         name={t("tools.gemini_cli")}

@@ -4,6 +4,10 @@ use crate::errors::AppError;
 
 /// 当前 schema 版本。每加一段新迁移就 +1,放到 `run_versioned_migrations`
 /// 里 match 上对应的 version。读 `PRAGMA user_version` 决定该跑哪些。
+///
+/// **只加 nullable / 带默认值列的改动不要 bump**:2.0.5 及更早版本遇到更高的
+/// user_version 会拒绝启动,bump 会让降级用户打不开库。这类列放到
+/// `ensure_additive_columns` 里用 has_column 幂等补齐。
 const CURRENT_SCHEMA_VERSION: u32 = 12;
 
 fn get_user_version(conn: &Connection) -> Result<u32, AppError> {
@@ -38,11 +42,20 @@ pub fn run_migrations(conn: &Connection) -> Result<(), AppError> {
     }
 
     if current < 1 {
-        legacy_baseline_v1(conn)?;
-        set_user_version(conn, 1)?;
+        run_versioned_step(conn, 1, legacy_baseline_v1)?;
     }
 
     run_versioned_migrations(conn, current.max(1))?;
+
+    let tx = conn.unchecked_transaction()?;
+    ensure_additive_columns(&tx)?;
+    // 每次启动都补齐 catalog 新增模型的默认价(INSERT OR IGNORE,幂等)。
+    // 之前只在 legacy_baseline_v1(新装)里跑,存量用户永远拿不到新模型默认价,
+    // cost 一直 NULL、预算闸门看不到花费。
+    // 历史 NULL cost 的回填不在这里做:大库全表扫描会拖慢启动,改由启动后的后台任务
+    // 调 `pricing::backfill_costs`(此时所有列已就绪,每次启动重试直到补完)。
+    crate::storage::pricing::ensure_defaults(&tx)?;
+    tx.commit()?;
 
     // 防御性自检:跑完所有迁移后,user_version 必须等于 CURRENT_SCHEMA_VERSION。
     // 不等说明加了新 version 但忘了在 `run_versioned_migrations` 里 set_user_version,
@@ -56,136 +69,198 @@ pub fn run_migrations(conn: &Connection) -> Result<(), AppError> {
     Ok(())
 }
 
+/// 一个版本步骤 + user_version bump 放在同一事务里(SQLite 的 ALTER / CREATE /
+/// PRAGMA user_version 都是事务性的):中途失败整体回滚,不会留下"列已加、版本未 bump"
+/// 的半截状态导致下次启动 duplicate column。
+fn run_versioned_step(
+    conn: &Connection,
+    version: u32,
+    f: impl FnOnce(&Connection) -> Result<(), AppError>,
+) -> Result<(), AppError> {
+    let tx = conn.unchecked_transaction()?;
+    f(&tx)?;
+    set_user_version(&tx, version)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// 列是否已存在(用 pragma table_info,避免依赖 prepare 失败的副作用)。
+fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, AppError> {
+    let mut stmt = conn.prepare("SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2")?;
+    Ok(stmt.exists(rusqlite::params![table, column])?)
+}
+
+/// 缺列才 ALTER ADD。≤2.0.5 的迁移不在事务里,多列步骤可能只加了前几列就中断,
+/// 所以每一列都要单独判断,不能只看第一列。table / column / decl 均为内部常量。
+fn add_column_if_missing(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    decl: &str,
+) -> Result<(), AppError> {
+    if !has_column(conn, table, column)? {
+        conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl};"))?;
+    }
+    Ok(())
+}
+
+/// 不 bump 版本的纯新增列,每次启动幂等补齐(见 CURRENT_SCHEMA_VERSION 注释)。
+fn ensure_additive_columns(conn: &Connection) -> Result<(), AppError> {
+    // 缓存 token 单价(nullable)。NULL 时按 Anthropic 口径默认倍率推算
+    // (读 = input×0.1,写 = input×1.25),见 pricing::ModelPrice。
+    // 2.0.5 读 model_pricing 用显式列名,多出这两列不影响降级后打开。
+    add_column_if_missing(conn, "model_pricing", "cache_read_price", "REAL")?;
+    add_column_if_missing(conn, "model_pricing", "cache_write_price", "REAL")?;
+    Ok(())
+}
+
 /// 新迁移按 version 分支。
 fn run_versioned_migrations(conn: &Connection, from_version: u32) -> Result<(), AppError> {
     if from_version < 2 {
-        // v2:Codex remote compaction v2 本地实现的两个开关字段。
-        // 默认 enabled=1(开)+ summary_max_tokens=1500。
-        // legacy_baseline_v1 已经创了 gateway_settings 表,这里只加列。
-        conn.execute_batch(
-            "ALTER TABLE gateway_settings ADD COLUMN codex_compact_enabled INTEGER NOT NULL DEFAULT 1;
-             ALTER TABLE gateway_settings ADD COLUMN codex_compact_summary_max_tokens INTEGER NOT NULL DEFAULT 1500;",
-        )?;
-        set_user_version(conn, 2)?;
+        run_versioned_step(conn, 2, |conn| {
+            // v2:Codex remote compaction v2 本地实现的两个开关字段。
+            // 默认 enabled=1(开)+ summary_max_tokens=1500。
+            // legacy_baseline_v1 已经创了 gateway_settings 表,这里只加列。
+            // 逐列幂等:兼容旧实现两条 ALTER 之间失败留下的半截 schema。
+            if !has_column(conn, "gateway_settings", "codex_compact_enabled")? {
+                conn.execute_batch(
+                "ALTER TABLE gateway_settings ADD COLUMN codex_compact_enabled INTEGER NOT NULL DEFAULT 1;",
+            )?;
+            }
+            if !has_column(conn, "gateway_settings", "codex_compact_summary_max_tokens")? {
+                conn.execute_batch(
+                "ALTER TABLE gateway_settings ADD COLUMN codex_compact_summary_max_tokens INTEGER NOT NULL DEFAULT 1500;",
+            )?;
+            }
+            Ok(())
+        })?;
     }
     if from_version < 3 {
-        // v3:per-model 上下文窗口覆盖({model_id → window_tokens} JSON)。
-        // 用户在 UI 覆盖 catalog 内置窗口;auto_compact 据此算自压缩阈值。
-        conn.execute_batch("ALTER TABLE providers ADD COLUMN model_context_windows TEXT;")?;
-        set_user_version(conn, 3)?;
+        run_versioned_step(conn, 3, |conn| {
+            // v3:per-model 上下文窗口覆盖({model_id → window_tokens} JSON)。
+            // 用户在 UI 覆盖 catalog 内置窗口;auto_compact 据此算自压缩阈值。
+            if !has_column(conn, "providers", "model_context_windows")? {
+                conn.execute_batch("ALTER TABLE providers ADD COLUMN model_context_windows TEXT;")?;
+            }
+            Ok(())
+        })?;
     }
     if from_version < 4 {
-        // v4:(source, timestamp) 复合索引。Dashboard 的"按策略成本"等查询带
-        // `WHERE source='gateway' AND timestamp >= ?`,此前只有单列 timestamp 索引,
-        // 时间区间内所有 source 的行(含数万条 session 用量)都要回表过滤 source。
-        // 复合索引让 gateway 行的时间区间被直接定位,大库冷缓存首屏明显变快。
-        conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_request_logs_source_timestamp
+        run_versioned_step(conn, 4, |conn| {
+            // v4:(source, timestamp) 复合索引。Dashboard 的"按策略成本"等查询带
+            // `WHERE source='gateway' AND timestamp >= ?`,此前只有单列 timestamp 索引,
+            // 时间区间内所有 source 的行(含数万条 session 用量)都要回表过滤 source。
+            // 复合索引让 gateway 行的时间区间被直接定位,大库冷缓存首屏明显变快。
+            conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_request_logs_source_timestamp
                 ON request_logs(source, timestamp);",
-        )?;
-        set_user_version(conn, 4)?;
+            )?;
+            Ok(())
+        })?;
     }
     if from_version < 5 {
-        // v5:lifetime 统计的覆盖索引。get_stats / get_runtime_kpis 每 5s 对全表
-        // SUM(tokens/cost/cache),而 request_logs 行含数 KB 的 trace_json,全表扫
-        // 等于读整个库文件(实测 306MB 库:74ms 热缓存,冷缓存秒级)。覆盖索引把
-        // 聚合需要的窄列单独存一份(~3MB),实测同查询降到 15ms 且冷缓存不再读大行。
-        conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_request_logs_stats
+        run_versioned_step(conn, 5, |conn| {
+            // v5:lifetime 统计的覆盖索引。get_stats / get_runtime_kpis 每 5s 对全表
+            // SUM(tokens/cost/cache),而 request_logs 行含数 KB 的 trace_json,全表扫
+            // 等于读整个库文件(实测 306MB 库:74ms 热缓存,冷缓存秒级)。覆盖索引把
+            // 聚合需要的窄列单独存一份(~3MB),实测同查询降到 15ms 且冷缓存不再读大行。
+            conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_request_logs_stats
                 ON request_logs(source, timestamp, status_code, latency_ms,
                                 input_tokens, output_tokens, cost,
                                 cache_write_tokens, cache_read_tokens);",
-        )?;
-        set_user_version(conn, 5)?;
+            )?;
+            Ok(())
+        })?;
     }
     if from_version < 6 {
-        // v6:今日花费预警的开关 + 阈值。带幂等守卫——之前这两列错误地塞在
-        // legacy_baseline_v1 里(只对全新 DB 跑),已 current>=1 的存量用户漏列、
-        // 升级后 get() 崩;此处补回。守卫还能兼容"曾被手动加过列"的 DB,避免
-        // 重复 ALTER 报错。
-        let has_cost_alert = conn
-            .prepare("SELECT cost_alert_enabled FROM gateway_settings LIMIT 0")
-            .is_ok();
-        if !has_cost_alert {
-            conn.execute_batch(
-                "ALTER TABLE gateway_settings ADD COLUMN cost_alert_enabled INTEGER NOT NULL DEFAULT 0;
-                 ALTER TABLE gateway_settings ADD COLUMN cost_alert_threshold REAL;",
+        run_versioned_step(conn, 6, |conn| {
+            // v6:今日花费预警的开关 + 阈值。带幂等守卫——之前这两列错误地塞在
+            // legacy_baseline_v1 里(只对全新 DB 跑),已 current>=1 的存量用户漏列、
+            // 升级后 get() 崩;此处补回。守卫还能兼容"曾被手动加过列"的 DB,避免
+            // 重复 ALTER 报错。
+            add_column_if_missing(
+                conn,
+                "gateway_settings",
+                "cost_alert_enabled",
+                "INTEGER NOT NULL DEFAULT 0",
             )?;
-        }
-        set_user_version(conn, 6)?;
+            add_column_if_missing(conn, "gateway_settings", "cost_alert_threshold", "REAL")?;
+            Ok(())
+        })?;
     }
     if from_version < 7 {
-        let has_request_body_limit = conn
-            .prepare("SELECT request_body_limit_mb FROM gateway_settings LIMIT 0")
-            .is_ok();
-        if !has_request_body_limit {
-            conn.execute_batch(
-                "ALTER TABLE gateway_settings ADD COLUMN request_body_limit_mb INTEGER NOT NULL DEFAULT 32;",
+        run_versioned_step(conn, 7, |conn| {
+            add_column_if_missing(
+                conn,
+                "gateway_settings",
+                "request_body_limit_mb",
+                "INTEGER NOT NULL DEFAULT 32",
             )?;
-        }
-        set_user_version(conn, 7)?;
+            Ok(())
+        })?;
     }
     if from_version < 8 {
-        let has_wake = conn
-            .prepare("SELECT wake_enabled FROM gateway_settings LIMIT 0")
-            .is_ok();
-        if !has_wake {
-            conn.execute_batch(
-                "ALTER TABLE gateway_settings ADD COLUMN wake_enabled INTEGER NOT NULL DEFAULT 1;
-                 ALTER TABLE gateway_settings ADD COLUMN wake_request_control INTEGER NOT NULL DEFAULT 0;
-                 ALTER TABLE gateway_settings ADD COLUMN wake_cooldown_seconds INTEGER NOT NULL DEFAULT 900;
-                 ALTER TABLE gateway_settings ADD COLUMN wake_keep_display_awake INTEGER NOT NULL DEFAULT 0;",
-            )?;
-        }
-        set_user_version(conn, 8)?;
+        run_versioned_step(conn, 8, |conn| {
+            for (column, decl) in [
+                ("wake_enabled", "INTEGER NOT NULL DEFAULT 1"),
+                ("wake_request_control", "INTEGER NOT NULL DEFAULT 0"),
+                ("wake_cooldown_seconds", "INTEGER NOT NULL DEFAULT 900"),
+                ("wake_keep_display_awake", "INTEGER NOT NULL DEFAULT 0"),
+            ] {
+                add_column_if_missing(conn, "gateway_settings", column, decl)?;
+            }
+            Ok(())
+        })?;
     }
     if from_version < 9 {
-        // v9: daily spend hard gate (block / force_cheapest). Separate from cost_alert
-        // (notify-only). Idempotent for DBs that already got manual columns.
-        let has_budget = conn
-            .prepare("SELECT cost_budget_enabled FROM gateway_settings LIMIT 0")
-            .is_ok();
-        if !has_budget {
-            conn.execute_batch(
-                "ALTER TABLE gateway_settings ADD COLUMN cost_budget_enabled INTEGER NOT NULL DEFAULT 0;
-                 ALTER TABLE gateway_settings ADD COLUMN cost_budget_threshold REAL;
-                 ALTER TABLE gateway_settings ADD COLUMN cost_budget_strategy TEXT NOT NULL DEFAULT 'notify_only';",
-            )?;
-        }
-        set_user_version(conn, 9)?;
+        run_versioned_step(conn, 9, |conn| {
+            // v9: daily spend hard gate (block / force_cheapest). Separate from cost_alert
+            // (notify-only). Idempotent for DBs that already got manual columns.
+            for (column, decl) in [
+                ("cost_budget_enabled", "INTEGER NOT NULL DEFAULT 0"),
+                ("cost_budget_threshold", "REAL"),
+                (
+                    "cost_budget_strategy",
+                    "TEXT NOT NULL DEFAULT 'notify_only'",
+                ),
+            ] {
+                add_column_if_missing(conn, "gateway_settings", column, decl)?;
+            }
+            Ok(())
+        })?;
     }
     if from_version < 10 {
-        // v10: auto-compact user knobs (enabled + context usage %). Env vars still override.
-        let has_compact = conn
-            .prepare("SELECT auto_compact_enabled FROM gateway_settings LIMIT 0")
-            .is_ok();
-        if !has_compact {
-            conn.execute_batch(
-                "ALTER TABLE gateway_settings ADD COLUMN auto_compact_enabled INTEGER NOT NULL DEFAULT 1;
-                 ALTER TABLE gateway_settings ADD COLUMN auto_compact_usage_percent INTEGER NOT NULL DEFAULT 85;",
+        run_versioned_step(conn, 10, |conn| {
+            // v10: auto-compact user knobs (enabled + context usage %). Env vars still override.
+            add_column_if_missing(
+                conn,
+                "gateway_settings",
+                "auto_compact_enabled",
+                "INTEGER NOT NULL DEFAULT 1",
             )?;
-        }
-        set_user_version(conn, 10)?;
+            add_column_if_missing(
+                conn,
+                "gateway_settings",
+                "auto_compact_usage_percent",
+                "INTEGER NOT NULL DEFAULT 85",
+            )?;
+            Ok(())
+        })?;
     }
     if from_version < 11 {
-        // v11: outbound HTTP proxy + request_logs columns used by hot-path queries.
-        let has_proxy = conn
-            .prepare("SELECT outbound_proxy_enabled FROM gateway_settings LIMIT 0")
-            .is_ok();
-        if !has_proxy {
-            conn.execute_batch(
-                "ALTER TABLE gateway_settings ADD COLUMN outbound_proxy_enabled INTEGER NOT NULL DEFAULT 0;
-                 ALTER TABLE gateway_settings ADD COLUMN outbound_proxy_url TEXT;",
+        run_versioned_step(conn, 11, |conn| {
+            // v11: outbound HTTP proxy + request_logs columns used by hot-path queries.
+            add_column_if_missing(
+                conn,
+                "gateway_settings",
+                "outbound_proxy_enabled",
+                "INTEGER NOT NULL DEFAULT 0",
             )?;
-        }
-        let has_route_col = conn
-            .prepare("SELECT route_profile_id FROM request_logs LIMIT 0")
-            .is_ok();
-        if !has_route_col {
-            conn.execute_batch("ALTER TABLE request_logs ADD COLUMN route_profile_id TEXT;")?;
-        }
-        conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_request_logs_session_id
+            add_column_if_missing(conn, "gateway_settings", "outbound_proxy_url", "TEXT")?;
+            add_column_if_missing(conn, "request_logs", "route_profile_id", "TEXT")?;
+            conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_request_logs_session_id
                 ON request_logs(session_id)
                 WHERE session_id IS NOT NULL AND session_id != '';
              CREATE INDEX IF NOT EXISTS idx_request_logs_route_profile_id
@@ -194,21 +269,25 @@ fn run_versioned_migrations(conn: &Connection, from_version: u32) -> Result<(), 
              UPDATE request_logs
                 SET route_profile_id = json_extract(trace_json, '$.route_decision.profile_id')
               WHERE (route_profile_id IS NULL OR route_profile_id = '')
-                AND trace_json IS NOT NULL;",
-        )?;
-        set_user_version(conn, 11)?;
+                AND trace_json IS NOT NULL
+                AND json_valid(trace_json);",
+            )?;
+            Ok(())
+        })?;
     }
     if from_version < 12 {
-        // v12: 路由模板回滚快照。每条 route profile 最多保留一份「套用模板前」的成员。
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS route_template_snapshots (
+        run_versioned_step(conn, 12, |conn| {
+            // v12: 路由模板回滚快照。每条 route profile 最多保留一份「套用模板前」的成员。
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS route_template_snapshots (
                 route_profile_id TEXT PRIMARY KEY,
                 template_id TEXT NOT NULL,
                 snapshot_json TEXT NOT NULL,
                 applied_at TEXT NOT NULL
              );",
-        )?;
-        set_user_version(conn, 12)?;
+            )?;
+            Ok(())
+        })?;
     }
     Ok(())
 }
@@ -420,16 +499,14 @@ fn legacy_baseline_v1(conn: &Connection) -> Result<(), AppError> {
 
     // Migration: provider_runtime_status 加主动健康探测列。
     // 这些列只反映后台探测结果，仅用于展示，绝不参与路由（available/cooldown 才参与）。
-    let has_probe: bool = conn
-        .prepare("SELECT last_probe_ok FROM provider_runtime_status LIMIT 0")
-        .is_ok();
-    if !has_probe {
-        conn.execute_batch(
-            "ALTER TABLE provider_runtime_status ADD COLUMN last_probe_ok INTEGER;
-             ALTER TABLE provider_runtime_status ADD COLUMN last_probe_at TEXT;
-             ALTER TABLE provider_runtime_status ADD COLUMN last_probe_latency_ms INTEGER;
-             ALTER TABLE provider_runtime_status ADD COLUMN last_probe_error TEXT;",
-        )?;
+    // 逐列判断:旧版不在事务里跑,四列可能只加了一部分。
+    for (column, decl) in [
+        ("last_probe_ok", "INTEGER"),
+        ("last_probe_at", "TEXT"),
+        ("last_probe_latency_ms", "INTEGER"),
+        ("last_probe_error", "TEXT"),
+    ] {
+        add_column_if_missing(conn, "provider_runtime_status", column, decl)?;
     }
 
     // Migration: gateway_settings.health_probe_enabled —— 后台健康探测开关，默认关。
@@ -468,9 +545,8 @@ fn legacy_baseline_v1(conn: &Connection) -> Result<(), AppError> {
         )?;
     }
 
-    // Backfill cost for logs that have tokens but no cost (runs on every startup,
-    // catches newly added pricing defaults and previously unmatched models)
-    let _ = crate::storage::pricing::backfill_costs(conn);
+    // 历史 cost 回填不在 baseline 里做:此时 source / cache_* 列还没加,回填 SQL 必然
+    // 失败且之后不再重试。改由启动后的后台任务在所有列就绪后执行(见 pricing::backfill_costs)。
 
     // Phase 7: config_backups table
     conn.execute_batch(
@@ -694,6 +770,121 @@ fn legacy_baseline_v1(conn: &Connection) -> Result<(), AppError> {
             "INSERT INTO pet_settings (id, pet_type, visible, pos_x, pos_y) VALUES (1, 'robot', 1, 100.0, 100.0)",
             [],
         )?;
+    }
+
+    Ok(())
+}
+
+fn seed_default_providers(conn: &Connection) -> Result<(), AppError> {
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM providers", [], |row| row.get(0))?;
+    if count > 0 {
+        return Ok(());
+    }
+
+    let now = chrono::Utc::now().to_rfc3339();
+
+    conn.execute(
+        "INSERT INTO providers (id, name, provider_type, base_url, default_model, reasoning_model, supported_models, anthropic_base_url, protocol, timeout_seconds, status, enabled, is_active, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1, 1, ?12, ?12)",
+        rusqlite::params![
+            uuid::Uuid::new_v4().to_string(),
+            "DeepSeek",
+            "deepseek",
+            "https://api.deepseek.com",
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+            r#"["deepseek-v4-flash","deepseek-v4-pro"]"#,
+            "https://api.deepseek.com/anthropic",
+            r#"["openai_chat_completions","anthropic_messages"]"#,
+            120,
+            "not_tested",
+            &now,
+        ],
+    )?;
+
+    // Set active_provider_id in gateway_settings
+    let active_id: Option<String> = conn
+        .query_row(
+            "SELECT id FROM providers WHERE is_active = 1 LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+
+    if let Some(id) = active_id {
+        conn.execute(
+            "UPDATE gateway_settings SET active_provider_id = ?1, updated_at = ?2 WHERE id = 1",
+            rusqlite::params![&id, &now],
+        )?;
+    }
+
+    Ok(())
+}
+
+fn seed_default_route_profile(conn: &Connection) -> Result<(), AppError> {
+    let now = chrono::Utc::now().to_rfc3339();
+
+    let active_provider_id: Option<String> = conn
+        .query_row(
+            "SELECT id FROM providers WHERE is_active = 1 LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+
+    let mut stmt = conn.prepare(
+        "SELECT id FROM providers WHERE enabled = 1 ORDER BY is_active DESC, created_at ASC",
+    )?;
+    let provider_ids: Vec<String> = stmt
+        .query_map([], |row| row.get(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let default_codes = serde_json::json!([402, 429, 500, 502, 503, 504]).to_string();
+    let default_kw = serde_json::json!([
+        "quota",
+        "insufficient balance",
+        "rate limit",
+        "too many requests",
+        "timeout"
+    ])
+    .to_string();
+
+    // Seed one default profile per protocol (skip if already exists for that protocol)
+    let profiles = [
+        ("Codex Default", "openai_responses"),
+        ("Claude Code Default", "anthropic_messages"),
+        ("Chat Completions Default", "openai_chat_completions"),
+    ];
+
+    for (name, protocol) in profiles {
+        let exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM route_profiles WHERE input_protocol = ?1",
+            [protocol],
+            |row| row.get(0),
+        )?;
+        if exists > 0 {
+            continue;
+        }
+
+        let profile_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO route_profiles (id, name, client_type, input_protocol, mode, active_provider_id, enabled, is_default, created_at, updated_at)
+             VALUES (?1, ?2, '', ?3, 'manual', ?4, 1, 1, ?5, ?5)",
+            rusqlite::params![&profile_id, name, protocol, &active_provider_id, &now],
+        )?;
+
+        for (i, pid) in provider_ids.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO route_profile_providers (id, route_profile_id, provider_id, priority, enabled, max_retries, cooldown_seconds, failover_on_status_codes, failover_on_error_keywords, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, 1, 0, 600, ?5, ?6, ?7, ?7)",
+                rusqlite::params![uuid::Uuid::new_v4().to_string(), &profile_id, pid, (i + 1) as i64, &default_codes, &default_kw, &now],
+            )?;
+            conn.execute(
+                "INSERT OR IGNORE INTO provider_runtime_status (provider_id, available, consecutive_failures, quota_exhausted, updated_at) VALUES (?1, 1, 0, 0, ?2)",
+                rusqlite::params![pid, &now],
+            )?;
+        }
     }
 
     Ok(())
@@ -1109,119 +1300,275 @@ mod tests {
             .prepare("SELECT route_profile_id FROM request_logs LIMIT 0")
             .is_ok());
     }
-}
 
-fn seed_default_providers(conn: &Connection) -> Result<(), AppError> {
-    let count: i64 = conn.query_row("SELECT COUNT(*) FROM providers", [], |row| row.get(0))?;
-    if count > 0 {
-        return Ok(());
-    }
-
-    let now = chrono::Utc::now().to_rfc3339();
-
-    conn.execute(
-        "INSERT INTO providers (id, name, provider_type, base_url, default_model, reasoning_model, supported_models, anthropic_base_url, protocol, timeout_seconds, status, enabled, is_active, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1, 1, ?12, ?12)",
-        rusqlite::params![
-            uuid::Uuid::new_v4().to_string(),
-            "DeepSeek",
-            "deepseek",
-            "https://api.deepseek.com",
-            "deepseek-v4-flash",
-            "deepseek-v4-pro",
-            r#"["deepseek-v4-flash","deepseek-v4-pro"]"#,
-            "https://api.deepseek.com/anthropic",
-            r#"["openai_chat_completions","anthropic_messages"]"#,
-            120,
-            "not_tested",
-            &now,
-        ],
-    )?;
-
-    // Set active_provider_id in gateway_settings
-    let active_id: Option<String> = conn
-        .query_row(
-            "SELECT id FROM providers WHERE is_active = 1 LIMIT 1",
-            [],
-            |row| row.get(0),
+    #[test]
+    fn partially_applied_v2_is_recovered() {
+        // 复现:v2 两条 ALTER 之间失败,第一列已加但 user_version 仍是 1。
+        // 旧实现下次启动报 "duplicate column" 且永远起不来。
+        let conn = Connection::open_in_memory().unwrap();
+        legacy_baseline_v1(&conn).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE gateway_settings ADD COLUMN codex_compact_enabled INTEGER NOT NULL DEFAULT 1;",
         )
-        .ok();
+        .unwrap();
+        set_user_version(&conn, 1).unwrap();
 
-    if let Some(id) = active_id {
-        conn.execute(
-            "UPDATE gateway_settings SET active_provider_id = ?1, updated_at = ?2 WHERE id = 1",
-            rusqlite::params![&id, &now],
-        )?;
+        run_migrations(&conn).expect("部分应用的 v2 必须能继续迁移");
+        assert_eq!(get_user_version(&conn).unwrap(), CURRENT_SCHEMA_VERSION);
+        assert!(crate::storage::gateway_settings::get(&conn).is_ok());
     }
 
-    Ok(())
-}
-
-fn seed_default_route_profile(conn: &Connection) -> Result<(), AppError> {
-    let now = chrono::Utc::now().to_rfc3339();
-
-    let active_provider_id: Option<String> = conn
-        .query_row(
-            "SELECT id FROM providers WHERE is_active = 1 LIMIT 1",
-            [],
-            |row| row.get(0),
+    #[test]
+    fn partially_applied_v3_is_recovered() {
+        let conn = Connection::open_in_memory().unwrap();
+        legacy_baseline_v1(&conn).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE gateway_settings ADD COLUMN codex_compact_enabled INTEGER NOT NULL DEFAULT 1;
+             ALTER TABLE gateway_settings ADD COLUMN codex_compact_summary_max_tokens INTEGER NOT NULL DEFAULT 1500;
+             ALTER TABLE providers ADD COLUMN model_context_windows TEXT;",
         )
-        .ok();
+        .unwrap();
+        set_user_version(&conn, 2).unwrap();
+        run_migrations(&conn).expect("已存在 model_context_windows 列时 v3 应幂等");
+        assert_eq!(get_user_version(&conn).unwrap(), CURRENT_SCHEMA_VERSION);
+    }
 
-    let mut stmt = conn.prepare(
-        "SELECT id FROM providers WHERE enabled = 1 ORDER BY is_active DESC, created_at ASC",
-    )?;
-    let provider_ids: Vec<String> = stmt
-        .query_map([], |row| row.get(0))?
-        .filter_map(|r| r.ok())
-        .collect();
+    #[test]
+    fn failed_version_step_rolls_back_schema_and_version() {
+        // 每个版本步骤 + user_version bump 在同一事务:失败时既不留半截 schema,也不 bump。
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        conn.execute_batch("DROP TABLE route_template_snapshots;")
+            .unwrap();
+        set_user_version(&conn, 11).unwrap();
+        let err = run_versioned_step(&conn, 12, |c| {
+            c.execute_batch(
+                "CREATE TABLE route_template_snapshots (route_profile_id TEXT PRIMARY KEY);",
+            )?;
+            Err(AppError::internal("injected failure"))
+        });
+        assert!(err.is_err());
+        assert_eq!(get_user_version(&conn).unwrap(), 11);
+        assert!(
+            conn.prepare("SELECT 1 FROM route_template_snapshots")
+                .is_err(),
+            "失败步骤里建的表必须回滚"
+        );
+        assert!(conn.is_autocommit());
+    }
 
-    let default_codes = serde_json::json!([402, 429, 500, 502, 503, 504]).to_string();
-    let default_kw = serde_json::json!([
-        "quota",
-        "insufficient balance",
-        "rate limit",
-        "too many requests",
-        "timeout"
-    ])
-    .to_string();
+    #[test]
+    fn v11_backfill_tolerates_malformed_trace_json() {
+        // trace_json 超过 1MB 时会被截断并追加标记,变成非法 JSON;
+        // json_extract 对非法 JSON 直接报错,会让 v11 迁移失败、应用无法启动。
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS idx_request_logs_route_profile_id;
+             ALTER TABLE request_logs DROP COLUMN route_profile_id;
+             INSERT INTO request_logs (id, request_id, timestamp, trace_json)
+               VALUES ('bad', 'bad', '2026-01-01T00:00:00+00:00', '{\"route_decision\":{\"profile_id\":\"rp');
+             INSERT INTO request_logs (id, request_id, timestamp, trace_json)
+               VALUES ('ok', 'ok', '2026-01-01T00:00:00+00:00', '{\"route_decision\":{\"profile_id\":\"rp1\"}}');",
+        )
+        .unwrap();
+        set_user_version(&conn, 10).unwrap();
+        run_migrations(&conn).expect("非法 trace_json 不应阻塞迁移");
+        let rp: Option<String> = conn
+            .query_row(
+                "SELECT route_profile_id FROM request_logs WHERE id = 'ok'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rp.as_deref(), Some("rp1"));
+    }
 
-    // Seed one default profile per protocol (skip if already exists for that protocol)
-    let profiles = [
-        ("Codex Default", "openai_responses"),
-        ("Claude Code Default", "anthropic_messages"),
-        ("Chat Completions Default", "openai_chat_completions"),
-    ];
+    #[test]
+    fn migrations_add_cache_price_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        assert!(conn
+            .prepare("SELECT cache_read_price, cache_write_price FROM model_pricing LIMIT 0")
+            .is_ok());
+    }
 
-    for (name, protocol) in profiles {
-        let exists: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM route_profiles WHERE input_protocol = ?1",
-            [protocol],
-            |row| row.get(0),
-        )?;
-        if exists > 0 {
-            continue;
-        }
-
-        let profile_id = uuid::Uuid::new_v4().to_string();
+    #[test]
+    fn existing_db_gets_new_default_prices_on_startup_and_backfill_fills_costs() {
+        // 复现:ensure_defaults 只在 legacy_baseline_v1(新装)里跑,存量用户永远拿不到
+        // catalog 新增模型的默认价,cost 一直 NULL,预算闸门失明。
+        // 迁移只负责补默认价(幂等、快);历史 cost 回填由启动后的后台任务做,不挡启动。
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
         conn.execute(
-            "INSERT INTO route_profiles (id, name, client_type, input_protocol, mode, active_provider_id, enabled, is_default, created_at, updated_at)
-             VALUES (?1, ?2, '', ?3, 'manual', ?4, 1, 1, ?5, ?5)",
-            rusqlite::params![&profile_id, name, protocol, &active_provider_id, &now],
-        )?;
+            "DELETE FROM model_pricing WHERE id = 'default_deepseek_deepseek-v4-pro'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO request_logs (id, request_id, timestamp, provider, model, input_tokens, output_tokens, cost, source)
+             VALUES ('r', 'r', '2026-01-01T00:00:00+00:00', 'deepseek', 'deepseek-v4-pro', 1000, 500, NULL, 'gateway')",
+            [],
+        )
+        .unwrap();
+        assert!(crate::storage::pricing::get_price(&conn, "deepseek", "deepseek-v4-pro").is_none());
 
-        for (i, pid) in provider_ids.iter().enumerate() {
-            conn.execute(
-                "INSERT INTO route_profile_providers (id, route_profile_id, provider_id, priority, enabled, max_retries, cooldown_seconds, failover_on_status_codes, failover_on_error_keywords, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, 1, 0, 600, ?5, ?6, ?7, ?7)",
-                rusqlite::params![uuid::Uuid::new_v4().to_string(), &profile_id, pid, (i + 1) as i64, &default_codes, &default_kw, &now],
-            )?;
-            conn.execute(
-                "INSERT OR IGNORE INTO provider_runtime_status (provider_id, available, consecutive_failures, quota_exhausted, updated_at) VALUES (?1, 1, 0, 0, ?2)",
-                rusqlite::params![pid, &now],
-            )?;
+        run_migrations(&conn).unwrap();
+
+        assert!(crate::storage::pricing::get_price(&conn, "deepseek", "deepseek-v4-pro").is_some());
+        let cost = |conn: &Connection| -> Option<f64> {
+            conn.query_row("SELECT cost FROM request_logs WHERE id = 'r'", [], |r| {
+                r.get(0)
+            })
+            .unwrap()
+        };
+        assert!(cost(&conn).is_none(), "迁移本身不做全表回填");
+        assert_eq!(crate::storage::pricing::backfill_costs(&conn).unwrap(), 1);
+        assert!(cost(&conn).is_some(), "后台回填应补上历史 NULL cost");
+    }
+
+    #[test]
+    fn very_old_schema_upgrade_then_backfill_fills_costs() {
+        // 1.3.x 以前的库:request_logs 还没有 cost / source / cache_* 列,user_version=0。
+        // 回填曾在 baseline 里、source 与 cache 列加上之前执行,必然报错且之后不再重试。
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE request_logs (
+                id TEXT PRIMARY KEY, request_id TEXT NOT NULL, timestamp TEXT NOT NULL,
+                client TEXT, provider TEXT, model TEXT, route TEXT, status_code INTEGER,
+                latency_ms INTEGER, input_tokens INTEGER, output_tokens INTEGER,
+                raw_request TEXT, converted_request TEXT, raw_response TEXT,
+                converted_response TEXT, sse_events TEXT, tool_calls TEXT, error_message TEXT
+             );
+             INSERT INTO request_logs (id, request_id, timestamp, provider, model, input_tokens, output_tokens)
+             VALUES ('old', 'old', '2025-01-01T00:00:00+00:00', 'deepseek', 'deepseek-v4-pro', 1000, 500);",
+        )
+        .unwrap();
+        assert_eq!(get_user_version(&conn).unwrap(), 0);
+
+        run_migrations(&conn).expect("超老 schema 必须能升级");
+        let updated = crate::storage::pricing::backfill_costs(&conn).expect("列齐后回填不应报错");
+        assert_eq!(updated, 1);
+        let (inp, out) =
+            crate::storage::pricing::get_price(&conn, "deepseek", "deepseek-v4-pro").unwrap();
+        let cost: f64 = conn
+            .query_row("SELECT cost FROM request_logs WHERE id = 'old'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!((cost - (1000.0 * inp + 500.0 * out) / 1e6).abs() < 1e-12);
+        assert_eq!(
+            crate::storage::pricing::backfill_costs(&conn).unwrap(),
+            0,
+            "幂等"
+        );
+    }
+
+    #[test]
+    fn partially_applied_multi_column_steps_are_recovered() {
+        // ≤2.0.5 迁移不在事务里:多列步骤可能只加了第一列就崩溃,user_version 未 bump。
+        // 旧守卫只看第一列,会跳过整步,之后 gateway_settings::get() 报 no such column。
+        let cases: &[(u32, &str, &[&str])] = &[
+            (6, "gateway_settings", &["cost_alert_threshold"]),
+            (
+                8,
+                "gateway_settings",
+                &[
+                    "wake_request_control",
+                    "wake_cooldown_seconds",
+                    "wake_keep_display_awake",
+                ],
+            ),
+            (
+                9,
+                "gateway_settings",
+                &["cost_budget_threshold", "cost_budget_strategy"],
+            ),
+            (10, "gateway_settings", &["auto_compact_usage_percent"]),
+            (11, "gateway_settings", &["outbound_proxy_url"]),
+        ];
+        for (step, table, dropped) in cases {
+            let conn = Connection::open_in_memory().unwrap();
+            run_migrations(&conn).unwrap();
+            for col in dropped.iter() {
+                conn.execute_batch(&format!("ALTER TABLE {table} DROP COLUMN {col};"))
+                    .unwrap();
+            }
+            set_user_version(&conn, step - 1).unwrap();
+
+            run_migrations(&conn)
+                .unwrap_or_else(|e| panic!("v{step} 半截状态必须能继续迁移: {}", e.message));
+            for col in dropped.iter() {
+                assert!(
+                    has_column(&conn, table, col).unwrap(),
+                    "v{step} 应补回缺失列 {col}"
+                );
+            }
+            assert_eq!(get_user_version(&conn).unwrap(), CURRENT_SCHEMA_VERSION);
+            crate::storage::gateway_settings::get(&conn)
+                .unwrap_or_else(|e| panic!("v{step} 恢复后 get() 必须成功: {}", e.message));
         }
     }
 
-    Ok(())
+    #[test]
+    fn partially_applied_baseline_probe_columns_are_recovered() {
+        // baseline 的健康探测四列同样是一次 execute_batch,旧版可能只加了第一列。
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE provider_runtime_status DROP COLUMN last_probe_at;
+             ALTER TABLE provider_runtime_status DROP COLUMN last_probe_latency_ms;
+             ALTER TABLE provider_runtime_status DROP COLUMN last_probe_error;",
+        )
+        .unwrap();
+        set_user_version(&conn, 0).unwrap();
+        run_migrations(&conn).expect("baseline 半截状态必须能继续迁移");
+        for col in ["last_probe_at", "last_probe_latency_ms", "last_probe_error"] {
+            assert!(
+                has_column(&conn, "provider_runtime_status", col).unwrap(),
+                "{col}"
+            );
+        }
+    }
+
+    #[test]
+    fn schema_version_stays_12_so_v205_can_still_open_db() {
+        // 2.0.5 遇到 user_version > 12 会拒绝启动(桌面端 setup panic)。缓存单价两列
+        // 只是 nullable 新列,不 bump 版本,用幂等补列,保证用户降级回 2.0.5 仍能打开库。
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        assert_eq!(get_user_version(&conn).unwrap(), 12);
+        assert!(has_column(&conn, "model_pricing", "cache_read_price").unwrap());
+        assert!(has_column(&conn, "model_pricing", "cache_write_price").unwrap());
+
+        let schema = |conn: &Connection| -> Vec<String> {
+            conn.prepare("SELECT COALESCE(sql, '') FROM sqlite_master ORDER BY type, name")
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        let before = schema(&conn);
+        run_migrations(&conn).unwrap();
+        assert_eq!(get_user_version(&conn).unwrap(), 12);
+        assert_eq!(schema(&conn), before, "第二次跑迁移应无 schema 变化");
+    }
+
+    #[test]
+    fn v12_db_without_cache_price_columns_gets_them() {
+        // 2.0.5 创建的库:user_version=12,model_pricing 没有缓存单价列。
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE model_pricing DROP COLUMN cache_read_price;
+             ALTER TABLE model_pricing DROP COLUMN cache_write_price;",
+        )
+        .unwrap();
+        set_user_version(&conn, 12).unwrap();
+        run_migrations(&conn).unwrap();
+        assert_eq!(get_user_version(&conn).unwrap(), 12);
+        assert!(has_column(&conn, "model_pricing", "cache_read_price").unwrap());
+        assert!(has_column(&conn, "model_pricing", "cache_write_price").unwrap());
+    }
 }

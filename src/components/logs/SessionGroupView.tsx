@@ -84,7 +84,7 @@ export function SessionGroupView({
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center gap-2 rounded-xl border border-border bg-card py-16 text-xs text-text-muted">
+      <div className="surface-panel flex items-center justify-center gap-2 py-16 text-xs text-text-muted">
         <Loader2 className="h-4 w-4 animate-spin" />
         {t("common.loading")}
       </div>
@@ -125,7 +125,7 @@ export function SessionGroupView({
             const totalTok = row.input_tokens + row.output_tokens;
             return (
               <li key={row.session_id}>
-                <div className="group rounded-xl border border-border bg-card p-4 shadow-sm transition-colors hover:border-accent/30 hover:bg-hover/40">
+                <div className="surface-panel group p-4 transition-colors hover:border-accent/30 hover:bg-hover/40">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <button
                       type="button"
@@ -203,7 +203,7 @@ export function SessionGroupView({
                             usage: row,
                           })
                         }
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-2.5 py-1.5 text-[11px] font-medium text-white transition-colors hover:bg-accent/90"
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-2.5 py-1.5 text-xs font-medium text-on-accent transition-colors hover:bg-accent/90"
                       >
                         <MessageSquare className="h-3.5 w-3.5" />
                         {t("logs.session_open_convo")}

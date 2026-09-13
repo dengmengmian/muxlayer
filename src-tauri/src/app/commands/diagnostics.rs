@@ -63,26 +63,33 @@ pub fn run_route_profile_check(
     Ok(crate::diagnostics::checks::route_profile_check(&state.db))
 }
 
+/// 全量自检要跑多条 SQL + 读客户端配置文件,放到 blocking 线程。
 #[tauri::command]
 #[specta::specta]
-pub fn run_full_self_test(
+pub async fn run_full_self_test(
     state: State<'_, AppState>,
 ) -> Result<crate::diagnostics::report::FullSelfTestReport, AppError> {
-    Ok(crate::diagnostics::checks::full_self_test(&state.db))
+    let db = state.db.clone();
+    super::run_blocking(move || Ok(crate::diagnostics::checks::full_self_test(&db))).await
 }
 
+/// 导出诊断包包含全量自检 + 写多个文件,同样不占主线程。
 #[tauri::command]
 #[specta::specta]
-pub fn export_diagnostic_bundle(
+pub async fn export_diagnostic_bundle(
     include_logs: Option<bool>,
     max_logs: Option<u32>,
     state: State<'_, AppState>,
 ) -> Result<crate::diagnostics::report::ExportResult, AppError> {
-    crate::diagnostics::checks::export_bundle(
-        &state.db,
-        include_logs.unwrap_or(true),
-        max_logs.unwrap_or(50) as usize,
-    )
+    let db = state.db.clone();
+    super::run_blocking(move || {
+        crate::diagnostics::checks::export_bundle(
+            &db,
+            include_logs.unwrap_or(true),
+            max_logs.unwrap_or(50) as usize,
+        )
+    })
+    .await
 }
 
 #[tauri::command]

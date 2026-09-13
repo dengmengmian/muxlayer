@@ -271,4 +271,156 @@ describe("Routes", () => {
       await screen.findByText("routes.template_title")
     ).toBeInTheDocument();
   });
+  it("keeps the clicked profile when an older poll resolves last", async () => {
+    const named = (id: string, name: string) => ({
+      ...profileDetail(id),
+      profile: { ...profile(id), name },
+    });
+    vi.mocked(api.listRouteProfiles).mockResolvedValue([
+      named("r1", "Route One").profile,
+      named("r2", "Route Two").profile,
+    ]);
+    let r1Calls = 0;
+    let resolveStaleR1: ((d: any) => void) | null = null;
+    vi.mocked(api.getRouteProfile).mockImplementation((id) => {
+      if (id === "r2") return Promise.resolve(named("r2", "Route Two"));
+      r1Calls += 1;
+      if (r1Calls === 1) return Promise.resolve(named("r1", "Route One"));
+      return new Promise((resolve) => {
+        resolveStaleR1 = resolve;
+      });
+    });
+
+    render(
+      <MemoryRouter>
+        <Routes />
+      </MemoryRouter>
+    );
+    const profileButton = async (name: string) =>
+      (await screen.findByText(new RegExp(`^${name} · `))).closest("button")!;
+    await waitFor(async () =>
+      expect(await profileButton("Route One")).toHaveClass("border-accent/40")
+    );
+
+    // 轮询在读 r1 详情时挂起，用户点了 r2。
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await waitFor(() => expect(resolveStaleR1).not.toBeNull());
+    await act(async () => (await profileButton("Route Two")).click());
+    await waitFor(async () =>
+      expect(await profileButton("Route Two")).toHaveClass("border-accent/40")
+    );
+
+    await act(async () => {
+      resolveStaleR1!(named("r1", "Route One"));
+    });
+    expect(await profileButton("Route Two")).toHaveClass("border-accent/40");
+    expect(await profileButton("Route One")).not.toHaveClass(
+      "border-accent/40"
+    );
+  });
+  it("does not restart a slow poll on later ticks and applies its result", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(api.listRouteProfiles).mockResolvedValue([profile("r1")]);
+      const pending: ((d: any) => void)[] = [];
+      let detailCalls = 0;
+      vi.mocked(api.getRouteProfile).mockImplementation(() => {
+        detailCalls += 1;
+        if (detailCalls === 1) return Promise.resolve(profileDetail("r1"));
+        return new Promise((resolve) => {
+          pending.push(resolve);
+        });
+      });
+
+      render(
+        <MemoryRouter>
+          <Routes />
+        </MemoryRouter>
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(detailCalls).toBe(1);
+
+      // 第一个轮询 tick 发出的详情请求比 10s 周期还慢。
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      expect(detailCalls).toBe(2);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      expect(detailCalls).toBe(2);
+
+      await act(async () => {
+        pending[0]({
+          ...profileDetail("r1"),
+          profile: { ...profile("r1"), name: "Slow Poll Name" },
+        });
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByText("Slow Poll Name")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("keeps the clicked profile when a poll resumes before its detail arrives", async () => {
+    const named = (id: string, name: string) => ({
+      ...profileDetail(id),
+      profile: { ...profile(id), name },
+    });
+    const list = [
+      named("r1", "Route One").profile,
+      named("r2", "Route One B").profile,
+    ];
+    let listCalls = 0;
+    let resolvePollList: ((v: any) => void) | null = null;
+    vi.mocked(api.listRouteProfiles).mockImplementation(() => {
+      listCalls += 1;
+      if (listCalls === 1) return Promise.resolve(list);
+      return new Promise((resolve) => {
+        resolvePollList = resolve;
+      });
+    });
+    let r2Calls = 0;
+    let resolveClickR2: ((d: any) => void) | null = null;
+    vi.mocked(api.getRouteProfile).mockImplementation((id) => {
+      if (id === "r1") return Promise.resolve(named("r1", "Route One"));
+      r2Calls += 1;
+      if (r2Calls > 1) return Promise.resolve(named("r2", "Route One B"));
+      return new Promise((resolve) => {
+        resolveClickR2 = resolve;
+      });
+    });
+
+    render(
+      <MemoryRouter>
+        <Routes />
+      </MemoryRouter>
+    );
+    const profileButton = async (name: string) =>
+      (await screen.findByText(new RegExp(`^${name} · `))).closest("button")!;
+    await waitFor(async () =>
+      expect(await profileButton("Route One")).toHaveClass("border-accent/40")
+    );
+
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await waitFor(() => expect(resolvePollList).not.toBeNull());
+    await act(async () => (await profileButton("Route One B")).click());
+    await waitFor(() => expect(resolveClickR2).not.toBeNull());
+
+    await act(async () => {
+      resolvePollList!(list);
+    });
+    await act(async () => {
+      resolveClickR2!(named("r2", "Route One B"));
+    });
+    await waitFor(async () =>
+      expect(await profileButton("Route One B")).toHaveClass("border-accent/40")
+    );
+  });
 });

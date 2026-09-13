@@ -8,7 +8,7 @@ export function SummaryTile({
   hint: string;
 }) {
   return (
-    <div className="rounded-xl border border-border bg-card p-4">
+    <div className="surface-panel p-4">
       <p className="text-[10px] uppercase tracking-wide text-text-muted">
         {label}
       </p>

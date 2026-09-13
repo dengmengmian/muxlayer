@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# 先做最便宜的版本号一致性检查(以 package.json 为准),不一致就别浪费时间 build 镜像。
+# 发版流水线里 preflight job 另外会用 tag 版本再查一次。
+bash "$(dirname "${BASH_SOURCE[0]}")/check-version-consistency.sh"
+
 image_name="${AGENTGATE_PREFLIGHT_IMAGE:-agentgate-preflight}"
 container_name="${AGENTGATE_PREFLIGHT_CONTAINER:-agentgate-preflight}"
 host_port="${AGENTGATE_PREFLIGHT_PORT:-19090}"

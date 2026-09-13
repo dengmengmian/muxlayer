@@ -89,7 +89,7 @@ export function UpdateChecker() {
             </button>
             <button
               onClick={handleUpdate}
-              className="rounded bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent/80"
+              className="rounded bg-accent px-3 py-1 text-xs font-medium text-on-accent hover:bg-accent/80"
             >
               {t("update.now")}
             </button>

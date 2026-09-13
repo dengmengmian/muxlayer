@@ -10,6 +10,7 @@
 // **错误处理**: bindings 命令返回 Promise<Result<T, AppError>>。`unwrap`
 // helper 把 ok 拆出 T，error 直接 throw AppError，让旧调用方继续 try/catch。
 import { commands as bindings } from "./bindings";
+import type * as Bindings from "./bindings";
 import type { Result } from "./bindings";
 
 // re-export narrow union types & legacy hand-typed types from types/
@@ -42,6 +43,25 @@ async function unwrap<T>(promise: Promise<Result<T, unknown>>): Promise<T> {
   const r = await promise;
   if (r.status === "ok") return r.data;
   throw normalizeError(r.error);
+}
+
+// ── Input boundary ─────────────────────────────────────────────
+
+type NullableKeys<B> = {
+  [K in keyof B]-?: null extends B[K] ? K : never;
+}[keyof B];
+
+/// bindings 把 Rust `Option<T>` 映射成必填的 `T | null`；前端 input 类型
+/// （src/types/*.ts）允许省略这些字段。非 Option 字段仍然必填——Rust 端新增
+/// 必填字段、或把 Option 改成必填时，这里的调用点会编译失败。
+export type BindingsInput<B> = Omit<B, NullableKeys<B>> & {
+  [K in NullableKeys<B>]?: B[K] | undefined;
+};
+
+/// serde 把缺省的 Option 字段反序列化为 None，与显式 null 等价，所以运行时
+/// 原样透传；类型检查由 BindingsInput<B> 完成。
+function toBindingsInput<B>(input: BindingsInput<B>): B {
+  return input as B;
 }
 
 // ── Re-export bindings types so call sites don't have to import twice ─
@@ -163,11 +183,22 @@ export const getProviderKeys = (id: string) =>
   unwrap(bindings.getProviderKeys(id));
 export const createProvider = (
   input: import("@/types/provider").CreateProviderInput
-) => unwrap(bindings.createProvider(input as never));
+) =>
+  unwrap(
+    bindings.createProvider(
+      toBindingsInput<Bindings.CreateProviderInput>(input)
+    )
+  );
 export const updateProvider = (
   id: string,
   input: import("@/types/provider").UpdateProviderInput
-) => unwrap(bindings.updateProvider(id, input as never));
+) =>
+  unwrap(
+    bindings.updateProvider(
+      id,
+      toBindingsInput<Bindings.UpdateProviderInput>(input)
+    )
+  );
 export const deleteProvider = (id: string) =>
   unwrap(bindings.deleteProvider(id));
 export const setActiveProvider = (id: string) =>
@@ -203,7 +234,12 @@ export const getGatewayStatus = () => unwrap(bindings.getGatewayStatus());
 export const getGatewaySettings = () => unwrap(bindings.getGatewaySettings());
 export const updateGatewaySettings = (
   input: import("@/types/gateway").UpdateGatewaySettingsInput
-) => unwrap(bindings.updateGatewaySettings(input as never));
+) =>
+  unwrap(
+    bindings.updateGatewaySettings(
+      toBindingsInput<Bindings.UpdateGatewaySettingsInput>(input)
+    )
+  );
 export const getWakeStatus = () => unwrap(bindings.getWakeStatus());
 export const startGateway = () => unwrap(bindings.startGateway());
 export const stopGateway = () => unwrap(bindings.stopGateway());
@@ -213,7 +249,10 @@ export const restartGateway = () => unwrap(bindings.restartGateway());
 
 export const listRequestLogs = (
   filter: import("@/types/request-log").RequestLogFilter
-) => unwrap(bindings.listRequestLogs(filter as never));
+) =>
+  unwrap(
+    bindings.listRequestLogs(toBindingsInput<Bindings.RequestLogFilter>(filter))
+  );
 export const listLogModels = () => unwrap(bindings.listLogModels());
 export const getSessionConversation = (sessionId: string) =>
   unwrap(bindings.getSessionConversation(sessionId));
@@ -221,7 +260,12 @@ export const deleteSession = (sessionId: string) =>
   unwrap(bindings.deleteSession(sessionId));
 export const countRequestLogs = (
   filter: import("@/types/request-log").RequestLogFilter
-) => unwrap(bindings.countRequestLogs(filter as never));
+) =>
+  unwrap(
+    bindings.countRequestLogs(
+      toBindingsInput<Bindings.RequestLogFilter>(filter)
+    )
+  );
 export const getRequestLogDetail = (id: string) =>
   unwrap(bindings.getRequestLogDetail(id));
 export const clearRequestLogs = () => unwrap(bindings.clearRequestLogs());
@@ -230,7 +274,10 @@ export const aggregateRequestLogsBySession = (
   limit?: number
 ) =>
   unwrap(
-    bindings.aggregateRequestLogsBySession(filter as never, limit ?? null)
+    bindings.aggregateRequestLogsBySession(
+      toBindingsInput<Bindings.RequestLogFilter>(filter),
+      limit ?? null
+    )
   );
 export const aggregateCostByModel = (days?: number, limit?: number) =>
   unwrap(bindings.aggregateCostByModel(days ?? null, limit ?? null));
@@ -367,6 +414,7 @@ export const killClientProcess = (clientId: string, pid: number) =>
 /// for now; on other platforms returns `supported: false` and the UI hides
 /// the button.
 export const restartCodexDesktop = () => unwrap(bindings.restartCodexDesktop());
+export const codexDesktopAvailable = () => bindings.codexDesktopAvailable();
 
 // ── Client apply history ───────────────────────────────────────
 
@@ -379,11 +427,11 @@ export const clientsWithApplyHistory = () =>
 export const listMcpServers = () => unwrap(bindings.listMcpServers());
 export const upsertMcpServer = (
   input: import("./bindings").UpsertMcpServerInput
-) => unwrap(bindings.upsertMcpServer(input as never));
+) => unwrap(bindings.upsertMcpServer(input));
 export const deleteMcpServer = (client: string, name: string) =>
   unwrap(bindings.deleteMcpServer(client, name));
 export const syncMcpServer = (input: import("./bindings").SyncMcpServerInput) =>
-  unwrap(bindings.syncMcpServer(input as never));
+  unwrap(bindings.syncMcpServer(input));
 export const exportMcpServers = (includeSecrets: boolean) =>
   unwrap(bindings.exportMcpServers(includeSecrets));
 export const importMcpServers = (payload: string, targetClients: string[]) =>
@@ -440,11 +488,22 @@ export const getRouteProfile = (id: string) =>
   unwrap(bindings.getRouteProfile(id));
 export const createRouteProfile = (
   input: import("@/types/route-profile").CreateRouteProfileInput
-) => unwrap(bindings.createRouteProfile(input as never));
+) =>
+  unwrap(
+    bindings.createRouteProfile(
+      toBindingsInput<Bindings.CreateRouteProfileInput>(input)
+    )
+  );
 export const updateRouteProfile = (
   id: string,
   input: import("@/types/route-profile").UpdateRouteProfileInput
-) => unwrap(bindings.updateRouteProfile(id, input as never));
+) =>
+  unwrap(
+    bindings.updateRouteProfile(
+      id,
+      toBindingsInput<Bindings.UpdateRouteProfileInput>(input)
+    )
+  );
 export const deleteRouteProfile = (id: string) =>
   unwrap(bindings.deleteRouteProfile(id));
 export const setDefaultRouteProfile = (id: string) =>
@@ -461,7 +520,11 @@ export const addProviderToRoute = (
   input: import("@/types/route-profile").AddProviderToRouteInput
 ) =>
   unwrap(
-    bindings.addProviderToRoute(routeProfileId, providerId, input as never)
+    bindings.addProviderToRoute(
+      routeProfileId,
+      providerId,
+      toBindingsInput<Bindings.AddProviderToRouteInput>(input)
+    )
   );
 export const removeProviderFromRoute = (
   routeProfileId: string,
@@ -604,7 +667,9 @@ export const updatePetSettings = async (
   input: import("@/types/pet").UpdatePetSettingsInput
 ): Promise<PetSettingsNarrow> =>
   (await unwrap(
-    bindings.updatePetSettings(input as never)
+    bindings.updatePetSettings(
+      toBindingsInput<Bindings.UpdatePetSettingsInput>(input)
+    )
   )) as PetSettingsNarrow;
 
 export const setPetVisible = async (
@@ -629,7 +694,7 @@ export const getPetChatHistory = () => unwrap(bindings.getPetChatHistory());
 export const savePetChatHistory = (history: string) =>
   unwrap(bindings.savePetChatHistory(history));
 export const petChat = (messages: Array<{ role: string; content: string }>) =>
-  unwrap(bindings.petChat(messages as never));
+  unwrap(bindings.petChat(messages));
 export const petOpenSettings = () => unwrap(bindings.petOpenSettings());
 export const getPetClickThrough = () => unwrap(bindings.getPetClickThrough());
 export const setPetClickThrough = (value: boolean) =>

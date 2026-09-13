@@ -519,17 +519,24 @@ pub fn thinking_to_reasoning_effort(thinking: &Value) -> Option<String> {
 /// Anthropic client（Claude Code）期望 `input_tokens` / `output_tokens` /
 /// `cache_creation_input_tokens` / `cache_read_input_tokens`——原样塞
 /// `prompt_tokens` / `completion_tokens` 客户端会显示 token 为 0。
-fn remap_usage_to_anthropic(chat_usage: Option<&Value>) -> Value {
+pub(crate) fn remap_usage_to_anthropic(chat_usage: Option<&Value>) -> Value {
     let Some(u) = chat_usage else {
         return serde_json::json!({});
     };
-    let mut out = serde_json::json!({
-        "input_tokens": u.get("prompt_tokens").or_else(|| u.get("input_tokens")).and_then(|v| v.as_i64()).unwrap_or(0),
-        "output_tokens": u.get("completion_tokens").or_else(|| u.get("output_tokens")).and_then(|v| v.as_i64()).unwrap_or(0),
-    });
     // Cache 字段：OpenAI 在 prompt_tokens_details.cached_tokens（只读）；
     // Anthropic 直接给 cache_read_input_tokens / cache_creation_input_tokens。
     let (cw, cr) = crate::storage::request_logs::extract_cache_tokens(u);
+    // OpenAI 语义的 prompt_tokens 已包含 cached_tokens；Anthropic 的 input_tokens
+    // 不含 cache_read。Claude Code 会把 input + cache_read + cache_creation 相加算
+    // 上下文，不扣减会看到约 2× 上下文而提前 auto-compact。
+    let input_tokens = match u.get("prompt_tokens").and_then(|v| v.as_i64()) {
+        Some(prompt) => (prompt - cr.unwrap_or(0)).max(0),
+        None => u.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
+    };
+    let mut out = serde_json::json!({
+        "input_tokens": input_tokens,
+        "output_tokens": u.get("completion_tokens").or_else(|| u.get("output_tokens")).and_then(|v| v.as_i64()).unwrap_or(0),
+    });
     if let Some(c) = cw {
         out["cache_creation_input_tokens"] = serde_json::json!(c);
     }
@@ -864,12 +871,29 @@ mod tests {
             }
         });
         let resp = from_chat_response(&upstream, "claude-3");
-        assert_eq!(resp["usage"]["input_tokens"], 100);
+        // prompt_tokens 含 cached,转成 Anthropic 语义要扣掉
+        assert_eq!(resp["usage"]["input_tokens"], 70);
         assert_eq!(resp["usage"]["output_tokens"], 50);
         assert_eq!(resp["usage"]["cache_read_input_tokens"], 30);
         // 没有 cache_creation 字段时不应出现
         assert!(resp["usage"].get("cache_creation_input_tokens").is_none());
     }
+    #[test]
+    fn remap_usage_keeps_anthropic_shaped_input_tokens() {
+        // 上游本身就是 Anthropic 语义(input_tokens 不含 cache_read)时不扣减
+        let u = json!({"input_tokens": 100, "output_tokens": 5, "cache_read_input_tokens": 30});
+        let out = remap_usage_to_anthropic(Some(&u));
+        assert_eq!(out["input_tokens"], 100);
+        assert_eq!(out["cache_read_input_tokens"], 30);
+    }
+
+    #[test]
+    fn remap_usage_openai_cached_exceeding_prompt_floors_at_zero() {
+        let u = json!({"prompt_tokens": 10, "completion_tokens": 1, "prompt_tokens_details": {"cached_tokens": 30}});
+        let out = remap_usage_to_anthropic(Some(&u));
+        assert_eq!(out["input_tokens"], 0);
+    }
+
     #[test]
     fn from_chat_response_promotes_reasoning_content_to_thinking_block() {
         // DeepSeek-thinking / MiMo 上游返 reasoning_content，应包成 thinking

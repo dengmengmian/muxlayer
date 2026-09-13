@@ -18,6 +18,7 @@ import {
   CheckCircle2,
 } from "lucide-react";
 import * as api from "@/lib/api";
+import { formatCost } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 import { usePolling } from "@/lib/usePolling";
 import type { RuntimeKpis } from "@/types/stats";
@@ -41,12 +42,6 @@ function formatTokens(n: number): string {
   return `${(n / 1_000_000).toFixed(1)}M`;
 }
 
-function formatCost(n: number): string {
-  if (n === 0) return "$0";
-  if (n < 0.01) return `$${n.toFixed(4)}`;
-  return `$${n.toFixed(2)}`;
-}
-
 interface MetricProps {
   icon: React.ReactNode;
   label: string;
@@ -66,7 +61,7 @@ function Metric({ icon, label, value, tone = "default" }: MetricProps) {
         {icon}
       </div>
       <div className="flex min-w-0 flex-col">
-        <span className="text-[10px] uppercase tracking-wide text-text-muted">
+        <span className="text-xs uppercase tracking-wide text-text-muted">
           {label}
         </span>
         <span
@@ -103,10 +98,7 @@ export function RuntimeFooter() {
     kpis.total_requests > 0 ? `${kpis.success_rate_lifetime.toFixed(0)}%` : "—";
 
   return (
-    <div
-      className="rounded-xl border border-border bg-card px-5 py-3"
-      style={{ boxShadow: "0 12px 30px rgba(17, 24, 39, 0.05)" }}
-    >
+    <div className="rounded-lg border border-border/80 bg-card px-5 py-3">
       <div className="mb-3 flex items-center justify-between">
         <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-text-secondary">
           <span className="h-2 w-2 rounded-full bg-accent shadow-[0_0_10px_rgba(194,112,43,0.45)]" />

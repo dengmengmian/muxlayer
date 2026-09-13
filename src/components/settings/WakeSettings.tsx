@@ -16,6 +16,7 @@ interface Props {
   ToggleSwitch: React.ComponentType<{
     checked: boolean;
     onChange: (value: boolean) => void;
+    label: string;
   }>;
 }
 
@@ -86,6 +87,7 @@ export function WakeSettings({
         control={
           <ToggleSwitch
             checked={settings.wake_enabled}
+            label={t("settings.wake.enabled")}
             onChange={(value) => onUpdate({ wake_enabled: value })}
           />
         }
@@ -99,6 +101,7 @@ export function WakeSettings({
             control={
               <ToggleSwitch
                 checked={settings.wake_request_control}
+                label={t("settings.wake.request_control")}
                 onChange={(value) => onUpdate({ wake_request_control: value })}
               />
             }
@@ -134,6 +137,7 @@ export function WakeSettings({
             control={
               <ToggleSwitch
                 checked={settings.wake_keep_display_awake}
+                label={t("settings.wake.display")}
                 onChange={(value) =>
                   onUpdate({ wake_keep_display_awake: value })
                 }

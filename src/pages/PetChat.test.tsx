@@ -42,14 +42,12 @@ describe("PetChat", () => {
     render(<PetChat />);
 
     await waitFor(() => expect(api.getPetChatHistory).toHaveBeenCalled());
-    expect(screen.getByText("petchat.console")).toBeInTheDocument();
+    expect(screen.getByText("petchat.title")).toBeInTheDocument();
     expect(screen.getByText("petchat.conversation_stream")).toBeInTheDocument();
     expect(screen.getByTestId("pet-memory-panel")).toHaveClass("hidden");
     const memoryButtons = screen.getAllByText("petchat.memory_matrix");
     fireEvent.click(memoryButtons[memoryButtons.length - 1]);
     expect(screen.getByTestId("pet-memory-panel")).not.toHaveClass("hidden");
-    expect(screen.getByTestId("pet-chat-page")).toHaveStyle({
-      height: "calc(100vh - 136px)",
-    });
+    expect(screen.getByTestId("pet-chat-page")).toHaveClass("h-full");
   });
 });

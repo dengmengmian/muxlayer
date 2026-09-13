@@ -5,6 +5,8 @@ use crate::models::gateway::{GatewaySettings, UpdateGatewaySettingsInput};
 
 const MAX_REQUEST_BODY_LIMIT_MB: i64 = 128;
 const MAX_WAKE_COOLDOWN_SECONDS: i64 = 86_400;
+pub const MIN_LOG_RETENTION_DAYS: i64 = 1;
+pub const MAX_LOG_RETENTION_DAYS: i64 = 3650;
 
 pub fn get(conn: &Connection) -> Result<GatewaySettings, AppError> {
     conn.query_row(
@@ -80,6 +82,15 @@ pub fn update(
     let input_protocol = input.input_protocol.unwrap_or(existing.input_protocol);
     let output_protocol = input.output_protocol.unwrap_or(existing.output_protocol);
     let auto_start = input.auto_start.unwrap_or(existing.auto_start);
+    // 0 / 负数会让每小时的保留期清理删光全部日志,必须拒绝而不是静默改值。
+    // 只校验本次传入的值:库里历史脏值不应阻塞用户修改其它字段(清理侧另有兜底)。
+    if let Some(days) = input.log_retention_days {
+        if !(MIN_LOG_RETENTION_DAYS..=MAX_LOG_RETENTION_DAYS).contains(&days) {
+            return Err(AppError::validation(format!(
+                "log_retention_days must be between {MIN_LOG_RETENTION_DAYS} and {MAX_LOG_RETENTION_DAYS}, got {days}"
+            )));
+        }
+    }
     let log_retention_days = input
         .log_retention_days
         .unwrap_or(existing.log_retention_days);
@@ -308,7 +319,7 @@ mod tests {
         assert_eq!(updated.host, "0.0.0.0");
         assert_eq!(updated.port, 8080);
         assert_eq!(updated.input_protocol, "openai_chat_completions");
-        assert_eq!(updated.auto_start, true);
+        assert!(updated.auto_start);
         assert_eq!(updated.log_retention_days, 7);
         assert_eq!(updated.request_body_limit_mb, 32);
     }
@@ -382,5 +393,34 @@ mod tests {
         .unwrap();
 
         assert_eq!(updated.wake_cooldown_seconds, 86_400);
+    }
+
+    #[test]
+    fn log_retention_days_out_of_range_is_rejected() {
+        // 0 / 负数会让每小时清理删光全部日志;超上限无意义。拒绝而不是静默改值。
+        let conn = setup_db();
+        for bad in [0, -3, 3651] {
+            let err = update(
+                &conn,
+                UpdateGatewaySettingsInput {
+                    log_retention_days: Some(bad),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+            assert_eq!(err.code, "VALIDATION_ERROR", "value {bad}");
+        }
+        assert_eq!(get(&conn).unwrap().log_retention_days, 14, "拒绝后不落库");
+        for ok in [1, 3650] {
+            let s = update(
+                &conn,
+                UpdateGatewaySettingsInput {
+                    log_retention_days: Some(ok),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(s.log_retention_days, ok);
+        }
     }
 }

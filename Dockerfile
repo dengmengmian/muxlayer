@@ -37,8 +37,9 @@ ENV AGENTGATE_PORT=9090
 USER agentgate
 EXPOSE 9090
 
-# 编排器探活:打 /health
+# 编排器探活:打 /health。端口解析顺序与 agentgate-serve 一致:MUXLAYER_PORT 优先,
+# 其次 AGENTGATE_PORT,默认 9090。
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-    CMD curl -fsS "http://127.0.0.1:${AGENTGATE_PORT}/health" || exit 1
+    CMD curl -fsS "http://127.0.0.1:${MUXLAYER_PORT:-${AGENTGATE_PORT:-9090}}/health" || exit 1
 
 ENTRYPOINT ["agentgate-serve"]

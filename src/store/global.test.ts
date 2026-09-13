@@ -68,6 +68,32 @@ describe("global store", () => {
       expect(s.items).toEqual([]);
     });
 
+    it("fetch joins the latest in-flight request after overlapping refetches", async () => {
+      const resolvers: Array<(v: any) => void> = [];
+      vi.mocked(api.listProviders).mockImplementation(
+        () =>
+          new Promise((r) => {
+            resolvers.push(r);
+          })
+      );
+      const initial = useProviders.getState().fetch();
+      const refetchA = useProviders.getState().refetch();
+      const refetchB = useProviders.getState().refetch();
+      resolvers[0]([]);
+      await initial;
+      await vi.waitFor(() => expect(resolvers).toHaveLength(3));
+
+      // A 先完成、B 仍在飞：A 的收尾不能把 B 的 in-flight 句柄清掉。
+      resolvers[1]([{ id: "a" }]);
+      await refetchA;
+      const joined = useProviders.getState().fetch();
+      expect(api.listProviders).toHaveBeenCalledTimes(3);
+
+      resolvers[2]([{ id: "b" }]);
+      await Promise.all([refetchB, joined]);
+      expect(useProviders.getState().items).toEqual([{ id: "b" }]);
+    });
+
     it("refetch re-invokes api even after success", async () => {
       vi.mocked(api.listProviders)
         .mockResolvedValueOnce([{ id: "a" }] as any)

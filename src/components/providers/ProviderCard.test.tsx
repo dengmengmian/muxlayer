@@ -97,7 +97,7 @@ describe("ProviderCard", () => {
     expect(screen.queryByText(/Request field filter/i)).toBeNull();
 
     // Plain-language tip only after expanding details.
-    fireEvent.click(screen.getByText("Details"));
+    fireEvent.click(screen.getByText("Configuration"));
     expect(
       await screen.findByText(/If requests return 400|如果请求报 400/)
     ).toBeInTheDocument();
@@ -106,7 +106,7 @@ describe("ProviderCard", () => {
     ).toBeInTheDocument();
   });
 
-  it("fires edit, test, set active and delete callbacks", () => {
+  it("fires edit, test, set active and delete callbacks", async () => {
     const provider = makeProvider({ is_active: false });
     const onEdit = vi.fn();
     const onDelete = vi.fn();
@@ -123,6 +123,10 @@ describe("ProviderCard", () => {
       />
     );
 
+    await waitFor(() =>
+      expect(api.getProviderHealth).toHaveBeenCalledWith("DeepSeek")
+    );
+
     fireEvent.click(screen.getByRole("button", { name: /Edit/i }));
     expect(onEdit).toHaveBeenCalledWith(provider);
 
@@ -132,8 +136,32 @@ describe("ProviderCard", () => {
     fireEvent.click(screen.getByRole("button", { name: /Set Active/i }));
     expect(onSetActive).toHaveBeenCalledWith(provider);
 
+    expect(screen.queryByRole("button", { name: /Delete/i })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Configuration/i }));
     fireEvent.click(screen.getByRole("button", { name: /Delete/i }));
     expect(onDelete).toHaveBeenCalledWith(provider);
+  });
+
+  it("keeps analytics details distinct from inline configuration", () => {
+    const provider = makeProvider();
+    renderWithProviders(
+      <ProviderCard
+        provider={provider}
+        onEdit={() => {}}
+        onDelete={() => {}}
+        onSetActive={() => {}}
+        onTest={() => {}}
+        onDetails={() => {}}
+      />
+    );
+
+    expect(screen.getAllByRole("button", { name: "Details" })).toHaveLength(1);
+    const configuration = screen.getByRole("button", {
+      name: "Configuration",
+    });
+    expect(configuration).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(configuration);
+    expect(configuration).toHaveAttribute("aria-expanded", "true");
   });
 
   it("disables test button while testing", () => {
@@ -203,13 +231,13 @@ describe("ProviderCard", () => {
     );
 
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: /Details/i }));
+      fireEvent.click(screen.getByRole("button", { name: /Configuration/i }));
     });
     expect(screen.getByText(/Type/i)).toBeInTheDocument();
     expect(screen.getByText("deepseek")).toBeInTheDocument();
 
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: /Details/i }));
+      fireEvent.click(screen.getByRole("button", { name: /Configuration/i }));
     });
     expect(screen.queryByText(/Type/i)).not.toBeInTheDocument();
   });

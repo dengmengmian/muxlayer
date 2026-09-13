@@ -115,21 +115,50 @@ pub struct McpExportEnv {
     pub is_sensitive: bool,
 }
 
-fn home() -> PathBuf {
-    // Windows 没有 HOME,缺 USERPROFILE fallback 时返回空路径,
-    // MCP 配置(~/.codex/config.toml 等)全部读不到。
-    PathBuf::from(
-        std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .unwrap_or_default(),
-    )
+fn home() -> Result<PathBuf, AppError> {
+    crate::fsutil::home_dir()
+}
+
+/// 只读列表用:文件不存在 → None(没有配置);其它读取错误 → 作为 `__config__`
+/// 校验条目上报,不静默当成"没有 MCP"。
+fn read_for_listing(path: &Path, client: &str) -> Result<Option<String>, Box<McpServer>> {
+    match fs::read_to_string(path) {
+        Ok(c) => Ok(Some(c)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(Box::new(config_error_server(
+            client,
+            path.to_string_lossy().as_ref(),
+            format!("Cannot read MCP config: {e}"),
+        ))),
+    }
+}
+
+/// 写入前读取:只有文件不存在才视为空;权限 / 编码错误直接报错,绝不拿空内容覆盖。
+fn read_for_write(path: &Path) -> Result<String, AppError> {
+    crate::fsutil::read_config_or_empty(path).map_err(|e| {
+        AppError::new(
+            crate::errors::codes::MCP_CONFIG_PARSE_ERROR,
+            format!("Cannot read {}: {e}", path.display()),
+        )
+    })
+}
+
+/// JSON 配置写入前读取;空文件 / 不存在按 `{}` 处理。
+fn read_json_for_write(path: &Path) -> Result<String, AppError> {
+    let content = read_for_write(path)?;
+    Ok(if content.trim().is_empty() {
+        "{}".to_string()
+    } else {
+        content
+    })
 }
 
 fn read_codex_mcp_from_home(home: &Path) -> Vec<McpServer> {
     let path = home.join(".codex").join("config.toml");
-    let content = match fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return vec![],
+    let content = match read_for_listing(&path, "codex") {
+        Ok(Some(c)) => c,
+        Ok(None) => return vec![],
+        Err(entry) => return vec![*entry],
     };
     let doc = match content.parse::<toml_edit::DocumentMut>() {
         Ok(d) => d,
@@ -198,9 +227,10 @@ fn read_gemini_mcp_from_home(home: &Path) -> Vec<McpServer> {
 }
 
 fn read_json_mcp_servers(path: &Path, client: &str, key: &str, parse_err: &str) -> Vec<McpServer> {
-    let content = match fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(_) => return vec![],
+    let content = match read_for_listing(path, client) {
+        Ok(Some(c)) => c,
+        Ok(None) => return vec![],
+        Err(entry) => return vec![*entry],
     };
     let json: serde_json::Value = match serde_json::from_str(&content) {
         Ok(v) => v,
@@ -234,9 +264,10 @@ fn read_json_mcp_servers(path: &Path, client: &str, key: &str, parse_err: &str) 
 
 fn read_opencode_mcp_from_home(home: &Path) -> Vec<McpServer> {
     let path = home.join(".config").join("opencode").join("opencode.json");
-    let content = match fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return vec![],
+    let content = match read_for_listing(&path, "opencode") {
+        Ok(Some(c)) => c,
+        Ok(None) => return vec![],
+        Err(entry) => return vec![*entry],
     };
     let json: serde_json::Value = match serde_json::from_str(&content) {
         Ok(v) => v,
@@ -319,31 +350,39 @@ fn json_env_vars(val: &serde_json::Value) -> Vec<McpEnvVar> {
 }
 
 /// 汇总所有客户端的 MCP server。
-pub fn list_all() -> Vec<McpServer> {
-    list_all_from_home(&home())
+pub fn list_all() -> Result<Vec<McpServer>, AppError> {
+    Ok(list_all_from_home(&home()?))
 }
 
 pub fn upsert(input: UpsertMcpServerInput) -> Result<McpServer, AppError> {
-    upsert_in_home(&home(), input)
+    // 整个读 → 改 → 写期间持有客户端配置锁,防止并发命令互相覆盖(见 fsutil)。
+    let _config_lock = crate::fsutil::lock_client_configs();
+    upsert_in_home(&home()?, input)
 }
 
 pub fn delete(client: &str, name: &str) -> Result<bool, AppError> {
-    delete_in_home(&home(), client, name)
+    // 整个读 → 改 → 写期间持有客户端配置锁,防止并发命令互相覆盖(见 fsutil)。
+    let _config_lock = crate::fsutil::lock_client_configs();
+    delete_in_home(&home()?, client, name)
 }
 
 pub fn sync(input: SyncMcpServerInput) -> Result<Vec<McpServer>, AppError> {
-    sync_in_home(&home(), input)
+    // 整个读 → 改 → 写期间持有客户端配置锁,防止并发命令互相覆盖(见 fsutil)。
+    let _config_lock = crate::fsutil::lock_client_configs();
+    sync_in_home(&home()?, input)
 }
 
 pub fn export_config(include_secrets: bool) -> Result<String, AppError> {
-    export_from_home(&home(), include_secrets)
+    export_from_home(&home()?, include_secrets)
 }
 
 pub fn import_config(
     payload: &str,
     target_clients: Vec<String>,
 ) -> Result<Vec<McpServer>, AppError> {
-    import_in_home(&home(), payload, target_clients)
+    // 整个读 → 改 → 写期间持有客户端配置锁,防止并发命令互相覆盖(见 fsutil)。
+    let _config_lock = crate::fsutil::lock_client_configs();
+    import_in_home(&home()?, payload, target_clients)
 }
 
 fn list_all_from_home(home: &Path) -> Vec<McpServer> {
@@ -355,10 +394,33 @@ fn list_all_from_home(home: &Path) -> Vec<McpServer> {
 }
 
 fn upsert_in_home(home: &Path, mut input: UpsertMcpServerInput) -> Result<McpServer, AppError> {
+    normalize_client(&mut input);
+    validate_input(&input)?;
+    write_validated(home, input)
+}
+
+fn normalize_client(input: &mut UpsertMcpServerInput) {
     if input.client == "gemini_cli" {
         input.client = "gemini".into();
     }
-    validate_input(&input)?;
+}
+
+/// 批量写入(sync / import):先把全部条目校验完,任何一条不合法就一个都不写。
+fn upsert_all_in_home(
+    home: &Path,
+    mut inputs: Vec<UpsertMcpServerInput>,
+) -> Result<Vec<McpServer>, AppError> {
+    for input in &mut inputs {
+        normalize_client(input);
+        validate_input(input)?;
+    }
+    inputs
+        .into_iter()
+        .map(|input| write_validated(home, input))
+        .collect()
+}
+
+fn write_validated(home: &Path, input: UpsertMcpServerInput) -> Result<McpServer, AppError> {
     match input.client.as_str() {
         "codex" => upsert_codex(home, &input)?,
         "claude_code" => upsert_claude(home, &input)?,
@@ -402,24 +464,19 @@ fn sync_in_home(home: &Path, input: SyncMcpServerInput) -> Result<Vec<McpServer>
         ));
     }
     let source = read_raw_server(home, &input.from_client, &input.name)?;
-    let mut out = Vec::new();
-    for client in input.to_clients {
-        if client == input.from_client {
-            continue;
-        }
-        let written = upsert_in_home(
-            home,
-            UpsertMcpServerInput {
-                client,
-                name: source.name.clone(),
-                command: source.command.clone(),
-                args: source.args.clone(),
-                env: source.env.clone(),
-            },
-        )?;
-        out.push(written);
-    }
-    Ok(out)
+    let inputs = input
+        .to_clients
+        .into_iter()
+        .filter(|client| *client != input.from_client)
+        .map(|client| UpsertMcpServerInput {
+            client,
+            name: source.name.clone(),
+            command: source.command.clone(),
+            args: source.args.clone(),
+            env: source.env.clone(),
+        })
+        .collect();
+    upsert_all_in_home(home, inputs)
 }
 
 fn export_from_home(home: &Path, include_secrets: bool) -> Result<String, AppError> {
@@ -467,7 +524,7 @@ fn import_in_home(
         return Err(AppError::validation("Unsupported MCP export version"));
     }
 
-    let mut imported = Vec::new();
+    let mut inputs = Vec::new();
     for server in export.servers {
         let clients = import_clients(&target_clients, &server.clients)?;
         let env = server
@@ -481,19 +538,16 @@ fn import_in_home(
             })
             .collect::<Vec<_>>();
         for client in clients {
-            imported.push(upsert_in_home(
-                home,
-                UpsertMcpServerInput {
-                    client,
-                    name: server.name.clone(),
-                    command: server.command.clone(),
-                    args: server.args.clone(),
-                    env: env.clone(),
-                },
-            )?);
+            inputs.push(UpsertMcpServerInput {
+                client,
+                name: server.name.clone(),
+                command: server.command.clone(),
+                args: server.args.clone(),
+                env: env.clone(),
+            });
         }
     }
-    Ok(imported)
+    upsert_all_in_home(home, inputs)
 }
 
 fn is_supported_mcp_client(client: &str) -> bool {
@@ -646,9 +700,20 @@ fn validate_input(input: &UpsertMcpServerInput) -> Result<(), AppError> {
     if input.name.trim().is_empty() {
         return Err(AppError::validation("MCP server name is required"));
     }
-    if input.name.contains('.') || input.name.contains('[') || input.name.contains(']') {
+    // Codex:名字会直接拼进 `[mcp_servers.<name>]` header(裸 key),只允许
+    // TOML 裸 key 字符集;空格 / `#` / 引号 / `.` 会写出非法或错位的段。
+    // JSON 客户端(claude / gemini / opencode)的 key 可以是任意字符串,只拒绝
+    // 控制字符(换行等),让已有的 `my.server` / `@scope/pkg` 仍能编辑、同步。
+    // 只校验新写入,已有配置里不合规的名字仍可读取 / 删除。
+    if input.client == "codex" {
+        if !is_valid_codex_server_name(&input.name) {
+            return Err(AppError::validation(
+                "Codex MCP server name must be 1-64 characters of letters, digits, '_' or '-'",
+            ));
+        }
+    } else if input.name.chars().any(char::is_control) {
         return Err(AppError::validation(
-            "MCP server name must not contain '.', '[' or ']'",
+            "MCP server name must not contain control characters",
         ));
     }
     if input.command.trim().is_empty() {
@@ -664,10 +729,18 @@ fn validate_input(input: &UpsertMcpServerInput) -> Result<(), AppError> {
     Ok(())
 }
 
+/// `^[A-Za-z0-9_-]{1,64}$`
+fn is_valid_codex_server_name(name: &str) -> bool {
+    (1..=64).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
 fn upsert_codex(home: &Path, input: &UpsertMcpServerInput) -> Result<(), AppError> {
     let path = home.join(".codex").join("config.toml");
     ensure_parent(&path)?;
-    let content = fs::read_to_string(&path).unwrap_or_default();
+    let content = read_for_write(&path)?;
     let env = merge_codex_env(&content, &input.name, &input.env);
     let mut next = toml_merge::upsert_section(
         &content,
@@ -675,7 +748,7 @@ fn upsert_codex(home: &Path, input: &UpsertMcpServerInput) -> Result<(), AppErro
         &codex_server_body(input),
     );
     next = if env.is_empty() {
-        remove_toml_section(&next, &format!("mcp_servers.{}.env", input.name))
+        toml_merge::remove_section(&next, &format!("mcp_servers.{}.env", input.name))
     } else {
         toml_merge::upsert_section(
             &next,
@@ -683,38 +756,28 @@ fn upsert_codex(home: &Path, input: &UpsertMcpServerInput) -> Result<(), AppErro
             &codex_env_body(&env),
         )
     };
-    fs::write(&path, next).map_err(|e| {
-        AppError::new(
-            crate::errors::codes::MCP_CONFIG_WRITE_FAILED,
-            format!("Cannot write Codex MCP config: {e}"),
-        )
-    })
+    write_config(&path, next.as_bytes(), "Codex")
 }
 
 fn delete_codex(home: &Path, name: &str) -> Result<bool, AppError> {
     let path = home.join(".codex").join("config.toml");
-    let content = match fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return Ok(false),
-    };
-    let without_env = remove_toml_section(&content, &format!("mcp_servers.{name}.env"));
-    let next = remove_toml_section(&without_env, &format!("mcp_servers.{name}"));
+    let content = read_for_write(&path)?;
+    if content.is_empty() {
+        return Ok(false);
+    }
+    let without_env = toml_merge::remove_section(&content, &format!("mcp_servers.{name}.env"));
+    let next = toml_merge::remove_section(&without_env, &format!("mcp_servers.{name}"));
     if next == content {
         return Ok(false);
     }
-    fs::write(&path, next).map_err(|e| {
-        AppError::new(
-            crate::errors::codes::MCP_CONFIG_WRITE_FAILED,
-            format!("Cannot write Codex MCP config: {e}"),
-        )
-    })?;
+    write_config(&path, next.as_bytes(), "Codex")?;
     Ok(true)
 }
 
 fn upsert_claude(home: &Path, input: &UpsertMcpServerInput) -> Result<(), AppError> {
     let path = home.join(".claude.json");
     ensure_parent(&path)?;
-    let content = fs::read_to_string(&path).unwrap_or_else(|_| "{}".to_string());
+    let content = read_json_for_write(&path)?;
     let mut json: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
         AppError::new(
             crate::errors::codes::MCP_CONFIG_PARSE_ERROR,
@@ -739,10 +802,10 @@ fn upsert_claude(home: &Path, input: &UpsertMcpServerInput) -> Result<(), AppErr
 
 fn delete_claude(home: &Path, name: &str) -> Result<bool, AppError> {
     let path = home.join(".claude.json");
-    let content = match fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return Ok(false),
-    };
+    let content = read_for_write(&path)?;
+    if content.trim().is_empty() {
+        return Ok(false);
+    }
     let mut json: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
         AppError::new(
             crate::errors::codes::MCP_CONFIG_PARSE_ERROR,
@@ -781,7 +844,7 @@ fn upsert_json_mcp_servers(
     parse_err: &str,
 ) -> Result<(), AppError> {
     ensure_parent(path)?;
-    let content = fs::read_to_string(path).unwrap_or_else(|_| "{}".to_string());
+    let content = read_json_for_write(path)?;
     let mut json: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
         AppError::new(
             crate::errors::codes::MCP_CONFIG_PARSE_ERROR,
@@ -803,10 +866,10 @@ fn upsert_json_mcp_servers(
 }
 
 fn delete_json_mcp_servers(path: &Path, name: &str, parse_err: &str) -> Result<bool, AppError> {
-    let content = match fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(_) => return Ok(false),
-    };
+    let content = read_for_write(path)?;
+    if content.trim().is_empty() {
+        return Ok(false);
+    }
     let mut json: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
         AppError::new(
             crate::errors::codes::MCP_CONFIG_PARSE_ERROR,
@@ -826,7 +889,7 @@ fn delete_json_mcp_servers(path: &Path, name: &str, parse_err: &str) -> Result<b
 fn upsert_opencode(home: &Path, input: &UpsertMcpServerInput) -> Result<(), AppError> {
     let path = home.join(".config").join("opencode").join("opencode.json");
     ensure_parent(&path)?;
-    let content = fs::read_to_string(&path).unwrap_or_else(|_| "{}".to_string());
+    let content = read_json_for_write(&path)?;
     let mut json: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
         AppError::new(
             crate::errors::codes::MCP_CONFIG_PARSE_ERROR,
@@ -870,10 +933,10 @@ fn upsert_opencode(home: &Path, input: &UpsertMcpServerInput) -> Result<(), AppE
 
 fn delete_opencode(home: &Path, name: &str) -> Result<bool, AppError> {
     let path = home.join(".config").join("opencode").join("opencode.json");
-    let content = match fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return Ok(false),
-    };
+    let content = read_for_write(&path)?;
+    if content.trim().is_empty() {
+        return Ok(false);
+    }
     let mut json: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
         AppError::new(
             crate::errors::codes::MCP_CONFIG_PARSE_ERROR,
@@ -1119,10 +1182,15 @@ fn raw_env_from_json(env: &serde_json::Map<String, serde_json::Value>) -> Vec<Mc
 fn write_pretty_json(path: &Path, value: &serde_json::Value) -> Result<(), AppError> {
     let content = serde_json::to_string_pretty(value)
         .map_err(|e| AppError::internal(format!("serialize MCP JSON: {e}")))?;
-    fs::write(path, format!("{content}\n")).map_err(|e| {
+    write_config(path, format!("{content}\n").as_bytes(), "MCP")
+}
+
+/// 原子写 MCP 配置(保留原文件权限)。
+fn write_config(path: &Path, bytes: &[u8], label: &str) -> Result<(), AppError> {
+    crate::fsutil::atomic_write(path, bytes, None).map_err(|e| {
         AppError::new(
             crate::errors::codes::MCP_CONFIG_WRITE_FAILED,
-            format!("Cannot write Claude Code MCP config: {e}"),
+            format!("Cannot write {label} MCP config {}: {e}", path.display()),
         )
     })
 }
@@ -1134,48 +1202,6 @@ fn toml_string(value: &str) -> String {
 fn toml_string_array(values: &[String]) -> String {
     let items = values.iter().map(|v| toml_string(v)).collect::<Vec<_>>();
     format!("[{}]", items.join(", "))
-}
-
-fn remove_toml_section(content: &str, header: &str) -> String {
-    let target = format!("[{header}]");
-    let mut out = String::new();
-    let mut removed = false;
-    let mut skipping = false;
-
-    for line in content.lines() {
-        let trimmed = line.trim_start();
-        if skipping {
-            if is_toml_section_header(trimmed) {
-                skipping = false;
-            } else {
-                continue;
-            }
-        }
-        if toml_header_matches(trimmed, &target) {
-            removed = true;
-            skipping = true;
-            continue;
-        }
-        out.push_str(line);
-        out.push('\n');
-    }
-
-    if !removed {
-        return content.to_string();
-    }
-    if !content.ends_with('\n') && out.ends_with('\n') {
-        out.pop();
-    }
-    out
-}
-
-fn is_toml_section_header(trimmed: &str) -> bool {
-    trimmed.starts_with('[')
-}
-
-fn toml_header_matches(trimmed: &str, target: &str) -> bool {
-    let no_comment = trimmed.split('#').next().unwrap_or(trimmed).trim_end();
-    no_comment == target
 }
 
 fn server(
@@ -1327,7 +1353,35 @@ fn command_in_path(command: &str) -> bool {
     let Some(paths) = std::env::var_os("PATH") else {
         return false;
     };
-    std::env::split_paths(&paths).any(|dir| dir.join(command).exists())
+    let dirs: Vec<PathBuf> = std::env::split_paths(&paths).collect();
+    command_in_dirs(command, &dirs, &path_extensions())
+}
+
+/// Windows 上 `npx` 实际是 `npx.cmd`,需要按 PATHEXT 逐个补扩展名查找;
+/// 其它平台只按原名查找。
+fn path_extensions() -> Vec<String> {
+    if cfg!(windows) {
+        std::env::var("PATHEXT")
+            .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string())
+            .split(';')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    } else {
+        Vec::new()
+    }
+}
+
+fn command_in_dirs(command: &str, dirs: &[PathBuf], extensions: &[String]) -> bool {
+    dirs.iter().any(|dir| {
+        dir.join(command).is_file()
+            || extensions.iter().any(|ext| {
+                dir.join(format!("{command}{ext}")).is_file()
+                    || dir
+                        .join(format!("{command}{}", ext.to_ascii_lowercase()))
+                        .is_file()
+            })
+    })
 }
 
 #[cfg(test)]
@@ -1335,12 +1389,227 @@ mod tests {
     use super::*;
 
     #[test]
+    fn command_lookup_honours_path_extensions() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("npx.cmd"), "@echo off").unwrap();
+        let dirs = vec![temp.path().to_path_buf()];
+        assert!(!command_in_dirs("npx", &dirs, &[]));
+        assert!(command_in_dirs(
+            "npx",
+            &dirs,
+            &[".EXE".to_string(), ".CMD".to_string()]
+        ));
+        assert!(command_in_dirs("npx.cmd", &dirs, &[]));
+        assert!(!command_in_dirs("uvx", &dirs, &[".CMD".to_string()]));
+    }
+
+    #[test]
     fn home_falls_back_to_userprofile_on_windows_style_env() {
         // Windows 没有 HOME,home() 返回空路径 → MCP 配置(~/.codex/config.toml
         // 等)读取全部失败。
         crate::test_utils::with_windows_style_home(|fake| {
-            assert!(home().starts_with(fake));
+            assert!(home().unwrap().starts_with(fake));
         });
+    }
+
+    /// 回归:~/.claude.json 读不出来(权限 / 非 UTF-8)时,旧代码把它当 "{}" 写回,
+    /// 用户的 oauthAccount / projects 全丢。现在必须报错且文件原样不动。
+    #[test]
+    fn upsert_claude_refuses_to_overwrite_unreadable_config() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(".claude.json");
+        let original: &[u8] = b"{\"oauthAccount\":{\"id\":1},\"projects\":{}} \xff";
+        fs::write(&path, original).unwrap();
+        let err = upsert_in_home(
+            temp.path(),
+            UpsertMcpServerInput {
+                client: "claude_code".to_string(),
+                name: "pencil".to_string(),
+                command: "/bin/echo".to_string(),
+                args: vec![],
+                env: vec![],
+            },
+        );
+        assert!(err.is_err(), "unreadable config must abort the write");
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            original,
+            "file must stay untouched"
+        );
+    }
+
+    #[test]
+    fn upsert_json_and_opencode_refuse_to_overwrite_unreadable_config() {
+        let temp = tempfile::tempdir().unwrap();
+        let gemini = temp.path().join(".gemini").join("settings.json");
+        let opencode = temp
+            .path()
+            .join(".config")
+            .join("opencode")
+            .join("opencode.json");
+        let codex = temp.path().join(".codex").join("config.toml");
+        for p in [&gemini, &opencode, &codex] {
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, b"\xff\xfe keep me").unwrap();
+        }
+        for client in ["gemini", "opencode", "codex"] {
+            let res = upsert_in_home(
+                temp.path(),
+                UpsertMcpServerInput {
+                    client: client.to_string(),
+                    name: "fs".to_string(),
+                    command: "npx".to_string(),
+                    args: vec![],
+                    env: vec![],
+                },
+            );
+            assert!(res.is_err(), "{client}: unreadable config must abort");
+        }
+        for p in [&gemini, &opencode, &codex] {
+            assert_eq!(fs::read(p).unwrap(), b"\xff\xfe keep me");
+        }
+    }
+
+    fn input_named(client: &str, name: &str) -> UpsertMcpServerInput {
+        UpsertMcpServerInput {
+            client: client.to_string(),
+            name: name.to_string(),
+            command: "/bin/echo".to_string(),
+            args: vec![],
+            env: vec![],
+        }
+    }
+
+    /// 回归:名字里的空格 / `#` / 引号 / 换行会写出非法的 `[mcp_servers.<name>]`
+    /// header,`#` 还会让 header_matches 截断后匹配到别的段造成重复段。
+    /// 裸 key 限制只针对 Codex TOML。
+    #[test]
+    fn upsert_rejects_names_that_break_toml_headers() {
+        let temp = tempfile::tempdir().unwrap();
+        let too_long = "x".repeat(65);
+        for bad in [
+            "my server",
+            "a#b",
+            "a\"b",
+            "a\nb",
+            "a/b",
+            "a.b",
+            "@scope/pkg",
+            too_long.as_str(),
+        ] {
+            let err = upsert_in_home(temp.path(), input_named("codex", bad)).unwrap_err();
+            assert_eq!(err.code, "VALIDATION_ERROR", "codex accepted {bad:?}");
+        }
+        assert!(!temp.path().join(".codex").join("config.toml").exists());
+
+        let max = "a".repeat(64);
+        for good in ["node_repl", "fs-1", "A9", max.as_str()] {
+            upsert_in_home(temp.path(), input_named("codex", good)).unwrap();
+        }
+    }
+
+    /// JSON 客户端的 key 可以是任意字符串:已有的 `my.server` / `@scope/pkg` /
+    /// 含空格的名字必须能编辑;只拒绝空名与控制字符(换行等)。
+    #[test]
+    fn json_clients_accept_nonbare_names_but_reject_empty_and_control_chars() {
+        let temp = tempfile::tempdir().unwrap();
+        for client in ["claude_code", "gemini", "opencode"] {
+            for good in ["my.server", "my server", "@scope/pkg"] {
+                let written = upsert_in_home(temp.path(), input_named(client, good))
+                    .unwrap_or_else(|e| panic!("{client} rejected {good:?}: {}", e.message));
+                assert_eq!(written.name, good);
+            }
+            for bad in ["", "  ", "a\nb", "a\tb", "a\u{7f}b"] {
+                let err = upsert_in_home(temp.path(), input_named(client, bad)).unwrap_err();
+                assert_eq!(err.code, "VALIDATION_ERROR", "{client} accepted {bad:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn sync_json_server_with_dotted_name_between_json_clients() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join(".claude.json"),
+            r#"{"mcpServers":{"my.server":{"command":"/bin/echo"}}}"#,
+        )
+        .unwrap();
+        let out = sync_in_home(
+            temp.path(),
+            SyncMcpServerInput {
+                from_client: "claude_code".into(),
+                name: "my.server".into(),
+                to_clients: vec!["gemini".into()],
+            },
+        )
+        .unwrap();
+        assert_eq!(out[0].id, "gemini:my.server");
+    }
+
+    /// 同步到多个客户端时,任何一个目标校验不过就一个都不写。
+    #[test]
+    fn sync_validates_all_targets_before_writing() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join(".claude.json"),
+            r#"{"mcpServers":{"my.server":{"command":"/bin/echo"}}}"#,
+        )
+        .unwrap();
+        let err = sync_in_home(
+            temp.path(),
+            SyncMcpServerInput {
+                from_client: "claude_code".into(),
+                name: "my.server".into(),
+                to_clients: vec!["gemini".into(), "codex".into()],
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "VALIDATION_ERROR");
+        assert!(!temp.path().join(".gemini").join("settings.json").exists());
+        assert!(!temp.path().join(".codex").join("config.toml").exists());
+    }
+
+    /// import 先校验全部条目,任何一条不合法就什么都不写(不能写一半)。
+    #[test]
+    fn import_validates_all_entries_before_writing_anything() {
+        let temp = tempfile::tempdir().unwrap();
+        let entry = |name: &str| McpExportServer {
+            name: name.to_string(),
+            command: "/bin/echo".to_string(),
+            args: vec![],
+            env: vec![],
+            clients: vec!["claude_code".to_string(), "codex".to_string()],
+        };
+        let payload = serde_json::to_string(&McpExport {
+            version: 1,
+            servers: vec![entry("good_one"), entry("bad.name")],
+        })
+        .unwrap();
+        let err = import_in_home(temp.path(), &payload, vec![]).unwrap_err();
+        assert_eq!(err.code, "VALIDATION_ERROR");
+        assert!(!temp.path().join(".claude.json").exists());
+        assert!(!temp.path().join(".codex").join("config.toml").exists());
+
+        let payload = serde_json::to_string(&McpExport {
+            version: 1,
+            servers: vec![entry("good_one"), entry("")],
+        })
+        .unwrap();
+        assert!(import_in_home(temp.path(), &payload, vec!["claude_code".into()]).is_err());
+        assert!(!temp.path().join(".claude.json").exists());
+    }
+
+    #[test]
+    fn listing_still_reads_existing_nonconforming_names() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join(".claude.json"),
+            r#"{"mcpServers":{"my server":{"command":"/bin/echo"}}}"#,
+        )
+        .unwrap();
+        let listed = list_all_from_home(temp.path());
+        assert!(listed.iter().any(|s| s.name == "my server"));
+        assert!(delete_in_home(temp.path(), "claude_code", "my server").unwrap());
     }
 
     #[test]
@@ -1699,7 +1968,7 @@ TOKEN = "secret-token"
         assert!(!safe.contains("secret-token"));
         let safe_json: McpExport = serde_json::from_str(&safe).unwrap();
         assert_eq!(safe_json.servers[0].env[0].value, None);
-        assert_eq!(safe_json.servers[0].env[0].has_value, true);
+        assert!(safe_json.servers[0].env[0].has_value);
 
         let with_secrets = export_from_home(temp.path(), true).unwrap();
         assert!(with_secrets.contains("secret-token"));

@@ -16,6 +16,7 @@
 
 use serde::Serialize;
 
+#[cfg(any(feature = "desktop", test))]
 use crate::transform::providers as p;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq, specta::Type)]
@@ -30,6 +31,8 @@ pub struct TestDiagnostic {
     pub raw: String,
 }
 
+// 失败诊断只服务桌面端「测试连接」命令,cli 构建不编译。
+#[cfg(any(feature = "desktop", test))]
 #[derive(Default, Debug, Clone, Copy)]
 struct ProviderConsoleUrls {
     keys: Option<&'static str>,
@@ -37,6 +40,7 @@ struct ProviderConsoleUrls {
     plugin: Option<&'static str>,
 }
 
+#[cfg(any(feature = "desktop", test))]
 fn console_urls(provider_type: &str) -> ProviderConsoleUrls {
     let pt = provider_type.trim().to_ascii_lowercase();
     match pt.as_str() {
@@ -98,6 +102,7 @@ fn console_urls(provider_type: &str) -> ProviderConsoleUrls {
 /// the last attempt (None when the request never reached the upstream); `body`
 /// is the upstream's error response text; `raw_error` is the full message we
 /// would have shown without diagnosis (used as the fallback `raw` field).
+#[cfg(any(feature = "desktop", test))]
 pub fn diagnose(
     provider_type: &str,
     status: Option<u16>,

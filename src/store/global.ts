@@ -25,11 +25,9 @@ import type {
 } from "@/lib/bindings";
 import type { GatewayStatus } from "@/types/gateway";
 
-/// 一个 slice 的通用形态——把 list/single-value 都套进 `items`/`value`
-/// 仍然太异质，所以分别写两种基础类型：list 用 items: T[]，single 用
-/// value: T | null。
-interface ListSlice<T> {
-  items: T[];
+/// 一个 slice 的通用形态：list 资源放在 `items: T[]`，单值资源放在
+/// `value: T | null`，其余字段一致。
+type ResourceSlice<K extends string, V> = { [P in K]: V } & {
   loading: boolean;
   error: string | null;
   /// 首次拉取。已经 loading 时直接返回当前 in-flight promise，调用方拿到的
@@ -37,275 +35,165 @@ interface ListSlice<T> {
   fetch: () => Promise<void>;
   /// 强制重新拉取（mutation 后调用）。会 reset error、设置 loading。
   refetch: () => Promise<void>;
-}
+};
 
-interface ValueSlice<T> {
-  value: T | null;
-  loading: boolean;
-  error: string | null;
-  fetch: () => Promise<void>;
-  refetch: () => Promise<void>;
+type ListSlice<T> = ResourceSlice<"items", T[]>;
+type ValueSlice<T> = ResourceSlice<"value", T | null>;
+
+/// 5 个 slice 共用的 fetch / refetch 实现。
+///
+/// 防重入用的 in-flight promise 放在闭包里——zustand state 内放 promise 会触发
+/// 不必要的订阅者重渲染。
+function createResourceStore<
+  K extends string,
+  V,
+  Extra extends object = Record<never, never>,
+>(
+  key: K,
+  initial: V,
+  fetcher: () => Promise<V>,
+  extra?: (set: (patch: Partial<ResourceSlice<K, V>>) => void) => Extra
+) {
+  type Store = ResourceSlice<K, V> & Extra;
+  let inflight: Promise<void> | null = null;
+
+  const useStore = create<Store>()((set, get) => {
+    const patch = (next: Partial<ResourceSlice<K, V>>) =>
+      set(next as Partial<Store>);
+
+    const load = (): Promise<void> => {
+      const run = async () => {
+        patch({ loading: true, error: null } as Partial<ResourceSlice<K, V>>);
+        try {
+          const data = await fetcher();
+          patch({ [key]: data, loading: false } as Partial<
+            ResourceSlice<K, V>
+          >);
+        } catch (err) {
+          const message = (err as api.AppError)?.message ?? String(err);
+          patch({ loading: false, error: message } as Partial<
+            ResourceSlice<K, V>
+          >);
+        }
+      };
+      // 只在自己仍是当前 in-flight 时才清空：并发 refetch 时后发的请求会覆盖
+      // 句柄，先完成的请求不能把它清掉，否则后续 fetch() 会绕过防重入。
+      const promise: Promise<void> = run().finally(() => {
+        if (inflight === promise) inflight = null;
+      });
+      inflight = promise;
+      return promise;
+    };
+
+    return {
+      [key]: initial,
+      loading: false,
+      error: null,
+      fetch: async () => {
+        if (inflight) return inflight;
+        if (get().loading) return;
+        return load();
+      },
+      refetch: async () => {
+        // 先等当前 in-flight 结束再发新请求，避免与之交错写入。
+        if (inflight) {
+          await inflight;
+        }
+        return load();
+      },
+      ...(extra?.(patch) ?? {}),
+    } as Store;
+  });
+
+  const reset = () => {
+    inflight = null;
+    useStore.setState({
+      [key]: initial,
+      loading: false,
+      error: null,
+    } as Partial<Store>);
+  };
+
+  return { useStore, reset };
 }
 
 // ── providers ──────────────────────────────────────────────────────
 
-type ProvidersStore = ListSlice<ProviderView>;
-
-/// 防重入用的模块级 in-flight promise——zustand state 内放 promise 会触发不必要
-/// 的订阅者重渲染，所以单独放在模块作用域。每个 slice 一个。
-let providersInflight: Promise<void> | null = null;
-
-export const useProviders = create<ProvidersStore>((set, get) => ({
-  items: [],
-  loading: false,
-  error: null,
-  fetch: async () => {
-    if (providersInflight) return providersInflight;
-    if (get().loading) return;
-    providersInflight = (async () => {
-      set({ loading: true, error: null });
-      try {
-        const items = await api.listProviders();
-        set({ items, loading: false });
-      } catch (err) {
-        const message = (err as api.AppError)?.message ?? String(err);
-        set({ loading: false, error: message });
-      } finally {
-        providersInflight = null;
-      }
-    })();
-    return providersInflight;
-  },
-  refetch: async () => {
-    // 取消 in-flight 也复用同一个 promise 链——避免并发 refetch 互相覆盖。
-    if (providersInflight) {
-      await providersInflight;
-    }
-    providersInflight = (async () => {
-      set({ loading: true, error: null });
-      try {
-        const items = await api.listProviders();
-        set({ items, loading: false });
-      } catch (err) {
-        const message = (err as api.AppError)?.message ?? String(err);
-        set({ loading: false, error: message });
-      } finally {
-        providersInflight = null;
-      }
-    })();
-    return providersInflight;
-  },
-}));
+const providers = createResourceStore<"items", ProviderView[]>(
+  "items",
+  [],
+  () => api.listProviders()
+);
+export const useProviders = providers.useStore;
 
 // ── gateway settings ───────────────────────────────────────────────
 
-type GatewaySettingsStore = ValueSlice<GatewaySettings>;
-
-let gatewaySettingsInflight: Promise<void> | null = null;
-
-export const useGatewaySettings = create<GatewaySettingsStore>((set, get) => ({
-  value: null,
-  loading: false,
-  error: null,
-  fetch: async () => {
-    if (gatewaySettingsInflight) return gatewaySettingsInflight;
-    if (get().loading) return;
-    gatewaySettingsInflight = (async () => {
-      set({ loading: true, error: null });
-      try {
-        const value = await api.getGatewaySettings();
-        set({ value, loading: false });
-      } catch (err) {
-        const message = (err as api.AppError)?.message ?? String(err);
-        set({ loading: false, error: message });
-      } finally {
-        gatewaySettingsInflight = null;
-      }
-    })();
-    return gatewaySettingsInflight;
-  },
-  refetch: async () => {
-    if (gatewaySettingsInflight) {
-      await gatewaySettingsInflight;
-    }
-    gatewaySettingsInflight = (async () => {
-      set({ loading: true, error: null });
-      try {
-        const value = await api.getGatewaySettings();
-        set({ value, loading: false });
-      } catch (err) {
-        const message = (err as api.AppError)?.message ?? String(err);
-        set({ loading: false, error: message });
-      } finally {
-        gatewaySettingsInflight = null;
-      }
-    })();
-    return gatewaySettingsInflight;
-  },
-}));
+const gatewaySettings = createResourceStore<"value", GatewaySettings | null>(
+  "value",
+  null,
+  () => api.getGatewaySettings()
+);
+export const useGatewaySettings = gatewaySettings.useStore;
 
 // ── pricing ────────────────────────────────────────────────────────
 
-interface PricingStore extends ListSlice<ModelPricing> {
-  /// pricing 在 Settings 里需要本地 mutate（add / update / delete 即时反映），
-  /// 暴露一个 setter 让组件 mutation 后无需再次 refetch。
-  setItems: (items: ModelPricing[]) => void;
-}
-
-let pricingInflight: Promise<void> | null = null;
-
-export const usePricing = create<PricingStore>((set, get) => ({
-  items: [],
-  loading: false,
-  error: null,
-  setItems: (items) => set({ items }),
-  fetch: async () => {
-    if (pricingInflight) return pricingInflight;
-    if (get().loading) return;
-    pricingInflight = (async () => {
-      set({ loading: true, error: null });
-      try {
-        const items = await api.listModelPricing();
-        set({ items, loading: false });
-      } catch (err) {
-        const message = (err as api.AppError)?.message ?? String(err);
-        set({ loading: false, error: message });
-      } finally {
-        pricingInflight = null;
-      }
-    })();
-    return pricingInflight;
-  },
-  refetch: async () => {
-    if (pricingInflight) {
-      await pricingInflight;
-    }
-    pricingInflight = (async () => {
-      set({ loading: true, error: null });
-      try {
-        const items = await api.listModelPricing();
-        set({ items, loading: false });
-      } catch (err) {
-        const message = (err as api.AppError)?.message ?? String(err);
-        set({ loading: false, error: message });
-      } finally {
-        pricingInflight = null;
-      }
-    })();
-    return pricingInflight;
-  },
-}));
+const pricing = createResourceStore<
+  "items",
+  ModelPricing[],
+  {
+    /// pricing 在 Settings 里需要本地 mutate（add / update / delete 即时反映），
+    /// 暴露一个 setter 让组件 mutation 后无需再次 refetch。
+    setItems: (items: ModelPricing[]) => void;
+  }
+>(
+  "items",
+  [],
+  () => api.listModelPricing(),
+  (patch) => ({
+    setItems: (items) => patch({ items } as Partial<ListSlice<ModelPricing>>),
+  })
+);
+export const usePricing = pricing.useStore;
 
 // ── route profiles ─────────────────────────────────────────────────
 
-type RouteProfilesStore = ListSlice<RouteProfileView>;
-
-let routeProfilesInflight: Promise<void> | null = null;
-
-export const useRouteProfiles = create<RouteProfilesStore>((set, get) => ({
-  items: [],
-  loading: false,
-  error: null,
-  fetch: async () => {
-    if (routeProfilesInflight) return routeProfilesInflight;
-    if (get().loading) return;
-    routeProfilesInflight = (async () => {
-      set({ loading: true, error: null });
-      try {
-        const items = await api.listRouteProfiles();
-        set({ items, loading: false });
-      } catch (err) {
-        const message = (err as api.AppError)?.message ?? String(err);
-        set({ loading: false, error: message });
-      } finally {
-        routeProfilesInflight = null;
-      }
-    })();
-    return routeProfilesInflight;
-  },
-  refetch: async () => {
-    if (routeProfilesInflight) {
-      await routeProfilesInflight;
-    }
-    routeProfilesInflight = (async () => {
-      set({ loading: true, error: null });
-      try {
-        const items = await api.listRouteProfiles();
-        set({ items, loading: false });
-      } catch (err) {
-        const message = (err as api.AppError)?.message ?? String(err);
-        set({ loading: false, error: message });
-      } finally {
-        routeProfilesInflight = null;
-      }
-    })();
-    return routeProfilesInflight;
-  },
-}));
+const routeProfiles = createResourceStore<"items", RouteProfileView[]>(
+  "items",
+  [],
+  () => api.listRouteProfiles()
+);
+export const useRouteProfiles = routeProfiles.useStore;
 
 // ── gateway status ─────────────────────────────────────────────────
 // Topbar（常驻）是唯一轮询源，Dashboard 等页面只订阅；start/stop/restart
 // 返回的新状态通过 setValue 直接写入，所有订阅者即时更新。
 
-interface GatewayStatusStore extends ValueSlice<GatewayStatus> {
-  /// start/stop/restart 命令的返回值直接写入，不用再发一次查询。
-  setValue: (value: GatewayStatus) => void;
-}
-
-let gatewayStatusInflight: Promise<void> | null = null;
-
-export const useGatewayStatus = create<GatewayStatusStore>((set, get) => ({
-  value: null,
-  loading: false,
-  error: null,
-  setValue: (value) => set({ value }),
-  fetch: async () => {
-    if (gatewayStatusInflight) return gatewayStatusInflight;
-    if (get().loading) return;
-    gatewayStatusInflight = (async () => {
-      set({ loading: true, error: null });
-      try {
-        const value = await api.getGatewayStatus();
-        set({ value, loading: false });
-      } catch (err) {
-        const message = (err as api.AppError)?.message ?? String(err);
-        set({ loading: false, error: message });
-      } finally {
-        gatewayStatusInflight = null;
-      }
-    })();
-    return gatewayStatusInflight;
-  },
-  refetch: async () => {
-    if (gatewayStatusInflight) {
-      await gatewayStatusInflight;
-    }
-    gatewayStatusInflight = (async () => {
-      set({ loading: true, error: null });
-      try {
-        const value = await api.getGatewayStatus();
-        set({ value, loading: false });
-      } catch (err) {
-        const message = (err as api.AppError)?.message ?? String(err);
-        set({ loading: false, error: message });
-      } finally {
-        gatewayStatusInflight = null;
-      }
-    })();
-    return gatewayStatusInflight;
-  },
-}));
+const gatewayStatus = createResourceStore<
+  "value",
+  GatewayStatus | null,
+  {
+    /// start/stop/restart 命令的返回值直接写入，不用再发一次查询。
+    setValue: (value: GatewayStatus) => void;
+  }
+>(
+  "value",
+  null,
+  () => api.getGatewayStatus(),
+  (patch) => ({
+    setValue: (value) => patch({ value } as Partial<ValueSlice<GatewayStatus>>),
+  })
+);
+export const useGatewayStatus = gatewayStatus.useStore;
 
 /// 测试辅助：清空所有 store——单测之间互不污染。生产代码不应调用。
 export function __resetGlobalStoresForTest() {
-  providersInflight = null;
-  gatewaySettingsInflight = null;
-  pricingInflight = null;
-  routeProfilesInflight = null;
-  gatewayStatusInflight = null;
-  useProviders.setState({ items: [], loading: false, error: null });
-  useGatewaySettings.setState({ value: null, loading: false, error: null });
-  usePricing.setState({ items: [], loading: false, error: null });
-  useRouteProfiles.setState({ items: [], loading: false, error: null });
-  useGatewayStatus.setState({ value: null, loading: false, error: null });
+  for (const slice of [
+    providers,
+    gatewaySettings,
+    pricing,
+    routeProfiles,
+    gatewayStatus,
+  ]) {
+    slice.reset();
+  }
 }

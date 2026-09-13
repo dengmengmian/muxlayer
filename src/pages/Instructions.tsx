@@ -198,15 +198,11 @@ export function Instructions() {
     scope === "claude_global" ? "CLAUDE.md" : "AGENTS.md";
 
   return (
-    <div className="space-y-4">
+    <div className="desktop-page mx-auto h-full min-h-0 w-full max-w-[1120px]">
       {/* Header */}
-      <div className="relative overflow-hidden rounded-xl border border-accent/20 bg-card p-5 shadow-sm">
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-accent/10 to-transparent" />
-        <div className="relative">
-          <p className="text-xs font-medium uppercase tracking-[0.18em] text-accent">
-            {t("instructions.console")}
-          </p>
-          <h2 className="mt-2 flex items-center gap-2 text-lg font-semibold text-text-primary">
+      <div className="desktop-page-header">
+        <div>
+          <h2 className="flex items-center gap-2 text-lg font-semibold text-text-primary">
             <FileText className="h-4 w-4" />
             {t("instructions.title")}
           </h2>
@@ -217,7 +213,7 @@ export function Instructions() {
       </div>
 
       {/* Scope tabs */}
-      <section className="rounded-xl border border-border bg-card p-4 shadow-sm">
+      <section className="surface-panel p-4">
         <div className="mb-3">
           <h3 className="text-sm font-semibold text-text-primary">
             {t("instructions.target_matrix")}
@@ -248,24 +244,18 @@ export function Instructions() {
         </div>
       </section>
 
-      {/* Editor card — full width, content first.
-          高度用 calc(100vh - …)：因为外层 AppShell 的 `animate-fade-in` 不是
-          flex column，flex-1 / min-h-0 不生效。视口减去 header + tabs + 工具栏
-          + 页面 padding 的预算大概 240px，留一点 buffer 取 260px。 */}
-      <section
-        className="flex flex-col rounded-xl border border-border bg-card shadow-sm"
-        style={{ height: "calc(100vh - 360px)", minHeight: "360px" }}
-      >
+      {/* 编辑器从 AppShell 的 flex 高度链取剩余空间，窄高窗口仍由页面滚动兜底。 */}
+      <section className="surface-panel flex min-h-64 flex-1 flex-col">
         {/* Toolbar */}
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-2.5">
           <div className="min-w-0 flex-1">
             <h3 className="mb-1 text-sm font-semibold text-text-primary">
               {t("instructions.editor")}
             </h3>
-            <div className="truncate font-mono text-[11px] text-text-secondary">
+            <div className="truncate font-mono text-xs text-text-secondary">
               {status?.path ?? "—"}
             </div>
-            <div className="mt-0.5 flex items-center gap-2 text-[11px] text-text-muted">
+            <div className="mt-0.5 flex items-center gap-2 text-xs text-text-muted">
               {status?.exists ? (
                 <>
                   <Check className="h-3 w-3 text-success" />
@@ -330,11 +320,11 @@ export function Instructions() {
                     boxShadow: "var(--shadow-lg)",
                   }}
                 >
-                  <p className="px-2 pb-2 text-[10px] leading-snug text-text-muted">
+                  <p className="px-2 pb-2 text-xs leading-snug text-text-muted">
                     {t("instructions.templates.hint")}
                   </p>
                   {visibleTemplates.length === 0 ? (
-                    <div className="rounded-md border border-dashed border-border p-3 text-center text-[11px] text-text-muted">
+                    <div className="rounded-md border border-dashed border-border p-3 text-center text-xs text-text-muted">
                       {t("instructions.templates.empty")}
                     </div>
                   ) : (
@@ -342,7 +332,7 @@ export function Instructions() {
                       {groupedTemplates.map((group) => (
                         <div key={group.category}>
                           {/* 分组标题：coding / review / debug / security / docs / general */}
-                          <div className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-text-muted">
+                          <div className="px-2 pb-1 text-xs font-semibold uppercase tracking-wide text-text-muted">
                             {t(`instructions.tpl_category.${group.category}`)}
                           </div>
                           <ul className="space-y-1">
@@ -356,7 +346,7 @@ export function Instructions() {
                                   <div className="text-xs font-medium text-text-primary">
                                     {tpl.title}
                                   </div>
-                                  <p className="mt-0.5 text-[11px] leading-snug text-text-muted">
+                                  <p className="mt-0.5 text-xs leading-snug text-text-muted">
                                     {tpl.description}
                                   </p>
                                 </div>
@@ -365,7 +355,7 @@ export function Instructions() {
                                     onClick={() =>
                                       handleApplyTemplate(tpl, "overwrite")
                                     }
-                                    className="rounded border border-border bg-card-secondary px-2 py-0.5 text-[10px] font-medium text-text-primary hover:bg-hover"
+                                    className="rounded border border-border bg-card-secondary px-2 py-0.5 text-xs font-medium text-text-primary hover:bg-hover"
                                   >
                                     {t(
                                       "instructions.templates.apply_overwrite"
@@ -375,7 +365,7 @@ export function Instructions() {
                                     onClick={() =>
                                       handleApplyTemplate(tpl, "append")
                                     }
-                                    className="rounded border border-border bg-card-secondary px-2 py-0.5 text-[10px] font-medium text-text-primary hover:bg-hover"
+                                    className="rounded border border-border bg-card-secondary px-2 py-0.5 text-xs font-medium text-text-primary hover:bg-hover"
                                   >
                                     {t("instructions.templates.apply_append")}
                                   </button>
@@ -443,7 +433,7 @@ export function Instructions() {
             className="w-full min-h-0 flex-1 resize-none bg-transparent p-4 font-mono text-xs leading-relaxed text-text-primary outline-none placeholder:text-text-muted"
           />
         ) : (
-          <div className="min-h-0 flex-1 overflow-auto p-4 text-sm text-text-primary">
+          <div className="surface-scroll min-h-0 flex-1 p-4 text-sm text-text-primary">
             {draft.trim() ? (
               <MarkdownContent content={draft} />
             ) : (

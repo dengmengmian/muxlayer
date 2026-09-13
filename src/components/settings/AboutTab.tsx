@@ -7,7 +7,7 @@ interface Props {
 
 export function AboutTab({ appVersion, t }: Props) {
   return (
-    <section className="rounded-xl border border-border bg-card p-5">
+    <section className="surface-panel p-5">
       <h3 className="mb-4 text-sm font-semibold text-text-primary">
         {t("settings.about")}
       </h3>

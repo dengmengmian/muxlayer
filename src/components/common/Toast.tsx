@@ -55,7 +55,12 @@ export function ToastContainer() {
   const addToast = useCallback(
     (type: ToastType, message: string, action?: ToastAction) => {
       const id = ++toastId;
-      setToasts((prev) => [...prev, { id, type, message, action }]);
+      // 轮询失败会反复报同一条错误：同 type + message 的 toast 还在显示时不再叠加。
+      setToasts((prev) =>
+        prev.some((t) => t.type === type && t.message === message)
+          ? prev
+          : [...prev, { id, type, message, action }]
+      );
       setTimeout(() => {
         setToasts((prev) => prev.filter((t) => t.id !== id));
       }, TOAST_DURATION);

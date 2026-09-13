@@ -86,7 +86,7 @@ mod tests {
             }
         });
         let snap = snapshot(PROBE_STALE_MS);
-        assert!(snap.get("probe-stale").is_none(), "过期探测值不应参与兜底");
+        assert!(!snap.contains_key("probe-stale"), "过期探测值不应参与兜底");
     }
 
     #[test]

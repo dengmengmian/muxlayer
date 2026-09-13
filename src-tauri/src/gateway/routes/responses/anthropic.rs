@@ -125,6 +125,7 @@ pub(super) async fn handle_anthropic_non_stream_response(
                     output: out_tok,
                     cache_write: cache_w,
                     cache_read: cache_r,
+                    input_semantics: crate::gateway::usage::InputCacheSemantics::ExcludesCache,
                 },
             );
 
@@ -253,12 +254,14 @@ pub(super) async fn handle_anthropic_stream_response(
                                 output: out_tok,
                                 cache_write: cache_w,
                                 cache_read: cache_r,
+                                input_semantics:
+                                    crate::gateway::usage::InputCacheSemantics::ExcludesCache,
                             },
                         );
                     }
                     Err(err_msg) => {
-                        let err =
-                            AppError::new(crate::errors::codes::UPSTREAM_STREAM_ERROR, &err_msg);
+                        // 客户端断开记 499 + client disconnected,上游失败记 502。
+                        let err = stream_task_error(&err_msg);
                         log_request_error_full(
                             &db,
                             &client_type,
@@ -269,7 +272,7 @@ pub(super) async fn handle_anthropic_stream_response(
                             &provider_name,
                             &model_clone,
                             &err,
-                            502,
+                            stream_error_status(&err),
                             latency,
                         );
                     }

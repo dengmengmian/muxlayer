@@ -171,8 +171,7 @@ export function ProviderCard({
 
   return (
     <div
-      className={`flex min-w-0 flex-col rounded-xl border bg-card p-4 ${provider.is_active ? "border-accent/50" : "border-border"}`}
-      style={{ boxShadow: "var(--shadow-sm)" }}
+      className={`surface-panel flex min-w-0 flex-col p-4 ${provider.is_active ? "border-accent/50" : "border-border"}`}
     >
       {/* ── Header: icon + name + url ; status dot + capability icons ── */}
       <div className="mb-3 flex items-start justify-between gap-3">
@@ -192,7 +191,7 @@ export function ProviderCard({
               )}
             </div>
             <p
-              className="truncate font-mono text-[11px] text-text-muted"
+              className="truncate font-mono text-xs text-text-muted"
               title={provider.base_url}
             >
               {provider.base_url}
@@ -228,7 +227,7 @@ export function ProviderCard({
       <div className="mb-3 border-y border-border/70 py-3">
         <div className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
           <div className="min-w-0">
-            <span className="text-[10px] uppercase tracking-wide text-text-muted">
+            <span className="text-xs uppercase tracking-wide text-text-muted">
               {t("providers.default_model")}
             </span>
             <p className="truncate font-mono text-text-primary">
@@ -236,14 +235,14 @@ export function ProviderCard({
             </p>
           </div>
           <div className="min-w-0">
-            <span className="text-[10px] uppercase tracking-wide text-text-muted">
+            <span className="text-xs uppercase tracking-wide text-text-muted">
               {t("providers.api_key")}
             </span>
-            <p className="flex items-center gap-1 truncate font-mono text-[11px] text-text-secondary">
+            <p className="flex items-center gap-1 truncate font-mono text-xs text-text-secondary">
               <Key className="h-3 w-3 shrink-0" />
               {provider.masked_api_key ?? "—"}
               {keyCount > 1 && (
-                <span className="ml-1 shrink-0 font-sans text-[10px] text-text-muted">
+                <span className="ml-1 shrink-0 font-sans text-xs text-text-muted">
                   {t("providers.key_round_robin").replace(
                     "{n}",
                     String(keyCount)
@@ -254,13 +253,13 @@ export function ProviderCard({
           </div>
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
-          <span className="text-[11px] text-text-muted">
+          <span className="text-xs text-text-muted">
             {provider.timeout_seconds}s
           </span>
           {passThroughChips.map((c) => (
             <span
               key={c.key}
-              className="rounded bg-success/10 px-1.5 py-0.5 text-[10px] font-medium text-success"
+              className="rounded bg-success/10 px-1.5 py-0.5 text-xs font-medium text-success"
               title={t("providers.pass_through_tooltip")}
             >
               {t("providers.pass_through_prefix")} {c.label}
@@ -271,7 +270,7 @@ export function ProviderCard({
 
       {/* ── Operational status: runtime + probe + real traffic in one vocabulary ── */}
       {(runtime || health) && (
-        <div className="mb-3 space-y-2 text-[11px] text-text-muted">
+        <div className="mb-3 space-y-2 text-xs text-text-muted">
           <div className="flex items-center justify-between gap-3">
             <span className="text-xs font-semibold text-text-primary">
               {t("providers.card_health_status")}
@@ -291,7 +290,7 @@ export function ProviderCard({
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
             <StatusBadge
               variant={signalSummary.runtime.variant}
-              className="px-1.5 py-0 text-[10px]"
+              className="px-1.5 py-0 text-xs"
             >
               {t(`providers.runtime_status.${signalSummary.runtime.status}`)}
               {inCooldown && cooldownSummary
@@ -300,7 +299,7 @@ export function ProviderCard({
             </StatusBadge>
             <StatusBadge
               variant={signalSummary.probe.variant}
-              className="px-1.5 py-0 text-[10px]"
+              className="px-1.5 py-0 text-xs"
             >
               {t("providers.probe")} ·{" "}
               {t(`providers.probe_status.${signalSummary.probe.status}`)}
@@ -310,7 +309,7 @@ export function ProviderCard({
             </StatusBadge>
             <StatusBadge
               variant={signalSummary.traffic.variant}
-              className="px-1.5 py-0 text-[10px]"
+              className="px-1.5 py-0 text-xs"
             >
               {t("providers.traffic")} ·{" "}
               {t(`providers.traffic_status.${signalSummary.traffic.status}`)}
@@ -330,7 +329,7 @@ export function ProviderCard({
               <StatusBadge
                 key={status}
                 variant={errorStatusVariant[status]}
-                className="px-1.5 py-0 text-[10px]"
+                className="px-1.5 py-0 text-xs"
               >
                 {t(`providers.error_status.${status}`)}
               </StatusBadge>
@@ -369,7 +368,7 @@ export function ProviderCard({
           )}
           {latestError && (
             <div
-              className="truncate text-[11px] text-text-muted"
+              className="truncate text-xs text-text-muted"
               title={`${latestError.status_code} ${latestError.message}`}
             >
               {t("providers.health_recent_errors")}: {latestError.status_code} ·{" "}
@@ -392,7 +391,7 @@ export function ProviderCard({
               {protocolLabels.map((p) => (
                 <span
                   key={p}
-                  className="rounded bg-card-secondary px-1.5 py-0.5 text-[11px] text-text-primary"
+                  className="rounded bg-card-secondary px-1.5 py-0.5 text-xs text-text-primary"
                 >
                   {p}
                 </span>
@@ -411,10 +410,10 @@ export function ProviderCard({
           )}
           {hasCompatTip && (
             <div className="col-span-2 rounded-md border border-border/60 bg-card-secondary/50 px-2.5 py-2">
-              <p className="text-[11px] font-medium text-text-secondary">
+              <p className="text-xs font-medium text-text-secondary">
                 {t("providers.compat_tip_title")}
               </p>
-              <p className="mt-1 text-[11px] leading-relaxed text-text-muted">
+              <p className="mt-1 text-xs leading-relaxed text-text-muted">
                 {compatTip}
               </p>
             </div>
@@ -428,7 +427,7 @@ export function ProviderCard({
           <button
             onClick={() => onTest(provider)}
             disabled={testing}
-            className="flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1.5 text-[11px] font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
+            className="flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1.5 text-xs font-medium text-on-accent transition-colors hover:bg-accent/90 disabled:opacity-50"
           >
             {testing ? (
               <Loader2 className="h-3 w-3 animate-spin" />
@@ -439,7 +438,7 @@ export function ProviderCard({
           </button>
           <button
             onClick={() => onEdit(provider)}
-            className="flex items-center gap-1.5 rounded-md bg-card-secondary px-2.5 py-1.5 text-[11px] font-medium text-text-secondary transition-colors hover:bg-border hover:text-text-primary"
+            className="flex items-center gap-1.5 rounded-md bg-card-secondary px-2.5 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-border hover:text-text-primary"
           >
             <Pencil className="h-3 w-3" />
             {t("common.edit")}
@@ -447,7 +446,7 @@ export function ProviderCard({
           {onDetails && (
             <button
               onClick={() => onDetails(provider)}
-              className="flex items-center gap-1.5 rounded-md bg-card-secondary px-2.5 py-1.5 text-[11px] font-medium text-text-secondary transition-colors hover:bg-border hover:text-text-primary"
+              className="flex items-center gap-1.5 rounded-md bg-card-secondary px-2.5 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-border hover:text-text-primary"
             >
               <ExternalLink className="h-3 w-3" />
               {t("common.details")}
@@ -456,7 +455,7 @@ export function ProviderCard({
           {!provider.is_active && (
             <button
               onClick={() => onSetActive(provider)}
-              className="flex items-center gap-1.5 rounded-md bg-card-secondary px-2.5 py-1.5 text-[11px] font-medium text-text-secondary transition-colors hover:bg-border hover:text-text-primary"
+              className="flex items-center gap-1.5 rounded-md bg-card-secondary px-2.5 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-border hover:text-text-primary"
             >
               <Star className="h-3 w-3" />
               {t("providers.set_active")}
@@ -466,22 +465,25 @@ export function ProviderCard({
         <div className="flex shrink-0 items-center gap-2">
           <button
             onClick={() => setShowDetails((v) => !v)}
-            className="flex items-center gap-1 text-[11px] text-text-muted transition-colors hover:text-text-primary"
+            aria-expanded={showDetails}
+            className="flex items-center gap-1 text-xs text-text-muted transition-colors hover:text-text-primary"
           >
             {showDetails ? (
               <ChevronUp className="h-3 w-3" />
             ) : (
               <ChevronDown className="h-3 w-3" />
             )}
-            {t("providers.details")}
+            {t("providers.configuration_details")}
           </button>
-          <button
-            onClick={() => onDelete(provider)}
-            className="flex items-center gap-1.5 rounded-md bg-card-secondary px-2 py-1.5 text-[11px] font-medium text-text-secondary transition-colors hover:bg-error/20 hover:text-error"
-          >
-            <Trash2 className="h-3 w-3" />
-            {t("common.delete")}
-          </button>
+          {showDetails && (
+            <button
+              onClick={() => onDelete(provider)}
+              className="flex items-center gap-1.5 rounded-md bg-card-secondary px-2 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-error/20 hover:text-error"
+            >
+              <Trash2 className="h-3 w-3" />
+              {t("common.delete")}
+            </button>
+          )}
         </div>
       </div>
     </div>

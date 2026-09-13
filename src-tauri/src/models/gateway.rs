@@ -159,7 +159,7 @@ mod tests {
         assert!(json.contains("9090"));
         let de: GatewaySettings = serde_json::from_str(&json).unwrap();
         assert_eq!(de.port, 9090);
-        assert_eq!(de.auto_start, true);
+        assert!(de.auto_start);
         assert_eq!(de.request_body_limit_mb, 32);
     }
 

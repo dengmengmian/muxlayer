@@ -6,7 +6,7 @@ vi.mock("@/lib/api");
 
 import * as api from "@/lib/api";
 import { Dashboard } from "./Dashboard";
-import { __resetGlobalStoresForTest } from "@/store/global";
+import { __resetGlobalStoresForTest, useGatewayStatus } from "@/store/global";
 
 afterEach(() => cleanup());
 
@@ -137,6 +137,48 @@ describe("Dashboard", () => {
     expect(screen.getByText("stats.today_realtime")).toBeInTheDocument();
     expect(screen.getByText("stats.hit_rate")).toBeInTheDocument();
     expect(screen.getByText("stats.traffic_monitor")).toBeInTheDocument();
+  });
+
+  it("shows a running/info gateway indicator while the gateway is running", async () => {
+    useGatewayStatus.setState({
+      value: gatewayStatus(),
+      loading: false,
+      error: null,
+    });
+
+    render(
+      <MemoryRouter>
+        <Dashboard />
+      </MemoryRouter>
+    );
+
+    const indicator = await screen.findByRole("status", {
+      name: "topbar.running",
+    });
+    expect(indicator).toHaveClass("bg-info");
+    expect(indicator).not.toHaveClass("bg-success");
+  });
+
+  it("shows a stopped gateway indicator while the gateway is stopped", async () => {
+    const stopped = { ...gatewayStatus(), running: false };
+    vi.mocked(api.getGatewayStatus).mockResolvedValue(stopped);
+    useGatewayStatus.setState({
+      value: stopped,
+      loading: false,
+      error: null,
+    });
+
+    render(
+      <MemoryRouter>
+        <Dashboard />
+      </MemoryRouter>
+    );
+
+    const indicator = await screen.findByRole("status", {
+      name: "topbar.stopped",
+    });
+    expect(indicator).toHaveClass("bg-text-muted");
+    expect(indicator).not.toHaveClass("animate-pulse-dot");
   });
 
   it("shows cache hit rate as a first-class today metric", async () => {
@@ -315,5 +357,166 @@ describe("Dashboard", () => {
     expect(
       screen.getByText("dashboard.no_requests_ready_cta").closest("a")
     ).toHaveAttribute("href", "/tools");
+  });
+  it("keeps the latest range's data when an older request resolves last", async () => {
+    vi.mocked(api.listProviders).mockResolvedValue([
+      { id: "p1", name: "OpenAI", enabled: true, masked_api_key: "sk-***" },
+    ] as any);
+    vi.mocked(api.getRequestStatsRange).mockResolvedValue({
+      total: 3,
+      today_total: 0,
+      today_errors: 0,
+      today_input_tokens: 0,
+      today_output_tokens: 0,
+      today_cost: 0,
+      avg_latency_ms: 0,
+      today_codex_compact: 0,
+      today_cache_read_tokens: 0,
+      today_cache_write_tokens: 0,
+      daily: [],
+      providers: [],
+    } as any);
+    const costRow = (key: string) => ({
+      key,
+      provider: null,
+      request_count: 1,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      cost: 0.5,
+      has_price: true,
+    });
+    let sevenDayCalls = 0;
+    let resolveStale7d: ((rows: any) => void) | null = null;
+    vi.mocked(api.aggregateCostByModel).mockImplementation((days) => {
+      if (days === 30) return Promise.resolve([costRow("model-30d")]);
+      sevenDayCalls += 1;
+      if (sevenDayCalls === 1) return Promise.resolve([costRow("model-7d")]);
+      return new Promise((resolve) => {
+        resolveStale7d = resolve;
+      });
+    });
+
+    render(
+      <MemoryRouter>
+        <Dashboard />
+      </MemoryRouter>
+    );
+    expect(await screen.findByText("model-7d")).toBeInTheDocument();
+
+    // 7d 的轮询请求挂起中，用户切到 30d。
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await waitFor(() => expect(resolveStale7d).not.toBeNull());
+    const detectCallsBeforeSwitch = vi.mocked(api.detectCodexConfig).mock.calls
+      .length;
+    await act(async () => screen.getByRole("button", { name: "30d" }).click());
+    expect(await screen.findByText("model-30d")).toBeInTheDocument();
+    // 切换时间范围只重拉统计，不重新探测客户端配置。
+    expect(api.detectCodexConfig).toHaveBeenCalledTimes(
+      detectCallsBeforeSwitch
+    );
+
+    await act(async () => {
+      resolveStale7d!([costRow("model-7d-stale")]);
+    });
+    expect(screen.queryByText("model-7d-stale")).toBeNull();
+    expect(screen.getByText("model-30d")).toBeInTheDocument();
+  });
+
+  it("does not restart a slow stats request on poll ticks and applies its result", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(api.listProviders).mockResolvedValue([
+        { id: "p1", name: "OpenAI", enabled: true, masked_api_key: "sk-***" },
+      ] as any);
+      vi.mocked(api.getRequestStatsRange).mockResolvedValue({
+        total: 3,
+        today_total: 0,
+        today_errors: 0,
+        today_input_tokens: 0,
+        today_output_tokens: 0,
+        today_cost: 0,
+        avg_latency_ms: 0,
+        today_codex_compact: 0,
+        today_cache_read_tokens: 0,
+        today_cache_write_tokens: 0,
+        daily: [],
+        providers: [],
+      } as any);
+      const pending: ((rows: any) => void)[] = [];
+      vi.mocked(api.aggregateCostByModel).mockClear();
+      vi.mocked(api.aggregateCostByModel).mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            pending.push(resolve);
+          })
+      );
+
+      render(
+        <MemoryRouter>
+          <Dashboard />
+        </MemoryRouter>
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(api.aggregateCostByModel).toHaveBeenCalledTimes(1);
+
+      // 聚合查询比 5s 轮询周期还慢：期间的 tick 不应再发新请求。
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15_000);
+      });
+      expect(api.aggregateCostByModel).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        pending[0]([
+          {
+            key: "model-slow",
+            provider: null,
+            request_count: 1,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            cost: 0.5,
+            has_price: true,
+          },
+        ]);
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByText("model-slow")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("re-detects client configs every 60s", async () => {
+    vi.useFakeTimers();
+    try {
+      render(
+        <MemoryRouter>
+          <Dashboard />
+        </MemoryRouter>
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      vi.mocked(api.detectCodexConfig).mockClear();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(59_999);
+      });
+      expect(api.detectCodexConfig).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(api.detectCodexConfig).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

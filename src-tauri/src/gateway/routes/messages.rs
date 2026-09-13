@@ -7,12 +7,16 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::errors::AppError;
+use crate::gateway::failover::Attempt;
+use crate::gateway::provider_selector::ProviderCandidate;
+use crate::models::provider::Provider;
 use crate::providers::adapter::{self, ProviderConfig};
 
 use super::shared::{
-    detect_client_from_ua, lock_db, log_request_error, log_request_error_full, log_request_success,
-    native_model_override_for_images, refine_struct_body, request_body_or_gateway_error,
-    sanitize_body, trace_with_degradation_events, validate_auth, GatewayError,
+    check_budget, detect_client_from_ua, log_request_error, log_request_error_full,
+    log_request_success, messages_error_response, native_model_override_for_images,
+    refine_struct_body, request_body_or_gateway_error, sanitize_body, select_providers,
+    trace_with_degradation_events, GatewayError,
 };
 use super::GatewayState;
 
@@ -90,10 +94,9 @@ pub async fn handle_messages(
     AxumState(state): AxumState<GatewayState>,
     body: Result<bytes::Bytes, axum::extract::rejection::BytesRejection>,
 ) -> Result<Response, GatewayError> {
+    // 鉴权 + Host/Origin 边界校验在 server.rs 的中间件里、读 body 之前完成。
     let body = request_body_or_gateway_error(body)?;
-    validate_auth(&headers)?;
-    let force_cheapest =
-        crate::gateway::budget::check_new_request(&state.db).map_err(GatewayError)?;
+    let force_cheapest = check_budget(&state.db).await?;
     let start = Instant::now();
     let request_id = format!(
         "req_{}",
@@ -101,19 +104,20 @@ pub async fn handle_messages(
     );
     let client_type = detect_client_from_ua(&headers, "Claude Code");
 
-    let body = crate::gateway::body_decode::decode(&headers, body).map_err(|e| {
-        log_request_error(
-            &state.db,
-            &client_type,
-            "/v1/messages",
-            &request_id,
-            "",
-            None,
-            &e,
-            start.elapsed().as_millis() as i64,
-        );
-        GatewayError(e)
-    })?;
+    let body = crate::gateway::body_decode::decode(&headers, body, state.request_body_limit)
+        .map_err(|e| {
+            log_request_error(
+                &state.db,
+                &client_type,
+                "/v1/messages",
+                &request_id,
+                "",
+                None,
+                &e,
+                start.elapsed().as_millis() as i64,
+            );
+            GatewayError(e)
+        })?;
 
     let body_json: serde_json::Value =
         serde_json::from_str(&body).unwrap_or_else(|_| serde_json::json!({}));
@@ -124,20 +128,14 @@ pub async fn handle_messages(
     let analysis = crate::gateway::provider_selector::analyze_messages_value(&body_json);
 
     // Select provider — try anthropic_messages protocol first, then openai_responses as fallback
-    let mut selection = crate::gateway::provider_selector::select_for_failover(
+    let selection = select_providers(
         &state.db,
-        "anthropic_messages",
-        requested_model.as_deref(),
-        Some(&analysis),
+        &["anthropic_messages", "openai_responses"],
+        requested_model.clone(),
+        analysis.clone(),
+        force_cheapest,
     )
-    .or_else(|_| {
-        crate::gateway::provider_selector::select_for_failover(
-            &state.db,
-            "openai_responses",
-            requested_model.as_deref(),
-            Some(&analysis),
-        )
-    })
+    .await
     .map_err(|e| {
         log_request_error(
             &state.db,
@@ -152,11 +150,7 @@ pub async fn handle_messages(
         GatewayError(e)
     })?;
 
-    // 会话亲和 + vision 过滤：messages 入口无完整 failover 循环，用统一排序
-    // 选出队首候选替换 selection.provider（与 /v1/chat 粘住 cache-hit 上游一致）。
-    if force_cheapest {
-        let _ = crate::gateway::budget::apply_force_cheapest(&state.db, &mut selection);
-    }
+    // 会话亲和 + vision 过滤 + failover 候选:与 /v1/chat、/v1/responses 共用排序和驱动。
     let session_id = crate::gateway::session_affinity::derive_from_anthropic_body(&body_json);
     // force_cheapest 时禁用亲和重排，避免把贵上游提到队首。
     let affinity_sid = if force_cheapest {
@@ -166,107 +160,152 @@ pub async fn handle_messages(
     };
     let request_has_images = analysis.has_images;
     let is_failover = selection.mode == "failover" && selection.candidates.len() > 1;
-    if request_has_images || affinity_sid.is_some() || is_failover || force_cheapest {
-        let order = crate::gateway::failover::build_attempt_order(
-            &selection.candidates,
-            &selection.provider.id,
-            is_failover,
-            request_has_images,
-            affinity_sid,
-        );
-        if let Some(top) = order.first() {
-            if top.provider_id != selection.provider.id {
-                let replacement = lock_db(&state.db).and_then(|conn| {
-                    crate::storage::providers::get_by_id(&conn, &top.provider_id).ok()
-                });
-                if let Some(provider) = replacement {
-                    selection.model = top.model.clone();
-                    selection.provider = provider;
-                }
-            }
-        }
-    }
-
-    let config = ProviderConfig::from_provider(&selection.provider).map_err(|e| {
-        log_request_error(
-            &state.db,
-            &client_type,
-            "/v1/messages",
-            &request_id,
-            &sanitize_body(&body),
-            None,
-            &e,
-            start.elapsed().as_millis() as i64,
-        );
-        GatewayError(e)
-    })?;
+    let attempt_order = crate::gateway::failover::build_attempt_order(
+        &selection.candidates,
+        &selection.provider.id,
+        is_failover,
+        request_has_images,
+        affinity_sid,
+    );
+    let providers = crate::gateway::failover::load_providers(&state.db, &attempt_order)
+        .await
+        .map_err(GatewayError)?;
 
     let raw = sanitize_body(&body);
+    // 转换路径才需要结构化的 Messages 请求;只解析一次,供多个候选复用。
+    let parsed = std::sync::OnceLock::new();
+    let ctx = MessagesAttemptCtx {
+        state: &state,
+        headers: &headers,
+        body: &body,
+        raw: &raw,
+        parsed: &parsed,
+        requested_model: requested_model.as_deref(),
+        request_has_images,
+        request_id: &request_id,
+        start,
+        client_type: &client_type,
+        session_id: session_id.as_deref(),
+    };
+    let providers = &providers;
+    crate::gateway::failover::run_attempts(
+        &state.db,
+        &attempt_order,
+        is_failover,
+        |_, candidate| async move {
+            match providers.get(&candidate.provider_id) {
+                Some(provider) => attempt_messages_provider(ctx, provider, &candidate).await,
+                None => Attempt::Skip(AppError::not_found("Provider", &candidate.provider_id)),
+            }
+        },
+    )
+    .await
+    .or_else(messages_error_response)
+}
 
-    // If provider has anthropic_base_url, pass-through directly (no conversion)
-    if config.has_anthropic_url() {
-        {
-            let target = config.anthropic_messages_url();
-            let model_override = native_model_override_for_images(
-                &selection.provider,
-                requested_model.as_deref(),
-                Some(&selection.model),
-                request_has_images,
-            );
-            return crate::gateway::pass_through::handle_anthropic(
-                &state.http_client,
+type ParsedMessages =
+    std::sync::OnceLock<Result<crate::protocol::anthropic_messages::MessagesRequest, AppError>>;
+
+/// 一次 /v1/messages 请求在所有候选间共享的只读上下文。
+#[derive(Clone, Copy)]
+struct MessagesAttemptCtx<'a> {
+    state: &'a GatewayState,
+    headers: &'a HeaderMap,
+    body: &'a str,
+    raw: &'a str,
+    parsed: &'a ParsedMessages,
+    requested_model: Option<&'a str>,
+    request_has_images: bool,
+    request_id: &'a str,
+    start: Instant,
+    client_type: &'a str,
+    session_id: Option<&'a str>,
+}
+
+/// 对单个候选发起一次 Messages 请求:有 anthropic_base_url 直通,否则转 Chat。
+async fn attempt_messages_provider(
+    ctx: MessagesAttemptCtx<'_>,
+    provider: &Provider,
+    candidate: &ProviderCandidate,
+) -> Attempt<Response> {
+    let state = ctx.state;
+    let config = match ProviderConfig::from_provider(provider) {
+        Ok(c) => c,
+        Err(e) => {
+            // 配置错(如缺 API key)要在日志页可见,再跳到下一个候选。
+            log_request_error(
                 &state.db,
-                &config,
-                &target,
-                &body,
-                model_override.as_deref(),
-                selection.provider.auto_cache_control.unwrap_or(true),
-                &request_id,
-                start,
-                &client_type,
-                Some(&headers),
-                session_id.as_deref(),
-                Some(selection.provider.id.as_str()),
-            )
-            .await
-            .map_err(|e| {
-                log_request_error(
-                    &state.db,
-                    &client_type,
-                    "/v1/messages",
-                    &request_id,
-                    &raw,
-                    None,
-                    &e,
-                    start.elapsed().as_millis() as i64,
-                );
-                GatewayError(e)
-            });
+                ctx.client_type,
+                "/v1/messages",
+                ctx.request_id,
+                ctx.raw,
+                None,
+                &e,
+                ctx.start.elapsed().as_millis() as i64,
+            );
+            return Attempt::Skip(e);
         }
+    };
+
+    // If provider has anthropic_base_url, pass-through directly (no conversion).
+    // 直通路径自己记日志(含非 2xx / 连接失败 / 错误帧),这里不重复记。
+    if config.has_anthropic_url() {
+        let target = config.anthropic_messages_url();
+        let model_override = native_model_override_for_images(
+            provider,
+            ctx.requested_model,
+            Some(&candidate.model),
+            ctx.request_has_images,
+        );
+        return match crate::gateway::pass_through::handle_anthropic(
+            &state.http_client,
+            &state.db,
+            &config,
+            &target,
+            ctx.body,
+            model_override.as_deref(),
+            provider.auto_cache_control.unwrap_or(true),
+            ctx.request_id,
+            ctx.start,
+            ctx.client_type,
+            Some(ctx.headers),
+            ctx.session_id,
+            Some(candidate.provider_id.as_str()),
+        )
+        .await
+        {
+            Ok(response) => Attempt::Success(response),
+            Err(err) => Attempt::ProviderFailed(err),
+        };
     }
 
     // No anthropic endpoint — fall back to Messages → Chat Completions transform
-    let msg_req: crate::protocol::anthropic_messages::MessagesRequest = serde_json::from_str(&body)
-        .map_err(|e| {
-            let err = AppError::new(
+    let msg_req = match ctx.parsed.get_or_init(|| {
+        serde_json::from_str(ctx.body).map_err(|e| {
+            AppError::new(
                 crate::errors::codes::MESSAGES_PARSE_ERROR,
                 format!("Failed to parse: {e}"),
-            );
+            )
+        })
+    }) {
+        Ok(r) => r,
+        Err(err) => {
             log_request_error(
                 &state.db,
-                &client_type,
+                ctx.client_type,
                 "/v1/messages",
-                &request_id,
-                &raw,
+                ctx.request_id,
+                ctx.raw,
                 None,
-                &err,
-                start.elapsed().as_millis() as i64,
+                err,
+                ctx.start.elapsed().as_millis() as i64,
             );
-            err
-        })?;
+            return Attempt::Abort(err.clone());
+        }
+    };
 
-    let model = selection.model.clone();
-    let messages = crate::protocol::anthropic_messages::to_chat_messages(&msg_req);
+    let model = candidate.model.clone();
+    let messages = crate::protocol::anthropic_messages::to_chat_messages(msg_req);
     // Anthropic 工具形态 {name, description, input_schema} —— 没有顶层 type，
     // 必须走 anthropic_messages::tools_to_chat，否则 transform::tool_calls::convert_tools
     // 会把整组工具丢弃。
@@ -290,7 +329,7 @@ pub async fn handle_messages(
     let want_stream = msg_req.stream.unwrap_or(false);
 
     // Claude Code 自动压缩请求:命中则下面关思考 + 去工具,只回干净的摘要文本。
-    let is_cc_compaction = is_claude_code_compaction(&msg_req);
+    let is_cc_compaction = is_claude_code_compaction(msg_req);
 
     let mut chat_req = crate::protocol::chat_completions::ChatCompletionsRequest {
         model: model.clone(),
@@ -324,26 +363,30 @@ pub async fn handle_messages(
         apply_compaction_overrides(&mut chat_req, &config.provider_type);
     }
 
-    let _refiner_log = refine_struct_body(&state.db, &selection.provider, &mut chat_req);
+    let _refiner_log = refine_struct_body(&state.db, provider, &mut chat_req);
     let mut converted_json = serde_json::to_string(&chat_req).unwrap_or_default();
 
     if want_stream {
         // 真流式：边收上游 Chat SSE chunk 边转 Anthropic 事件、立即转发给 client。
         // 首字延迟 = 上游首字延迟（1-3s 级别），不是上游完整耗时。
-        return handle_anthropic_fallback_stream(
-            state,
+        return match handle_anthropic_fallback_stream(
+            state.clone(),
             config,
             chat_req,
             model,
-            request_id,
-            raw,
+            ctx.request_id.to_string(),
+            ctx.raw.to_string(),
             converted_json,
-            start,
-            client_type,
-            session_id,
-            selection.provider.id.clone(),
+            ctx.start,
+            ctx.client_type.to_string(),
+            ctx.session_id.map(str::to_string),
+            candidate.provider_id.clone(),
         )
-        .await;
+        .await
+        {
+            Ok(response) => Attempt::Success(response),
+            Err(GatewayError(err)) => Attempt::ProviderFailed(err),
+        };
     }
 
     let result = adapter::send_non_stream(&state.http_client, &config, &mut chat_req).await;
@@ -352,17 +395,17 @@ pub async fn handle_messages(
             converted_json = serde_json::to_string(&chat_req).unwrap_or_default();
             let response =
                 crate::protocol::anthropic_messages::from_chat_response(&upstream_json, &model);
-            let latency = start.elapsed().as_millis() as i64;
+            let latency = ctx.start.elapsed().as_millis() as i64;
             let (in_tok, out_tok) = crate::gateway::usage::extract_chat(&upstream_json);
             let (cache_w, cache_r) = upstream_json
                 .get("usage")
                 .map(crate::storage::request_logs::extract_cache_tokens)
                 .unwrap_or((None, None));
-            if let Some(ref sid) = session_id {
+            if let Some(sid) = ctx.session_id {
                 if let Some(usage) = upstream_json.get("usage") {
                     crate::gateway::session_affinity::record_if_cache_hit(
                         sid,
-                        &selection.provider.id,
+                        &candidate.provider_id,
                         usage,
                     );
                 }
@@ -373,10 +416,10 @@ pub async fn handle_messages(
             );
             log_request_success(
                 &state.db,
-                &client_type,
+                ctx.client_type,
                 "/v1/messages",
-                &request_id,
-                &raw,
+                ctx.request_id,
+                ctx.raw,
                 &converted_json,
                 &serde_json::to_string(&upstream_json).unwrap_or_default(),
                 &serde_json::to_string(&response).unwrap_or_default(),
@@ -391,18 +434,19 @@ pub async fn handle_messages(
                     output: out_tok,
                     cache_write: cache_w,
                     cache_read: cache_r,
+                    input_semantics: crate::gateway::usage::InputCacheSemantics::IncludesCacheRead,
                 },
             );
-            Ok(Json(response).into_response())
+            Attempt::Success(Json(response).into_response())
         }
         Err(err) => {
-            let latency = start.elapsed().as_millis() as i64;
+            let latency = ctx.start.elapsed().as_millis() as i64;
             log_request_error_full(
                 &state.db,
-                &client_type,
+                ctx.client_type,
                 "/v1/messages",
-                &request_id,
-                &raw,
+                ctx.request_id,
+                ctx.raw,
                 &converted_json,
                 &config.name,
                 &model,
@@ -410,7 +454,7 @@ pub async fn handle_messages(
                 502,
                 latency,
             );
-            Err(GatewayError(err))
+            Attempt::ProviderFailed(err)
         }
     }
 }
@@ -643,6 +687,7 @@ async fn handle_anthropic_fallback_stream(
                 output: out_tok,
                 cache_write: cache_w,
                 cache_read: cache_r,
+                input_semantics: crate::gateway::usage::InputCacheSemantics::IncludesCacheRead,
             },
         );
     });

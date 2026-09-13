@@ -7,26 +7,29 @@
    ═══════════════════════════════════════════════════════════════ */
 
 @theme {
-  /* ── Surface Colors (Warm Dark) ── */
-  --color-bg: #121110;
-  --color-sidebar: #0e0d0c;
-  --color-card: #1c1a18;
-  --color-card-secondary: #232120;
-  --color-hover: #2a2826;
-  --color-border: #38342f;
+  /* ── Surface Colors (Brand Dark) ── */
+  --color-bg: #0b1516;
+  --color-sidebar: #081112;
+  --color-card: #132122;
+  --color-card-secondary: #19292a;
+  --color-hover: #203334;
+  --color-border: #2b4142;
 
   /* ── Text ── */
-  --color-text-primary: #ede8e2;
-  --color-text-secondary: #a39e96;
-  --color-text-muted: #6b6560;
+  --color-text-primary: #e6f1f0;
+  --color-text-secondary: #a4b8b6;
+  --color-text-muted: #859b99;
 
-  /* ── Brand / Accent (Amber Gold) ── */
-  --color-accent: #e89850;
-  --color-accent-soft: rgba(232, 152, 80, 0.12);
+  /* ── Brand / Accent (Teal Cyan) ── */
+  --color-accent: #2dd4bf;
+  --color-accent-soft: rgba(45, 212, 191, 0.13);
+  --color-on-accent: #062b28;
 
   /* ── Semantic ── */
   --color-success: #5cb85c;
   --color-success-soft: rgba(92, 184, 92, 0.12);
+  --color-info: #58a6ff;
+  --color-info-soft: rgba(88, 166, 255, 0.12);
   --color-warning: #e8b84e;
   --color-warning-soft: rgba(232, 184, 78, 0.12);
   --color-error: #e8584e;
@@ -44,198 +47,33 @@
 
 /* ── Light Theme — Daylight 晴日（中性偏冷的官方亮色）── */
 [data-theme="light"] {
-  --color-bg: #f4f5f7;
-  --color-sidebar: #ebedf0;
+  --color-bg: #f3f7f6;
+  --color-sidebar: #eaf1ef;
   --color-card: #ffffff;
-  --color-card-secondary: #f4f5f7;
-  --color-hover: #ebedf0;
-  --color-border: #d5d8dc;
+  --color-card-secondary: #f2f7f6;
+  --color-hover: #e6efed;
+  --color-border: #ccdad8;
 
-  --color-text-primary: #1a1c20;
-  --color-text-secondary: #5a5e66;
-  --color-text-muted: #8c9098;
+  --color-text-primary: #142322;
+  --color-text-secondary: #4b625f;
+  --color-text-muted: #5d716f;
 
-  --color-accent: #c07830;
-  --color-accent-soft: rgba(192, 120, 48, 0.1);
+  --color-accent: #0e6d65;
+  --color-accent-soft: rgba(14, 109, 101, 0.1);
+  --color-on-accent: #ffffff;
 
-  --color-success: #2d8840;
-  --color-success-soft: rgba(45, 136, 64, 0.1);
-  --color-warning: #b88a18;
-  --color-warning-soft: rgba(184, 138, 24, 0.1);
-  --color-error: #c83830;
-  --color-error-soft: rgba(200, 56, 48, 0.1);
+  --color-success: #267837;
+  --color-success-soft: rgba(38, 120, 55, 0.1);
+  --color-info: #2563b8;
+  --color-info-soft: rgba(37, 99, 184, 0.1);
+  --color-warning: #825c00;
+  --color-warning-soft: rgba(130, 92, 0, 0.1);
+  --color-error: #ba332c;
+  --color-error-soft: rgba(186, 51, 44, 0.1);
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
   --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.08);
   --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
-}
-
-/* ── Slate Steel 钢蓝 — 冷色调专业暗色 ── */
-[data-theme="slate"] {
-  --color-bg: #0f141b;
-  --color-sidebar: #0a0f15;
-  --color-card: #1a2230;
-  --color-card-secondary: #232c3b;
-  --color-hover: #2d3848;
-  --color-border: #3a4454;
-
-  --color-text-primary: #e1e7ef;
-  --color-text-secondary: #94a3b8;
-  --color-text-muted: #64748b;
-
-  --color-accent: #38bdf8;
-  --color-accent-soft: rgba(56, 189, 248, 0.12);
-
-  --color-success: #34d399;
-  --color-success-soft: rgba(52, 211, 153, 0.12);
-  --color-warning: #fbbf24;
-  --color-warning-soft: rgba(251, 191, 36, 0.12);
-  --color-error: #f87171;
-  --color-error-soft: rgba(248, 113, 113, 0.12);
-
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.35);
-  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.45);
-}
-
-/* ── Forest Pine 松林 — 沉稳森林绿 ── */
-[data-theme="forest"] {
-  --color-bg: #0f1612;
-  --color-sidebar: #0a100d;
-  --color-card: #16201a;
-  --color-card-secondary: #1e2a22;
-  --color-hover: #28362c;
-  --color-border: #34453b;
-
-  --color-text-primary: #e2e8e0;
-  --color-text-secondary: #94a18f;
-  --color-text-muted: #5f6b5a;
-
-  --color-accent: #84b062;
-  --color-accent-soft: rgba(132, 176, 98, 0.14);
-
-  --color-success: #6fa85c;
-  --color-success-soft: rgba(111, 168, 92, 0.12);
-  --color-warning: #d4a356;
-  --color-warning-soft: rgba(212, 163, 86, 0.12);
-  --color-error: #d4685c;
-  --color-error-soft: rgba(212, 104, 92, 0.12);
-
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.35);
-  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.45);
-}
-
-/* ── Midnight Violet 紫夜 — 暗调紫色 ── */
-[data-theme="violet"] {
-  --color-bg: #14101c;
-  --color-sidebar: #100c16;
-  --color-card: #1e1828;
-  --color-card-secondary: #281f35;
-  --color-hover: #322942;
-  --color-border: #443854;
-
-  --color-text-primary: #ece6f2;
-  --color-text-secondary: #a89bb8;
-  --color-text-muted: #6e647e;
-
-  --color-accent: #a78bfa;
-  --color-accent-soft: rgba(167, 139, 250, 0.14);
-
-  --color-success: #6ee7b7;
-  --color-success-soft: rgba(110, 231, 183, 0.12);
-  --color-warning: #fcd34d;
-  --color-warning-soft: rgba(252, 211, 77, 0.12);
-  --color-error: #f472b6;
-  --color-error-soft: rgba(244, 114, 182, 0.12);
-
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.35);
-  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.45);
-}
-
-/* ── Linen Cream 米麻 — 暖色调亮色 ── */
-[data-theme="linen"] {
-  --color-bg: #faf6ee;
-  --color-sidebar: #f1ece0;
-  --color-card: #ffffff;
-  --color-card-secondary: #f8f2e6;
-  --color-hover: #efe8d7;
-  --color-border: #d9cfb8;
-
-  --color-text-primary: #2c2620;
-  --color-text-secondary: #6e6356;
-  --color-text-muted: #a39888;
-
-  --color-accent: #b66821;
-  --color-accent-soft: rgba(182, 104, 33, 0.1);
-
-  --color-success: #4a7c3a;
-  --color-success-soft: rgba(74, 124, 58, 0.1);
-  --color-warning: #b07816;
-  --color-warning-soft: rgba(176, 120, 22, 0.1);
-  --color-error: #b83828;
-  --color-error-soft: rgba(184, 56, 40, 0.1);
-
-  --shadow-sm: 0 1px 2px rgba(58, 42, 16, 0.06);
-  --shadow-md: 0 2px 8px rgba(58, 42, 16, 0.09);
-  --shadow-lg: 0 8px 24px rgba(58, 42, 16, 0.14);
-}
-
-/* ── Mist Blue 雾蓝 — 清新冷调亮色 ── */
-[data-theme="mist"] {
-  --color-bg: #f4f7fb;
-  --color-sidebar: #ebf0f7;
-  --color-card: #ffffff;
-  --color-card-secondary: #f4f7fb;
-  --color-hover: #e8eef6;
-  --color-border: #cfd8e3;
-
-  --color-text-primary: #1b2735;
-  --color-text-secondary: #4f5e74;
-  --color-text-muted: #8696a8;
-
-  --color-accent: #2563eb;
-  --color-accent-soft: rgba(37, 99, 235, 0.08);
-
-  --color-success: #16a34a;
-  --color-success-soft: rgba(22, 163, 74, 0.1);
-  --color-warning: #ca8a04;
-  --color-warning-soft: rgba(202, 138, 4, 0.1);
-  --color-error: #dc2626;
-  --color-error-soft: rgba(220, 38, 38, 0.1);
-
-  --shadow-sm: 0 1px 2px rgba(15, 30, 50, 0.05);
-  --shadow-md: 0 2px 8px rgba(15, 30, 50, 0.08);
-  --shadow-lg: 0 8px 24px rgba(15, 30, 50, 0.12);
-}
-
-/* ── Sakura 樱粉 — 柔和粉色亮色 ── */
-[data-theme="sakura"] {
-  --color-bg: #fbf4f4;
-  --color-sidebar: #f4e8e8;
-  --color-card: #ffffff;
-  --color-card-secondary: #fbf4f4;
-  --color-hover: #f2e2e2;
-  --color-border: #e0cccc;
-
-  --color-text-primary: #2c1f22;
-  --color-text-secondary: #6a535a;
-  --color-text-muted: #a28891;
-
-  --color-accent: #c44569;
-  --color-accent-soft: rgba(196, 69, 105, 0.1);
-
-  --color-success: #5c9e5c;
-  --color-success-soft: rgba(92, 158, 92, 0.1);
-  --color-warning: #c58b36;
-  --color-warning-soft: rgba(197, 139, 54, 0.1);
-  --color-error: #b53a4a;
-  --color-error-soft: rgba(181, 58, 74, 0.1);
-
-  --shadow-sm: 0 1px 2px rgba(80, 30, 40, 0.06);
-  --shadow-md: 0 2px 8px rgba(80, 30, 40, 0.09);
-  --shadow-lg: 0 8px 24px rgba(80, 30, 40, 0.14);
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -250,6 +88,11 @@ body {
   padding: 0;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
 }
 
 /* ── Scrollbar ── */
@@ -280,9 +123,9 @@ body {
   border-radius: 0.5rem;
   background-color: var(--color-accent);
   padding: 0.4rem 0.875rem;
-  font-size: 0.6875rem;
+  font-size: 0.8125rem;
   font-weight: 500;
-  color: white;
+  color: var(--color-on-accent);
   border: none;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -305,7 +148,7 @@ body {
   background-color: var(--color-card-secondary);
   border: 1px solid var(--color-border);
   padding: 0.4rem 0.875rem;
-  font-size: 0.6875rem;
+  font-size: 0.8125rem;
   font-weight: 500;
   color: var(--color-text-secondary);
   cursor: pointer;
@@ -326,7 +169,7 @@ body {
   background-color: var(--color-error-soft);
   border: 1px solid transparent;
   padding: 0.4rem 0.875rem;
-  font-size: 0.6875rem;
+  font-size: 0.8125rem;
   font-weight: 500;
   color: var(--color-error);
   cursor: pointer;
@@ -334,8 +177,8 @@ body {
 }
 
 .btn-danger:hover {
-  background-color: var(--color-error);
-  color: white;
+  background-color: var(--color-error-soft);
+  border-color: color-mix(in srgb, var(--color-error) 45%, transparent);
 }
 
 /* ── Form Inputs ── */
@@ -363,19 +206,58 @@ body {
 }
 
 /* ── Cards ── */
+.desktop-page {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.desktop-page-header {
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+  background-color: var(--color-card);
+  padding: 1rem 1.25rem;
+}
+
+.command-strip {
+  box-shadow: var(--shadow-sm);
+}
+
+.surface-panel {
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+  background-color: var(--color-card);
+}
+
+.surface-scroll {
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
 .card {
-  border-radius: 0.75rem;
+  border-radius: 0.5rem;
   border: 1px solid var(--color-border);
   background-color: var(--color-card);
-  box-shadow: var(--shadow-sm);
   transition:
-    box-shadow 0.15s ease,
-    transform 0.15s ease;
+    border-color 0.15s ease,
+    background-color 0.15s ease;
 }
 
 .card-hover:hover {
-  box-shadow: var(--shadow-md);
-  transform: translateY(-1px);
+  border-color: color-mix(
+    in srgb,
+    var(--color-accent) 35%,
+    var(--color-border)
+  );
+  background-color: color-mix(
+    in srgb,
+    var(--color-card) 96%,
+    var(--color-accent)
+  );
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -386,8 +268,17 @@ body {
 .bg-accent-soft {
   background-color: var(--color-accent-soft);
 }
+.bg-accent.text-white {
+  color: var(--color-on-accent);
+}
+.bg-accent .text-white\/80 {
+  color: color-mix(in srgb, var(--color-on-accent) 80%, transparent);
+}
 .bg-success-soft {
   background-color: var(--color-success-soft);
+}
+.bg-info-soft {
+  background-color: var(--color-info-soft);
 }
 .bg-warning-soft {
   background-color: var(--color-warning-soft);
@@ -476,4 +367,15 @@ body {
   background-size: 200% 100%;
   animation: shimmer 1.5s ease-in-out infinite;
   border-radius: 0.375rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

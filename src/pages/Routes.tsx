@@ -25,6 +25,7 @@ import { RouteTemplateDialog } from "@/components/routes/RouteTemplateDialog";
 import { toast } from "@/components/common/Toast";
 import { useI18n } from "@/lib/i18n";
 import { usePolling } from "@/lib/usePolling";
+import { formatCost } from "@/lib/utils";
 import * as api from "@/lib/api";
 import { useProviders, useRouteProfiles } from "@/store/global";
 import type {
@@ -96,6 +97,12 @@ export function Routes() {
     null
   );
   const selectedIdRef = useRef<string | null>(null);
+  // 轮询 load 与用户点击 selectProfile 都会拉详情；序号守卫保证只有最后发出的
+  // 那次请求能写入 detail，避免慢的旧请求把用户刚选的 profile 覆盖回去。
+  const detailSeqRef = useRef(0);
+  // 进行中的 load / selectProfile 数量：轮询 tick 遇到进行中的请求直接跳过，
+  // 避免慢查询期间每个 tick 都让上一次请求作废、页面一直停在旧数据。
+  const inFlightRef = useRef(0);
   const [showCreate, setShowCreate] = useState(false);
   const [showTemplate, setShowTemplate] = useState(false);
   const [canRollbackTemplate, setCanRollbackTemplate] = useState(false);
@@ -113,6 +120,9 @@ export function Routes() {
   } | null>(null);
 
   const load = useCallback(async () => {
+    // 序号在发起时就占位：之后的用户点击一定比这次 load 新。
+    const seq = ++detailSeqRef.current;
+    inFlightRef.current += 1;
     try {
       // profiles / providers 走全局 store——usePolling 10s 周期会顺带刷新这两份,
       // 别的页打开时不重复 invoke。
@@ -130,35 +140,54 @@ export function Routes() {
         const toLoad =
           currentId && p.find((x) => x.id === currentId) ? currentId : p[0].id;
         const d = await api.getRouteProfile(toLoad);
+        if (seq !== detailSeqRef.current) return;
         selectedIdRef.current = toLoad;
         setDetail(d);
-        setCanRollbackTemplate(
-          await api.hasRouteTemplateRollback(toLoad).catch(() => false)
-        );
+        const canRollback = await api
+          .hasRouteTemplateRollback(toLoad)
+          .catch(() => false);
+        if (seq !== detailSeqRef.current) return;
+        setCanRollbackTemplate(canRollback);
       }
     } catch (err) {
+      // 已被更新的请求取代的旧请求报错不再弹 toast(与 selectProfile 一致)。
+      if (seq !== detailSeqRef.current) return;
       toast("error", (err as api.AppError).message);
     } finally {
+      inFlightRef.current -= 1;
       setLoading(false);
     }
   }, []);
+  const pollLoad = useCallback(() => {
+    if (inFlightRef.current > 0) return;
+    load();
+  }, [load]);
 
   useEffect(() => {
     load();
   }, [load]);
   // 周期 + focus 刷新——让后台 cooldown 变化、新加的 provider 立即可见
-  usePolling(load);
+  usePolling(pollLoad);
 
   const selectProfile = async (id: string) => {
+    const seq = ++detailSeqRef.current;
+    // 点击即记录选择：详情返回前触发的轮询也会去拉这个 profile。
+    selectedIdRef.current = id;
+    inFlightRef.current += 1;
     try {
       const d = await api.getRouteProfile(id);
-      selectedIdRef.current = id;
+      if (seq !== detailSeqRef.current) return;
       setDetail(d);
-      setCanRollbackTemplate(
-        await api.hasRouteTemplateRollback(id).catch(() => false)
-      );
+      const canRollback = await api
+        .hasRouteTemplateRollback(id)
+        .catch(() => false);
+      if (seq !== detailSeqRef.current) return;
+      setCanRollbackTemplate(canRollback);
     } catch (err) {
+      if (seq !== detailSeqRef.current) return;
       toast("error", (err as api.AppError).message);
+    } finally {
+      inFlightRef.current -= 1;
     }
   };
 
@@ -315,9 +344,9 @@ export function Routes() {
     return <p className="text-xs text-text-muted">{t("common.loading")}</p>;
 
   return (
-    <div className="space-y-6">
+    <div className="desktop-page">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="desktop-page-header flex flex-wrap items-center justify-between gap-3">
         <p className="text-xs text-text-muted">
           {profiles.length} {t("routes.route_profiles")}
         </p>
@@ -350,7 +379,7 @@ export function Routes() {
           </button>
           <button
             onClick={() => setShowCreate(true)}
-            className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent/90"
+            className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent hover:bg-accent/90"
           >
             <Plus className="h-3 w-3" />
             {t("routes.create_profile")}
@@ -360,7 +389,7 @@ export function Routes() {
 
       {/* Create form */}
       {showCreate && (
-        <div className="rounded-xl border border-accent/30 bg-card p-4">
+        <div className="surface-panel border-accent/30 p-4">
           <div className="mb-3 flex items-center justify-between">
             <h4 className="text-xs font-semibold text-text-primary">
               {t("routes.create_profile")}
@@ -374,7 +403,7 @@ export function Routes() {
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="mb-1 block text-[11px] text-text-muted">
+              <label className="mb-1 block text-xs text-text-muted">
                 {t("routes.profile_name")}
               </label>
               <input
@@ -386,7 +415,7 @@ export function Routes() {
               />
             </div>
             <div>
-              <label className="mb-1 block text-[11px] text-text-muted">
+              <label className="mb-1 block text-xs text-text-muted">
                 {t("routes.protocol")}
               </label>
               <select
@@ -427,7 +456,7 @@ export function Routes() {
           description={t("routes.auto_created")}
         />
       ) : (
-        <div className="grid grid-cols-1 gap-5 xl:grid-cols-[280px_minmax(0,1fr)]">
+        <div className="grid min-w-0 grid-cols-[220px_minmax(0,1fr)] gap-4">
           {/* Profile selector (left) */}
           <div className="space-y-2">
             {profiles.map((p) => (
@@ -445,7 +474,7 @@ export function Routes() {
                     <span className="block truncate text-sm font-semibold text-text-primary">
                       {protocolLabel(p.input_protocol)}
                     </span>
-                    <span className="mt-1 block truncate text-[11px] text-text-muted">
+                    <span className="mt-1 block truncate text-xs text-text-muted">
                       {t("routes.current_provider")}:{" "}
                       {p.active_provider_name ?? t("common.none")}
                     </span>
@@ -458,7 +487,7 @@ export function Routes() {
                       : t("routes.mode_manual")}
                   </StatusBadge>
                 </div>
-                <p className="mt-2 truncate text-[11px] text-text-muted">
+                <p className="mt-2 truncate text-xs text-text-muted">
                   {p.name} · {p.providers_count} provider
                   {p.providers_count !== 1 ? "s" : ""}
                 </p>
@@ -471,7 +500,7 @@ export function Routes() {
             <div className="flex-1 space-y-4">
               {availability && (
                 <div
-                  className={`rounded-xl border p-5 shadow-sm ${
+                  className={`surface-panel p-5 ${
                     availability.available === 0
                       ? "border-warning/30 bg-warning/10"
                       : "border-border bg-card"
@@ -531,7 +560,7 @@ export function Routes() {
                       </p>
                     </div>
                     <div className="shrink-0 text-right">
-                      <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-text-muted">
+                      <p className="mb-1 text-xs font-medium uppercase tracking-wide text-text-muted">
                         {t("routes.availability")}
                       </p>
                       <StatusBadge
@@ -561,7 +590,7 @@ export function Routes() {
                       </div>
                       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                         <div>
-                          <p className="text-[10px] font-medium uppercase tracking-wide text-text-muted">
+                          <p className="text-xs font-medium uppercase tracking-wide text-text-muted">
                             {t("routes.flow_entry")}
                           </p>
                           <p className="mt-1 truncate text-sm font-medium text-text-primary">
@@ -569,7 +598,7 @@ export function Routes() {
                           </p>
                         </div>
                         <div>
-                          <p className="text-[10px] font-medium uppercase tracking-wide text-text-muted">
+                          <p className="text-xs font-medium uppercase tracking-wide text-text-muted">
                             {t("routes.flow_mode")}
                           </p>
                           <p className="mt-1 text-sm font-medium text-text-primary">
@@ -590,7 +619,7 @@ export function Routes() {
                             detail.profile.mode !== "manual" &&
                             handleToggleMode()
                           }
-                          className={`flex flex-1 items-center justify-center gap-1.5 rounded px-2.5 py-1.5 text-[11px] font-medium transition-colors ${
+                          className={`flex flex-1 items-center justify-center gap-1.5 rounded px-2.5 py-1.5 text-xs font-medium transition-colors ${
                             detail.profile.mode === "manual"
                               ? "bg-card-secondary text-text-primary shadow-sm"
                               : "text-text-muted hover:text-text-primary"
@@ -604,7 +633,7 @@ export function Routes() {
                             detail.profile.mode !== "failover" &&
                             handleToggleMode()
                           }
-                          className={`flex flex-1 items-center justify-center gap-1.5 rounded px-2.5 py-1.5 text-[11px] font-medium transition-colors ${
+                          className={`flex flex-1 items-center justify-center gap-1.5 rounded px-2.5 py-1.5 text-xs font-medium transition-colors ${
                             detail.profile.mode === "failover"
                               ? "bg-card-secondary text-accent shadow-sm"
                               : "text-text-muted hover:text-text-primary"
@@ -615,7 +644,7 @@ export function Routes() {
                         </button>
                       </div>
                       {detail.profile.mode === "failover" && (
-                        <label className="mt-3 flex items-center justify-between gap-2 rounded-md border border-border bg-card px-2.5 py-1.5 text-[11px] text-text-secondary">
+                        <label className="mt-3 flex items-center justify-between gap-2 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs text-text-secondary">
                           {t("routes.strategy")}
                           <select
                             value={detail.profile.selection_strategy}
@@ -647,7 +676,7 @@ export function Routes() {
                               onClick={() =>
                                 handleSetDefault(detail.profile.id)
                               }
-                              className="flex items-center gap-1.5 rounded-md bg-card px-3 py-1.5 text-[11px] font-medium text-text-secondary transition-colors hover:bg-border hover:text-text-primary"
+                              className="flex items-center gap-1.5 rounded-md bg-card px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-border hover:text-text-primary"
                             >
                               <Star className="h-3 w-3" />
                               {t("routes.set_default")}
@@ -655,7 +684,7 @@ export function Routes() {
                           )}
                         <button
                           onClick={() => setDeleteTarget(detail.profile)}
-                          className="flex items-center gap-1.5 rounded-md bg-card px-3 py-1.5 text-[11px] font-medium text-text-secondary transition-colors hover:bg-error/20 hover:text-error"
+                          className="flex items-center gap-1.5 rounded-md bg-card px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-error/20 hover:text-error"
                           title={t("routes.delete_profile")}
                         >
                           <Trash2 className="h-3 w-3" />
@@ -669,14 +698,14 @@ export function Routes() {
                         {availability.reasons.map((reason) => (
                           <span
                             key={reason}
-                            className="rounded-full bg-card-secondary px-2 py-0.5 text-[11px] text-text-secondary"
+                            className="rounded-full bg-card-secondary px-2 py-0.5 text-xs text-text-secondary"
                           >
                             {t(reason)}
                           </span>
                         ))}
                       </div>
                     ) : (
-                      <p className="text-[11px] text-success">
+                      <p className="text-xs text-success">
                         {t("routes.all_candidates_available")}
                       </p>
                     )}
@@ -684,7 +713,7 @@ export function Routes() {
                 </div>
               )}
 
-              <details className="rounded-xl border border-border bg-card p-4">
+              <details className="surface-panel p-4">
                 <summary className="cursor-pointer text-xs font-semibold text-text-primary">
                   {t("routes.route_metrics")}
                 </summary>
@@ -706,7 +735,7 @@ export function Routes() {
                   />
                   <SummaryTile
                     label={t("routes.stats_cost")}
-                    value={formatCost(currentStats?.cost)}
+                    value={formatCost(currentStats?.cost ?? 0)}
                     hint={t("routes.stats_priced_only")}
                   />
                 </div>
@@ -714,13 +743,13 @@ export function Routes() {
 
               {/* Fallback chain — 仅故障转移模式有意义,固定模式不展示空占位 */}
               {detail.profile.mode === "failover" && (
-                <div className="rounded-xl border border-border bg-card p-5">
+                <div className="surface-panel p-5">
                   <div className="mb-3 flex items-center justify-between gap-3">
                     <div>
                       <h4 className="text-xs font-semibold text-text-primary">
                         {t("routes.fallback_section")}
                       </h4>
-                      <p className="mt-0.5 text-[11px] text-text-muted">
+                      <p className="mt-0.5 text-xs text-text-muted">
                         {t("routes.fallback_section_hint")}
                       </p>
                     </div>
@@ -748,7 +777,7 @@ export function Routes() {
                       ))}
                     </div>
                   ) : (
-                    <p className="rounded-md border border-warning/30 bg-warning/10 px-4 py-3 text-[11px] text-warning">
+                    <p className="rounded-md border border-warning/30 bg-warning/10 px-4 py-3 text-xs text-warning">
                       {t("routes.fallback_needs_more")}
                     </p>
                   )}
@@ -756,18 +785,18 @@ export function Routes() {
               )}
 
               {/* Provider order */}
-              <div className="rounded-xl border border-border bg-card p-5">
+              <div className="surface-panel p-5">
                 <div className="mb-3 flex items-center justify-between">
                   <div>
                     <h4 className="text-xs font-semibold text-text-primary">
                       {t("routes.provider_order")}
                     </h4>
-                    <p className="mt-0.5 text-[11px] text-text-muted">
+                    <p className="mt-0.5 text-xs text-text-muted">
                       {t("routes.provider_order_hint")}
                     </p>
                   </div>
                   {detail.profile.active_provider_name && (
-                    <span className="text-[11px] text-text-muted">
+                    <span className="text-xs text-text-muted">
                       {t("routes.active")}:{" "}
                       <span className="text-text-primary">
                         {detail.profile.active_provider_name}
@@ -860,7 +889,7 @@ export function Routes() {
                                 </StatusBadge>
                               )}
                             </div>
-                            <p className="text-[11px] text-text-muted">
+                            <p className="text-xs text-text-muted">
                               {rp.provider_type}
                               {rp.model_override && (
                                 <> · model: {rp.model_override}</>
@@ -1008,7 +1037,7 @@ export function Routes() {
                           setAddProviderId("");
                         }
                       }}
-                      className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent/90"
+                      className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent hover:bg-accent/90"
                     >
                       <Plus className="h-3 w-3" />
                       {t("routes.add")}
@@ -1101,11 +1130,6 @@ function formatStatLatency(value: number | undefined): string {
   return value >= 1000
     ? `${(value / 1000).toFixed(1)} s`
     : `${Math.round(value)} ms`;
-}
-
-function formatCost(value: number | undefined): string {
-  if (!value) return "$0.00";
-  return `$${value.toFixed(value < 0.01 ? 4 : 2)}`;
 }
 
 function strategyLabel(strategy: string, t: (key: string) => string): string {

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import { events } from "@/lib/bindings";
 import {
@@ -28,6 +28,8 @@ import { DataTab } from "@/components/settings/DataTab";
 import { PetTab } from "@/components/settings/PetTab";
 import { AboutTab } from "@/components/settings/AboutTab";
 import { useI18n } from "@/lib/i18n";
+import { readStoredTheme, type AppTheme } from "@/lib/theme";
+import { usePolling } from "@/lib/usePolling";
 import * as api from "@/lib/api";
 import {
   outboundProxyToastKey,
@@ -99,9 +101,7 @@ export function Settings() {
     },
     [searchParams, setSearchParams]
   );
-  const [theme, setThemeState] = useState(
-    () => localStorage.getItem("agentgate_theme") || "light"
-  );
+  const [theme, setThemeState] = useState(() => readStoredTheme());
   // gateway settings / pricing 走全局 store——跨页只读,Gateway 页改 host:port
   // 后 store.refetch() 同步给这里。
   const settings = useGatewaySettings(
@@ -171,15 +171,24 @@ export function Settings() {
     load();
   }, [load]);
 
+  // 唤醒状态只在 General tab（WakeSettings 所在）可见时刷新；usePolling 在窗口
+  // 隐藏时跳过、回到前台时立即补一次。
+  const refreshWakeStatus = useCallback(() => {
+    if (tab !== "general") return;
+    api
+      .getWakeStatus()
+      .then(setWakeStatus)
+      .catch((error) => console.warn("Failed to refresh wake status", error));
+  }, [tab]);
+  usePolling(refreshWakeStatus, 5000);
+  // 从其它 tab 切回 General 时立即补一次，不等下一个 5s 周期；首次挂载已由 load() 拉过。
+  const prevTabRef = useRef(tab);
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      api
-        .getWakeStatus()
-        .then(setWakeStatus)
-        .catch((error) => console.warn("Failed to refresh wake status", error));
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, []);
+    if (tab === "general" && prevTabRef.current !== "general") {
+      refreshWakeStatus();
+    }
+    prevTabRef.current = tab;
+  }, [tab, refreshWakeStatus]);
 
   const handleUpdateRetention = async (days: number) => {
     try {
@@ -334,7 +343,7 @@ export function Settings() {
     }
   };
 
-  const setTheme = (t: string) => {
+  const setTheme = (t: AppTheme) => {
     setThemeState(t);
     document.documentElement.setAttribute("data-theme", t);
     localStorage.setItem("agentgate_theme", t);
@@ -353,9 +362,9 @@ export function Settings() {
     );
 
   return (
-    <div className="min-h-0 space-y-5">
+    <div className="desktop-page mx-auto min-h-0 w-full max-w-[1100px]">
       {/* Tab Navigation */}
-      <nav className="overflow-x-auto">
+      <nav className="desktop-page-header surface-scroll sticky top-0 z-10 !p-1">
         <div className="inline-flex rounded-lg border border-border bg-card-secondary p-1">
           {TABS.map(({ id, icon: Icon }) => (
             <button
@@ -566,7 +575,7 @@ export function ConfigBackupSection() {
   };
 
   return (
-    <section className="rounded-xl border border-border bg-card p-5">
+    <section className="surface-panel p-5">
       <h3 className="mb-1 text-sm font-semibold text-text-primary">
         {t("settings.config_backup")}
       </h3>
@@ -631,7 +640,7 @@ export function ConfigBackupSection() {
               onChange={(e) => setShareCodeInput(e.target.value)}
               placeholder={t("settings.share_code_placeholder")}
               rows={2}
-              className="form-input flex-1 resize-none font-mono text-[11px]"
+              className="form-input flex-1 resize-none font-mono text-xs"
             />
             <button
               onClick={handleImportShareCode}
@@ -678,7 +687,7 @@ export function CollapsibleSection({
 }) {
   const [open, setOpen] = useState(false);
   return (
-    <section className="rounded-xl border border-border bg-card p-5">
+    <section className="surface-panel p-5">
       <button
         type="button"
         onClick={() => setOpen(!open)}
@@ -688,7 +697,7 @@ export function CollapsibleSection({
           <Icon className="h-4 w-4 text-accent" />
           {title}
           {badge && (
-            <span className="rounded-full bg-card-secondary px-1.5 py-0.5 text-[10px] font-normal text-text-muted">
+            <span className="rounded-full bg-card-secondary px-1.5 py-0.5 text-xs font-normal text-text-muted">
               {badge}
             </span>
           )}
@@ -699,9 +708,7 @@ export function CollapsibleSection({
           <ChevronRight className="h-4 w-4 text-text-muted" />
         )}
       </button>
-      {hint && open && (
-        <p className="mt-3 text-[11px] text-text-muted">{hint}</p>
-      )}
+      {hint && open && <p className="mt-3 text-xs text-text-muted">{hint}</p>}
       {open && <div className="mt-4">{children}</div>}
     </section>
   );
@@ -741,12 +748,10 @@ export function PetTypeCard({
         >
           {name}
         </p>
-        <p className="mt-0.5 text-[10px] text-text-muted leading-tight">
-          {desc}
-        </p>
+        <p className="mt-0.5 text-xs text-text-muted leading-tight">{desc}</p>
       </div>
       {selected && (
-        <span className="text-[10px] text-accent font-medium">● Active</span>
+        <span className="text-xs text-accent font-medium">● Active</span>
       )}
     </button>
   );
@@ -757,19 +762,22 @@ export function PetTypeCard({
 function ToggleSwitch({
   checked,
   onChange,
+  label,
 }: {
   checked: boolean;
   onChange: (val: boolean) => void;
+  label: string;
 }) {
   return (
     <label className="relative inline-flex cursor-pointer items-center">
       <input
         type="checkbox"
+        aria-label={label}
         className="peer sr-only"
         checked={checked}
         onChange={(e) => onChange(e.target.checked)}
       />
-      <div className="h-5 w-9 rounded-full bg-border transition-colors after:absolute after:left-[2px] after:top-[2px] after:h-4 after:w-4 after:rounded-full after:bg-text-muted after:transition-all peer-checked:bg-accent peer-checked:after:translate-x-full peer-checked:after:bg-white" />
+      <div className="h-5 w-9 rounded-full bg-border transition-colors after:absolute after:left-[2px] after:top-[2px] after:h-4 after:w-4 after:rounded-full after:bg-text-muted after:transition-all peer-checked:bg-accent peer-checked:after:translate-x-full peer-checked:after:bg-white peer-focus-visible:ring-2 peer-focus-visible:ring-accent peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-card" />
     </label>
   );
 }
@@ -924,7 +932,7 @@ export function PricingRow({
       </td>
       <td className="px-3 py-1.5 text-center">
         <span
-          className={`rounded px-1.5 py-0.5 text-[10px] ${item.is_custom ? "bg-accent-soft text-accent" : "bg-card-secondary text-text-muted"}`}
+          className={`rounded px-1.5 py-0.5 text-xs ${item.is_custom ? "bg-accent-soft text-accent" : "bg-card-secondary text-text-muted"}`}
         >
           {item.is_custom ? t("settings.custom") : t("settings.builtin")}
         </span>
@@ -974,9 +982,7 @@ export function PricingAddForm({
   return (
     <div className="mt-3 flex items-end gap-2">
       <div className="flex-1">
-        <label className="mb-1 block text-[10px] text-text-muted">
-          Provider
-        </label>
+        <label className="mb-1 block text-xs text-text-muted">Provider</label>
         <input
           value={provider}
           onChange={(e) => setProvider(e.target.value)}
@@ -985,7 +991,7 @@ export function PricingAddForm({
         />
       </div>
       <div className="flex-1">
-        <label className="mb-1 block text-[10px] text-text-muted">Model</label>
+        <label className="mb-1 block text-xs text-text-muted">Model</label>
         <input
           value={model}
           onChange={(e) => setModel(e.target.value)}
@@ -994,9 +1000,7 @@ export function PricingAddForm({
         />
       </div>
       <div className="w-24">
-        <label className="mb-1 block text-[10px] text-text-muted">
-          Input $/1M
-        </label>
+        <label className="mb-1 block text-xs text-text-muted">Input $/1M</label>
         <input
           type="number"
           step="0.01"
@@ -1007,7 +1011,7 @@ export function PricingAddForm({
         />
       </div>
       <div className="w-24">
-        <label className="mb-1 block text-[10px] text-text-muted">
+        <label className="mb-1 block text-xs text-text-muted">
           Output $/1M
         </label>
         <input
@@ -1033,7 +1037,7 @@ export function PricingAddForm({
 // the active theme.
 
 interface ThemeSwatch {
-  id: string; // localStorage value + data-theme attribute
+  id: AppTheme; // localStorage value + data-theme attribute
   labelEn: string;
   labelZh: string;
   bg: string;
@@ -1046,83 +1050,23 @@ interface ThemeSwatch {
 const THEME_SWATCHES: ThemeSwatch[] = [
   {
     id: "dark",
-    labelEn: "Warm Amber",
-    labelZh: "暖琥珀",
-    bg: "#121110",
-    card: "#1C1A18",
-    accent: "#E89850",
-    textPrimary: "#EDE8E2",
-    border: "#38342F",
-  },
-  {
-    id: "slate",
-    labelEn: "Slate Steel",
-    labelZh: "钢蓝",
-    bg: "#0F141B",
-    card: "#1A2230",
-    accent: "#38BDF8",
-    textPrimary: "#E1E7EF",
-    border: "#3A4454",
-  },
-  {
-    id: "forest",
-    labelEn: "Forest Pine",
-    labelZh: "松林",
-    bg: "#0F1612",
-    card: "#16201A",
-    accent: "#84B062",
-    textPrimary: "#E2E8E0",
-    border: "#34453B",
-  },
-  {
-    id: "violet",
-    labelEn: "Midnight Violet",
-    labelZh: "紫夜",
-    bg: "#14101C",
-    card: "#1E1828",
-    accent: "#A78BFA",
-    textPrimary: "#ECE6F2",
-    border: "#443854",
+    labelEn: "Dark",
+    labelZh: "深色",
+    bg: "#0B1516",
+    card: "#132122",
+    accent: "#2DD4BF",
+    textPrimary: "#E6F1F0",
+    border: "#2B4142",
   },
   {
     id: "light",
-    labelEn: "Daylight",
-    labelZh: "晴日",
-    bg: "#F4F5F7",
+    labelEn: "Light",
+    labelZh: "浅色",
+    bg: "#F3F7F6",
     card: "#FFFFFF",
-    accent: "#C07830",
-    textPrimary: "#1A1C20",
-    border: "#D5D8DC",
-  },
-  {
-    id: "linen",
-    labelEn: "Linen Cream",
-    labelZh: "米麻",
-    bg: "#FAF6EE",
-    card: "#FFFFFF",
-    accent: "#B66821",
-    textPrimary: "#2C2620",
-    border: "#D9CFB8",
-  },
-  {
-    id: "mist",
-    labelEn: "Mist Blue",
-    labelZh: "雾蓝",
-    bg: "#F4F7FB",
-    card: "#FFFFFF",
-    accent: "#2563EB",
-    textPrimary: "#1B2735",
-    border: "#CFD8E3",
-  },
-  {
-    id: "sakura",
-    labelEn: "Sakura",
-    labelZh: "樱粉",
-    bg: "#FBF4F4",
-    card: "#FFFFFF",
-    accent: "#C44569",
-    textPrimary: "#2C1F22",
-    border: "#E0CCCC",
+    accent: "#0F766E",
+    textPrimary: "#142322",
+    border: "#CCDAD8",
   },
 ];
 
@@ -1130,11 +1074,11 @@ function ThemePicker({
   value,
   onChange,
 }: {
-  value: string;
-  onChange: (id: string) => void;
+  value: AppTheme;
+  onChange: (id: AppTheme) => void;
 }) {
   return (
-    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+    <div className="grid max-w-md grid-cols-2 gap-3">
       {THEME_SWATCHES.map((s) => {
         const selected = value === s.id;
         return (
@@ -1172,13 +1116,13 @@ function ThemePicker({
             </div>
             <div className="flex items-baseline justify-between gap-2">
               <span
-                className="text-[11px] font-medium"
+                className="text-xs font-medium"
                 style={{ color: s.textPrimary }}
               >
                 {s.labelZh}
               </span>
               <span
-                className="text-[10px]"
+                className="text-xs"
                 style={{ color: s.textPrimary, opacity: 0.6 }}
               >
                 {s.labelEn}

@@ -3,7 +3,7 @@
 
 use serde_json::{json, Value};
 
-use super::redaction::redact_text;
+use super::redaction::redact_text_with_secrets;
 
 /// Inputs for one gateway log export. All body fields optional.
 #[derive(Debug, Clone)]
@@ -26,6 +26,9 @@ pub struct ReproExportInput {
     pub app_version: String,
     /// When false, body fields are omitted entirely (metadata-only export).
     pub include_bodies: bool,
+    /// 当前存储的 provider 密钥(`redaction::provider_secrets`),构建导出包时按原值
+    /// 精确脱敏——没有 sk- 等前缀的 key 靠启发式脱敏会漏。
+    pub known_secrets: Vec<String>,
 }
 
 /// Build a JSON object (pretty-printed string) safe to paste into an Issue.
@@ -42,12 +45,12 @@ pub fn build_repro_package(input: &ReproExportInput) -> String {
         "route": input.route,
         "status_code": input.status_code,
         "latency_ms": input.latency_ms,
-        "error_message": input.error_message.as_ref().map(|s| redact_text(s)),
+        "error_message": input.error_message.as_ref().map(|s| redact(input, s)),
         "secrets_redacted": true,
     });
 
     if let Some(trace) = &input.trace_json {
-        body["trace_json"] = Value::String(redact_text(trace));
+        body["trace_json"] = Value::String(redact(input, trace));
         // Try to surface route_decision / error chain without raw dump noise.
         if let Ok(v) = serde_json::from_str::<Value>(trace) {
             if let Some(rd) = v.get("route_decision") {
@@ -60,18 +63,22 @@ pub fn build_repro_package(input: &ReproExportInput) -> String {
     }
 
     if input.include_bodies {
-        body["raw_request"] = json_opt_redacted(&input.raw_request);
-        body["converted_request"] = json_opt_redacted(&input.converted_request);
-        body["raw_response"] = json_opt_redacted(&input.raw_response);
-        body["converted_response"] = json_opt_redacted(&input.converted_response);
+        body["raw_request"] = json_opt_redacted(input, &input.raw_request);
+        body["converted_request"] = json_opt_redacted(input, &input.converted_request);
+        body["raw_response"] = json_opt_redacted(input, &input.raw_response);
+        body["converted_response"] = json_opt_redacted(input, &input.converted_response);
     }
 
     serde_json::to_string_pretty(&body).unwrap_or_else(|_| "{}".to_string())
 }
 
-fn json_opt_redacted(s: &Option<String>) -> Value {
+fn redact(input: &ReproExportInput, text: &str) -> String {
+    redact_text_with_secrets(text, &input.known_secrets)
+}
+
+fn json_opt_redacted(input: &ReproExportInput, s: &Option<String>) -> Value {
     match s {
-        Some(t) => Value::String(redact_text(t)),
+        Some(t) => Value::String(redact(input, t)),
         None => Value::Null,
     }
 }
@@ -102,7 +109,18 @@ mod tests {
             converted_response: None,
             app_version: "1.5.1".into(),
             include_bodies,
+            known_secrets: vec![],
         }
+    }
+
+    #[test]
+    fn export_redacts_known_secrets_without_prefix() {
+        let mut input = sample(true);
+        input.known_secrets = vec!["AIzaSyNoPrefixKey0123456789".into()];
+        input.error_message = Some("bad key AIzaSyNoPrefixKey0123456789".into());
+        input.raw_response = Some(r#"{"error":"AIzaSyNoPrefixKey0123456789 invalid"}"#.into());
+        let pkg = build_repro_package(&input);
+        assert!(!pkg.contains("AIzaSyNoPrefixKey0123456789"), "{pkg}");
     }
 
     #[test]
@@ -125,7 +143,7 @@ mod tests {
     fn export_without_bodies_omits_payloads() {
         let pkg = build_repro_package(&sample(false));
         assert!(!pkg.contains("messages"));
-        assert!(pkg.contains("\"raw_request\"") == false || pkg.contains("\"raw_request\": null"));
+        assert!(!pkg.contains("\"raw_request\"") || pkg.contains("\"raw_request\": null"));
         // metadata-only: include_bodies false means keys absent or null
         let v: Value = serde_json::from_str(&pkg).unwrap();
         assert!(v.get("raw_request").is_none());

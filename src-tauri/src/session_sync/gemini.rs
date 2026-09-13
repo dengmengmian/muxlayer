@@ -211,44 +211,44 @@ pub fn sync(db: &crate::storage::db::DbPool) -> Result<SyncResult, AppError> {
     let candidate_ids: Vec<String> = all_rows.iter().map(|r| r.external_id.clone()).collect();
     let conn = db.get().map_err(|_| AppError::internal("DB lock failed"))?;
     let already = storage::request_logs::external_ids_for_source(&conn, SOURCE, &candidate_ids)?;
+    // 价格表只加载一次,逐行内存匹配。
+    let prices = storage::pricing::load_price_table(&conn)?;
 
+    let mut new_rows = Vec::new();
     for row in all_rows {
         if already.contains(&row.external_id) {
             result.skipped += 1;
             continue;
         }
-        let cost = storage::pricing::calculate_cost_for_request(
-            &conn,
-            PROVIDER_LABEL,
-            &row.model,
-            Some(row.input_tokens),
-            Some(row.output_tokens),
-        );
-        match storage::request_logs::insert_session_log(
-            &conn,
-            &row.timestamp,
-            CLIENT,
-            PROVIDER_LABEL,
-            &row.model,
-            ROUTE,
-            SOURCE,
-            &row.session_id,
-            &row.external_id,
-            Some(row.input_tokens),
-            Some(row.output_tokens),
-            None,
-            if row.cached_tokens > 0 {
-                Some(row.cached_tokens)
-            } else {
-                None
-            },
+        // cached 已包含在 input 里,按 input 计费,不额外计缓存费。
+        let cost = prices.lookup(PROVIDER_LABEL, &row.model).map(|price| {
+            storage::pricing::calculate_cost(
+                Some(row.input_tokens),
+                Some(row.output_tokens),
+                price.input,
+                price.output,
+            )
+        });
+        new_rows.push(storage::request_logs::SessionLogRow {
+            timestamp: row.timestamp,
+            client: CLIENT.to_string(),
+            provider: PROVIDER_LABEL.to_string(),
+            model: row.model,
+            route: ROUTE.to_string(),
+            source: SOURCE.to_string(),
+            session_id: row.session_id,
+            external_id: row.external_id,
+            input_tokens: Some(row.input_tokens),
+            output_tokens: Some(row.output_tokens),
+            cache_write_tokens: None,
+            cache_read_tokens: (row.cached_tokens > 0).then_some(row.cached_tokens),
             cost,
-        ) {
-            Ok(()) => result.imported += 1,
-            Err(e) => result
-                .errors
-                .push(format!("insert {}: {}", row.external_id, e.message)),
-        }
+        });
+    }
+    let outcome = storage::request_logs::insert_session_logs(&conn, &new_rows)?;
+    result.imported += outcome.imported;
+    for (id, e) in outcome.errors {
+        result.errors.push(format!("insert {id}: {}", e.message));
     }
     Ok(result)
 }

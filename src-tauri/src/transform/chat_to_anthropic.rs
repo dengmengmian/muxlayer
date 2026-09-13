@@ -84,10 +84,11 @@ pub fn convert(req: &ChatCompletionsRequest) -> Result<Value, AppError> {
     // Anthropic 严格 user/assistant 交替；连续同 role 合并
     let messages = merge_consecutive_same_role(messages);
 
+    // Anthropic max_tokens 必填；Chat 没给时用 8192（与 responses_to_anthropic 一致）
+    let max_tokens = req.max_tokens.unwrap_or(8192);
     let mut body = json!({
         "model": req.model,
-        // Anthropic max_tokens 必填；Chat 没给时用 8192（与 responses_to_anthropic 一致）
-        "max_tokens": req.max_tokens.unwrap_or(8192),
+        "max_tokens": max_tokens,
         "messages": messages,
     });
 
@@ -110,22 +111,38 @@ pub fn convert(req: &ChatCompletionsRequest) -> Result<Value, AppError> {
         }
     }
 
-    // reasoning_effort → thinking.budget_tokens（与 thinking_to_reasoning_effort 反向对称）
-    if let Some(ref effort) = req.reasoning_effort {
-        if let Some(thinking) = reasoning_effort_to_thinking(effort) {
-            body["thinking"] = thinking;
-        }
+    // reasoning_effort → thinking：复用 responses_to_anthropic 的模型族规则
+    // （adaptive / haiku 不开 / 强制工具不开 / budget clamp）；Chat 路径只在显式
+    // reasoning_effort 时开思考，不因模型族强开。
+    let forced_tool_choice = body
+        .get("tool_choice")
+        .and_then(|tc| tc.get("type"))
+        .and_then(|t| t.as_str())
+        .is_some_and(|t| t == "any" || t == "tool");
+    let thinking = req.reasoning_effort.as_deref().and_then(|effort| {
+        crate::transform::responses_to_anthropic::convert_thinking(
+            &Some(json!({"effort": effort})),
+            &req.model,
+            max_tokens,
+            forced_tool_choice,
+        )
+    });
+    let thinking_on = thinking.is_some();
+    if let Some(thinking) = thinking {
+        body["thinking"] = thinking;
     }
 
-    if let Some(stream) = Some(req.stream) {
-        body["stream"] = json!(stream);
-    }
-    if let Some(temp) = req.temperature {
-        // Anthropic temperature 上限 1.0；OpenAI 上限 2.0。clamp 静默修正。
-        body["temperature"] = json!(temp.clamp(0.0, 1.0));
-    }
-    if let Some(top_p) = req.top_p {
-        body["top_p"] = json!(top_p.clamp(0.0, 1.0));
+    body["stream"] = json!(req.stream);
+    // thinking 开启时 Anthropic 不接受自定义 temperature / top_p（400），与
+    // responses_to_anthropic 一致：开思考时一律省略。
+    if !thinking_on {
+        if let Some(temp) = req.temperature {
+            // Anthropic temperature 上限 1.0；OpenAI 上限 2.0。clamp 静默修正。
+            body["temperature"] = json!(temp.clamp(0.0, 1.0));
+        }
+        if let Some(top_p) = req.top_p {
+            body["top_p"] = json!(top_p.clamp(0.0, 1.0));
+        }
     }
     if let Some(ref stop) = req.stop {
         body["stop_sequences"] = stop.clone();
@@ -288,12 +305,12 @@ fn merge_consecutive_same_role(messages: Vec<Value>) -> Vec<Value> {
         if let Some(last) = out.last_mut() {
             let last_role = last.get("role").and_then(|r| r.as_str()).unwrap_or("");
             if last_role == role {
-                // 合并 content 数组
-                let mut last_arr = last.get("content").cloned().unwrap_or(json!([]));
-                let new_arr = msg.get("content").cloned().unwrap_or(json!([]));
-                if let (Some(la), Some(na)) = (last_arr.as_array_mut(), new_arr.as_array()) {
+                // 合并 content 数组（原地 extend，不整组 clone）
+                if let (Some(la), Some(na)) = (
+                    last.get_mut("content").and_then(|c| c.as_array_mut()),
+                    msg.get("content").and_then(|c| c.as_array()),
+                ) {
                     la.extend(na.iter().cloned());
-                    last["content"] = json!(la.clone());
                     continue;
                 }
             }
@@ -367,23 +384,6 @@ fn convert_tool_choice(tc: &Value) -> Option<Value> {
         "auto" | "any" | "tool" => Some(tc.clone()),
         _ => None,
     }
-}
-
-/// reasoning_effort 字符串 → Anthropic thinking 对象（与 `thinking_to_reasoning_effort` 反向）。
-///
-/// budget_tokens 取每档的下界 + 1：
-/// - low    → 4096
-/// - medium → 8192
-/// - high   → 16384
-/// - minimal → low 对齐（OpenAI 有 minimal，Anthropic 没有显式区分）
-fn reasoning_effort_to_thinking(effort: &str) -> Option<Value> {
-    let budget = match effort.to_lowercase().as_str() {
-        "minimal" | "low" => 4096,
-        "medium" => 8192,
-        "high" => 16384,
-        _ => return None,
-    };
-    Some(json!({"type": "enabled", "budget_tokens": budget}))
 }
 
 #[cfg(test)]
@@ -648,9 +648,32 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_effort_budget_below_default_max_tokens_and_strips_sampling() {
+        // 默认 max_tokens=8192 时 medium/high 的 budget 不能 >= max_tokens（Anthropic 400）；
+        // 开思考时 temperature/top_p 也必须省略（同样 400）。
+        let mut req = base_req();
+        req.messages = vec![user_msg("hi")];
+        req.temperature = Some(0.5);
+        req.top_p = Some(0.9);
+        for effort in ["low", "medium", "high"] {
+            req.reasoning_effort = Some(effort.into());
+            let body = convert(&req).unwrap();
+            let budget = body["thinking"]["budget_tokens"].as_i64().unwrap();
+            let max_tokens = body["max_tokens"].as_i64().unwrap();
+            assert!(
+                budget < max_tokens,
+                "{effort}: budget {budget} must be < max_tokens {max_tokens}"
+            );
+            assert!(body.get("temperature").is_none(), "{effort}: temperature");
+            assert!(body.get("top_p").is_none(), "{effort}: top_p");
+        }
+    }
+
+    #[test]
     fn reasoning_effort_maps_to_thinking_budget() {
         let mut req = base_req();
         req.messages = vec![user_msg("hi")];
+        req.max_tokens = Some(64000);
 
         req.reasoning_effort = Some("low".into());
         assert_eq!(
@@ -669,6 +692,56 @@ mod tests {
             convert(&req).unwrap()["thinking"],
             json!({"type": "enabled", "budget_tokens": 16384})
         );
+    }
+
+    #[test]
+    fn reasoning_effort_follows_model_family_rules() {
+        let mut req = base_req();
+        req.messages = vec![user_msg("hi")];
+
+        // opus-4-7 只接受 adaptive,enabled+budget 会 400
+        req.model = "claude-opus-4-7".into();
+        req.reasoning_effort = Some("xhigh".into());
+        assert_eq!(
+            convert(&req).unwrap()["thinking"],
+            json!({"type": "adaptive"})
+        );
+
+        // haiku 不支持 thinking
+        req.model = "claude-haiku-4-5".into();
+        req.reasoning_effort = Some("high".into());
+        assert!(convert(&req).unwrap().get("thinking").is_none());
+
+        // 老 sonnet 走 enabled+budget,且 budget < 默认 max_tokens
+        req.model = "claude-3-5-sonnet".into();
+        req.reasoning_effort = Some("medium".into());
+        let body = convert(&req).unwrap();
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert!(
+            body["thinking"]["budget_tokens"].as_i64().unwrap()
+                < body["max_tokens"].as_i64().unwrap()
+        );
+    }
+
+    #[test]
+    fn reasoning_effort_with_forced_tool_choice_disables_thinking() {
+        let mut req = base_req();
+        req.messages = vec![user_msg("hi")];
+        req.model = "claude-3-5-sonnet".into();
+        req.reasoning_effort = Some("high".into());
+        req.tool_choice = Some(json!({"type": "function", "function": {"name": "search"}}));
+        assert!(convert(&req).unwrap().get("thinking").is_none());
+        req.tool_choice = Some(json!("required"));
+        assert!(convert(&req).unwrap().get("thinking").is_none());
+    }
+
+    #[test]
+    fn no_reasoning_effort_keeps_thinking_off() {
+        // Chat 路径不因模型族强开思考,只跟随显式 reasoning_effort
+        let mut req = base_req();
+        req.messages = vec![user_msg("hi")];
+        req.model = "claude-sonnet-4-5".into();
+        assert!(convert(&req).unwrap().get("thinking").is_none());
     }
 
     #[test]

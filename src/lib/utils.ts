@@ -27,3 +27,13 @@ export function formatOptionalLatency(ms: number | null): string {
   if (ms === null || ms <= 0) return "—";
   return formatLatency(ms);
 }
+
+/// 金额展示：null/undefined 表示未知（无定价）→ "—"；≤0 → "$0.00"；
+/// 不足 1 美分保留 4 位，不足 1 美元保留 3 位，其余 2 位。
+export function formatCost(cost: number | null | undefined): string {
+  if (cost == null) return "—";
+  if (cost <= 0) return "$0.00";
+  if (cost < 0.01) return `$${cost.toFixed(4)}`;
+  if (cost < 1) return `$${cost.toFixed(3)}`;
+  return `$${cost.toFixed(2)}`;
+}

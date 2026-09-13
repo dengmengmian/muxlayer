@@ -1,0 +1,7 @@
+# workflow 里的 action 全部钉在 commit SHA 上,由 dependabot 每周提 PR 升级 SHA 和 # tag 注释。
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

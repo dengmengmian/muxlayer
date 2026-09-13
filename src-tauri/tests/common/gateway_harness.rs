@@ -92,14 +92,14 @@ impl GatewayHarness {
     pub async fn start(spec: ProviderSpec, mock: &MockUpstream) -> Self {
         let token = init_isolated_home_and_token();
 
-        // 跟生产路径一样:Pool 起步,所有 setup 操作通过 pool.get() 借连接。
-        let manager = SqliteConnectionManager::memory();
-        let pool: DbPool = Pool::builder()
-            .max_size(4)
-            .build(manager)
-            .expect("build in-memory pool");
+        // 跟生产路径一样:临时目录下的文件库 + WAL 连接池。不能用
+        // `SqliteConnectionManager::memory()`——那样池里每个连接各是一个独立的
+        // 空库,网关把 DB 读写挪到并发的 blocking 任务后会借到没有表的连接。
+        let db_dir = tempfile::tempdir().expect("create tempdir for db");
+        let db_path = db_dir.path().to_path_buf();
+        std::mem::forget(db_dir);
+        let pool: DbPool = storage::db::init_database(&db_path).expect("init temp db");
         let conn = pool.get().expect("borrow setup conn");
-        storage::migrations::run_migrations(&conn).expect("run migrations");
         // Migrations seed real providers (e.g. DeepSeek) + default route
         // profiles wired to them. We want a clean slate so the mock provider
         // is the only candidate the gateway can route to.
@@ -322,6 +322,35 @@ impl GatewayHarness {
             .expect("set failover mode");
         }
         id
+    }
+
+    /// 读 provider 的熔断运行态:`(consecutive_failures, last_error_code)`。
+    /// 没有记录时视为健康 `(0, None)`。
+    pub fn runtime_status(&self, provider_id: &str) -> (i64, Option<String>) {
+        let conn = self.db.get().expect("borrow conn");
+        conn.query_row(
+            "SELECT consecutive_failures, last_error_code FROM provider_runtime_status WHERE provider_id = ?1",
+            params![provider_id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .unwrap_or((0, None))
+    }
+
+    /// 熔断标记是后台写入:轮询到 `consecutive_failures >= min` 再返回运行态,
+    /// 超时返回最后一次读到的值(由调用方断言)。
+    pub async fn wait_runtime_failures(
+        &self,
+        provider_id: &str,
+        min: i64,
+    ) -> (i64, Option<String>) {
+        for _ in 0..100 {
+            let status = self.runtime_status(provider_id);
+            if status.0 >= min {
+                return status;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        self.runtime_status(provider_id)
     }
 
     pub fn client(&self) -> reqwest::Client {

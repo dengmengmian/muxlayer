@@ -14,6 +14,78 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const POOL_IDLE: Duration = Duration::from_secs(30);
 const TCP_KEEPALIVE: Duration = Duration::from_secs(20);
 const NO_PROXY_HOSTS: &str = "localhost,127.0.0.1,::1";
+/// 上游重定向最多跟 5 跳,且只跟同源(scheme + host + port)或同 host 的
+/// http→https 升级跳转。跨 host 跳转不跟:reqwest 跨 host 只剥 Authorization,
+/// x-api-key / x-goog-api-key 会被带到第三方主机。停下后 3xx 作为上游错误交给 failover。
+const MAX_REDIRECTS: usize = 5;
+
+/// 非流式上游响应 body 上限。`resp.text()` 无上限,异常上游能把网关内存打满。
+pub const MAX_NON_STREAM_BODY_BYTES: usize = 64 * 1024 * 1024;
+
+/// 读完非流式上游响应 body,超过 [`MAX_NON_STREAM_BODY_BYTES`] 返回明确错误。
+pub async fn read_text_capped(resp: reqwest::Response) -> Result<String, AppError> {
+    read_text_with_cap(resp, MAX_NON_STREAM_BODY_BYTES).await
+}
+
+async fn read_text_with_cap(mut resp: reqwest::Response, cap: usize) -> Result<String, AppError> {
+    let too_large = || {
+        AppError::new(
+            crate::errors::codes::UPSTREAM_NON_STREAM_ERROR,
+            format!(
+                "Upstream response body exceeds the {} MiB limit",
+                cap / (1024 * 1024)
+            ),
+        )
+        .with_suggestion("上游返回了异常大的响应,已中止读取以保护网关内存")
+    };
+    if resp.content_length().is_some_and(|len| len as usize > cap) {
+        return Err(too_large());
+    }
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| {
+        AppError::new(
+            crate::errors::codes::PASS_THROUGH_REQUEST_FAILED,
+            format!("Failed to read upstream response body: {e}"),
+        )
+    })? {
+        if buf.len() + chunk.len() > cap {
+            return Err(too_large());
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// 是否跟随这一跳:host 必须相同,且 scheme + 端口不变,或是同 host 的
+/// http→https 升级(默认端口 80→443,或显式同端口)。https→http 降级不跟。
+fn redirect_allowed(origin: &reqwest::Url, target: &reqwest::Url) -> bool {
+    if origin.host_str() != target.host_str() {
+        return false;
+    }
+    let (from_port, to_port) = (
+        origin.port_or_known_default(),
+        target.port_or_known_default(),
+    );
+    if origin.scheme() == target.scheme() {
+        return from_port == to_port;
+    }
+    origin.scheme() == "http"
+        && target.scheme() == "https"
+        && ((from_port == Some(80) && to_port == Some(443)) || from_port == to_port)
+}
+
+fn same_origin_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        let Some(origin) = attempt.previous().first() else {
+            return attempt.stop();
+        };
+        if redirect_allowed(origin, attempt.url()) && attempt.previous().len() <= MAX_REDIRECTS {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    })
+}
 
 /// Normalize and reject non-http(s) proxy URLs. Empty / whitespace → None.
 pub fn parse_proxy_url(raw: &str) -> Result<Option<String>, AppError> {
@@ -57,6 +129,7 @@ pub fn build_upstream_client(proxy: Option<Proxy>) -> Result<Client, AppError> {
             crate::gateway::sse_bootstrap::STREAM_READ_IDLE_HINT_SECS,
         ))
         .connect_timeout(CONNECT_TIMEOUT)
+        .redirect(same_origin_redirect_policy())
         .pool_idle_timeout(POOL_IDLE)
         .tcp_keepalive(TCP_KEEPALIVE);
     if let Some(proxy) = proxy {
@@ -101,6 +174,124 @@ pub fn build_upstream_client_from_db(db: &crate::storage::db::DbPool) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cross_origin_redirect_is_not_followed() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let other = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("leaked"))
+            .mount(&other)
+            .await;
+        let origin = MockServer::start().await;
+        // 同源跳转照常跟随
+        Mock::given(method("POST"))
+            .and(path("/same"))
+            .respond_with(ResponseTemplate::new(307).insert_header("location", "/final"))
+            .mount(&origin)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/final"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+            .mount(&origin)
+            .await;
+        // 跨源跳转(另一个端口 + 另一个 host 名)
+        let other_url = other.uri().replace("127.0.0.1", "localhost");
+        Mock::given(method("POST"))
+            .and(path("/cross"))
+            .respond_with(
+                ResponseTemplate::new(307).insert_header("location", format!("{other_url}/steal")),
+            )
+            .mount(&origin)
+            .await;
+
+        let client = build_upstream_client(None).unwrap();
+        let same = client
+            .post(format!("{}/same", origin.uri()))
+            .header("x-api-key", "sk-secret")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(same.status().as_u16(), 200);
+
+        let cross = client
+            .post(format!("{}/cross", origin.uri()))
+            .header("x-api-key", "sk-secret")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            cross.status().as_u16(),
+            307,
+            "cross-origin redirect must stop"
+        );
+        assert!(
+            other.received_requests().await.unwrap().is_empty(),
+            "x-api-key must never reach the redirect target"
+        );
+    }
+
+    #[test]
+    fn redirect_allows_same_host_https_upgrade_but_not_cross_host_or_downgrade() {
+        let u = |s: &str| reqwest::Url::parse(s).unwrap();
+        // 同源
+        assert!(redirect_allowed(
+            &u("https://api.example.com/v1"),
+            &u("https://api.example.com/v2")
+        ));
+        // 同 host 的 http→https 升级:默认端口 80→443、或显式同端口
+        assert!(redirect_allowed(
+            &u("http://api.example.com/v1"),
+            &u("https://api.example.com/v1")
+        ));
+        assert!(redirect_allowed(
+            &u("http://api.example.com:80/v1"),
+            &u("https://api.example.com:443/v1")
+        ));
+        assert!(redirect_allowed(
+            &u("http://10.0.0.2:8080/v1"),
+            &u("https://10.0.0.2:8080/v1")
+        ));
+        // 升级但端口乱跳、https→http 降级、跨 host:一律不跟
+        assert!(!redirect_allowed(
+            &u("http://api.example.com/v1"),
+            &u("https://api.example.com:8443/v1")
+        ));
+        assert!(!redirect_allowed(
+            &u("https://api.example.com/v1"),
+            &u("http://api.example.com/v1")
+        ));
+        assert!(!redirect_allowed(
+            &u("http://api.example.com/v1"),
+            &u("https://evil.example.com/v1")
+        ));
+        assert!(!redirect_allowed(
+            &u("https://api.example.com/v1"),
+            &u("https://api.example.com:8443/v1")
+        ));
+    }
+
+    #[tokio::test]
+    async fn capped_reader_rejects_oversized_body() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("x".repeat(2048)))
+            .mount(&server)
+            .await;
+        let client = build_upstream_client(None).unwrap();
+
+        let resp = client.get(server.uri()).send().await.unwrap();
+        let err = read_text_with_cap(resp, 1024).await.unwrap_err();
+        assert!(err.message.contains("exceeds"), "{}", err.message);
+
+        let resp = client.get(server.uri()).send().await.unwrap();
+        assert_eq!(read_text_with_cap(resp, 4096).await.unwrap().len(), 2048);
+    }
 
     #[test]
     fn empty_url_is_none() {

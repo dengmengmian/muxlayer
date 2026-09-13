@@ -241,18 +241,22 @@ mod tests {
 
     #[test]
     fn merge_logs_combines_request_and_response() {
-        let mut req_log = RefinerLog::default();
-        req_log.body_filter = Some(crate::gateway::refiner_log::BodyFilterAction {
-            stripped_fields: vec!["web_search".into()],
-            reason: "test".into(),
-        });
-        let mut resp_log = RefinerLog::default();
-        resp_log.error_mapper = Some(crate::gateway::refiner_log::ErrorMapperAction {
-            upstream_code: Some("x".into()),
-            upstream_message: None,
-            mapped_code: "rate_limit".into(),
-            mapped_message: "boom".into(),
-        });
+        let mut req_log = RefinerLog {
+            body_filter: Some(crate::gateway::refiner_log::BodyFilterAction {
+                stripped_fields: vec!["web_search".into()],
+                reason: "test".into(),
+            }),
+            ..Default::default()
+        };
+        let resp_log = RefinerLog {
+            error_mapper: Some(crate::gateway::refiner_log::ErrorMapperAction {
+                upstream_code: Some("x".into()),
+                upstream_message: None,
+                mapped_code: "rate_limit".into(),
+                mapped_message: "boom".into(),
+            }),
+            ..Default::default()
+        };
         merge_logs(&mut req_log, resp_log);
         assert!(req_log.body_filter.is_some());
         assert!(req_log.error_mapper.is_some());
@@ -266,11 +270,13 @@ mod tests {
 
     #[test]
     fn to_trace_json_serializes_populated_log() {
-        let mut log = RefinerLog::default();
-        log.body_filter = Some(crate::gateway::refiner_log::BodyFilterAction {
-            stripped_fields: vec!["web_search".into()],
-            reason: "test".into(),
-        });
+        let log = RefinerLog {
+            body_filter: Some(crate::gateway::refiner_log::BodyFilterAction {
+                stripped_fields: vec!["web_search".into()],
+                reason: "test".into(),
+            }),
+            ..Default::default()
+        };
         let json = to_trace_json(&log).unwrap();
         assert!(json.contains("web_search"));
         assert!(json.contains("body_filter"));

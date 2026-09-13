@@ -349,7 +349,7 @@ export function ConditionsDialog({
           </button>
           <button
             onClick={handleSave}
-            className="rounded-md bg-accent px-4 py-1.5 text-xs font-medium text-white hover:bg-accent/90"
+            className="rounded-md bg-accent px-4 py-1.5 text-xs font-medium text-on-accent hover:bg-accent/90"
           >
             {t("common.save")}
           </button>

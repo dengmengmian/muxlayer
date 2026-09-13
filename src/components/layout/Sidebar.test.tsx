@@ -65,6 +65,25 @@ describe("Sidebar", () => {
     expect(screen.getByText("System")).toBeInTheDocument();
   });
 
+  it("owns navigation overflow without pushing the footer out of the window", async () => {
+    useProviders.setState({
+      items: [sampleProvider],
+      loading: false,
+      error: null,
+    });
+
+    renderWithProviders(<Sidebar />);
+
+    const sidebar = screen.getByRole("complementary");
+    const navigation = screen.getByRole("navigation");
+    const footer = (await screen.findByText("v1.4.4")).parentElement
+      ?.parentElement;
+
+    expect(sidebar).toHaveClass("h-full", "min-h-0");
+    expect(navigation).toHaveClass("min-h-0", "overflow-y-auto");
+    expect(footer).toHaveClass("shrink-0");
+  });
+
   it("toggles collapsed state", async () => {
     useProviders.setState({
       items: [sampleProvider],

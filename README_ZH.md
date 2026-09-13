@@ -63,9 +63,7 @@ MuxLayer 不是托管 API 分发平台，也不是普通代理，而是位于 Co
 
 ## 截图
 
-| 请求追踪 | 总览 |
-|---|---|
-| ![MuxLayer 请求追踪](docs/screenshots/request-trace-zh.png) | ![MuxLayer 总览](docs/screenshots/dashboard-zh.png) |
+![MuxLayer 桌面端总览](docs/screenshots/dashboard-zh.png)
 
 ## 支持的客户端和 Provider
 
@@ -128,11 +126,11 @@ OrcaRouter 是一级 Provider，不需要按自定义端点手动配。
 
 | 平台 | 安装包 |
 |---|---|
-| macOS Apple 芯片 | [MuxLayer 2.0.5](https://github.com/dengmengmian/muxlayer/releases/download/v2.0.5/MuxLayer_2.0.5_aarch64.dmg) |
-| macOS Intel 芯片 | [MuxLayer 2.0.5](https://github.com/dengmengmian/muxlayer/releases/download/v2.0.5/MuxLayer_2.0.5_x64.dmg) |
-| Windows 10 / 11 | [MuxLayer 2.0.5](https://github.com/dengmengmian/muxlayer/releases/download/v2.0.5/MuxLayer_2.0.5_x64-setup.exe) |
-| Debian / Ubuntu | [MuxLayer 2.0.5](https://github.com/dengmengmian/muxlayer/releases/download/v2.0.5/MuxLayer_2.0.5_amd64.deb) |
-| 其他 Linux 发行版 | [MuxLayer 2.0.5](https://github.com/dengmengmian/muxlayer/releases/download/v2.0.5/MuxLayer_2.0.5_amd64.AppImage) |
+| macOS Apple 芯片 | [MuxLayer 2.0.6](https://github.com/dengmengmian/muxlayer/releases/download/v2.0.6/MuxLayer_2.0.6_aarch64.dmg) |
+| macOS Intel 芯片 | [MuxLayer 2.0.6](https://github.com/dengmengmian/muxlayer/releases/download/v2.0.6/MuxLayer_2.0.6_x64.dmg) |
+| Windows 10 / 11 | [MuxLayer 2.0.6](https://github.com/dengmengmian/muxlayer/releases/download/v2.0.6/MuxLayer_2.0.6_x64-setup.exe) |
+| Debian / Ubuntu | [MuxLayer 2.0.6](https://github.com/dengmengmian/muxlayer/releases/download/v2.0.6/MuxLayer_2.0.6_amd64.deb) |
+| 其他 Linux 发行版 | [MuxLayer 2.0.6](https://github.com/dengmengmian/muxlayer/releases/download/v2.0.6/MuxLayer_2.0.6_amd64.AppImage) |
 
 macOS 也可以用 Homebrew：
 

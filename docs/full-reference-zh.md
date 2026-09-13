@@ -30,11 +30,11 @@ English: [Main Reference](./full-reference.md)
 
 | 你的机器 | 下载 |
 |---|---|
-| 🍎 macOS — Apple Silicon (M1–M4) | [MuxLayer 2.0.5](https://github.com/dengmengmian/muxlayer/releases/download/v2.0.5/MuxLayer_2.0.5_aarch64.dmg) |
-| 🍎 macOS — Intel | [MuxLayer 2.0.5](https://github.com/dengmengmian/muxlayer/releases/download/v2.0.5/MuxLayer_2.0.5_x64.dmg) |
-| 🪟 Windows 10 / 11 | [MuxLayer 2.0.5](https://github.com/dengmengmian/muxlayer/releases/download/v2.0.5/MuxLayer_2.0.5_x64-setup.exe) |
-| 🐧 Linux — Debian / Ubuntu | [MuxLayer 2.0.5](https://github.com/dengmengmian/muxlayer/releases/download/v2.0.5/MuxLayer_2.0.5_amd64.deb) |
-| 🐧 Linux — 其他发行版 | [MuxLayer 2.0.5](https://github.com/dengmengmian/muxlayer/releases/download/v2.0.5/MuxLayer_2.0.5_amd64.AppImage) |
+| 🍎 macOS — Apple Silicon (M1–M4) | [MuxLayer 2.0.6](https://github.com/dengmengmian/muxlayer/releases/download/v2.0.6/MuxLayer_2.0.6_aarch64.dmg) |
+| 🍎 macOS — Intel | [MuxLayer 2.0.6](https://github.com/dengmengmian/muxlayer/releases/download/v2.0.6/MuxLayer_2.0.6_x64.dmg) |
+| 🪟 Windows 10 / 11 | [MuxLayer 2.0.6](https://github.com/dengmengmian/muxlayer/releases/download/v2.0.6/MuxLayer_2.0.6_x64-setup.exe) |
+| 🐧 Linux — Debian / Ubuntu | [MuxLayer 2.0.6](https://github.com/dengmengmian/muxlayer/releases/download/v2.0.6/MuxLayer_2.0.6_amd64.deb) |
+| 🐧 Linux — 其他发行版 | [MuxLayer 2.0.6](https://github.com/dengmengmian/muxlayer/releases/download/v2.0.6/MuxLayer_2.0.6_amd64.AppImage) |
 
 macOS 也可以用 Homebrew 安装：
 

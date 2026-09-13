@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use rusqlite::Connection;
 use serde::Deserialize;
 use serde_json::Value;
@@ -306,8 +308,17 @@ fn matches_conditions(conditions: &RoutingConditions, analysis: &RequestAnalysis
     true
 }
 
+/// 一次查出全部 provider 建索引。候选构建 / 选中 provider 都从这里取,
+/// 不再每个候选单独 `get_by_id`。
+fn load_provider_map(conn: &Connection) -> Result<HashMap<String, Provider>, AppError> {
+    Ok(storage::providers::list_all(conn)?
+        .into_iter()
+        .map(|p| (p.id.clone(), p))
+        .collect())
+}
+
 fn build_candidates(
-    conn: &Connection,
+    providers: &HashMap<String, Provider>,
     rp_providers: &[RouteProfileProviderView],
     requested_model: Option<&str>,
     analysis: Option<&RequestAnalysis>,
@@ -341,7 +352,7 @@ fn build_candidates(
         }
 
         // Model resolution: condition_model_override → model_override → model_mapping → supported_models → default_model
-        let provider_info = storage::providers::get_by_id(conn, &rpp.provider_id).ok();
+        let provider_info = providers.get(&rpp.provider_id);
         if provider_info.as_ref().is_some_and(|p| !p.enabled) {
             continue;
         }
@@ -349,7 +360,7 @@ fn build_candidates(
         let model = condition_model_override
             .or_else(|| rpp.model_override.clone())
             .unwrap_or_else(|| {
-                if let Some(ref p) = provider_info {
+                if let Some(p) = provider_info {
                     if let Some(req) = requested_model {
                         return p.resolve_model(req);
                     }
@@ -363,7 +374,7 @@ fn build_candidates(
         // (e.g. vision) the resolved model lacks but another model on the same
         // provider has, swap to that model. Only fires when model_capabilities
         // matrix is populated; otherwise we leave the resolved model alone.
-        let model = if let (Some(p), Some(req_analysis)) = (provider_info.as_ref(), analysis) {
+        let model = if let (Some(p), Some(req_analysis)) = (provider_info, analysis) {
             promote_for_capabilities(p, &model, req_analysis)
         } else {
             model
@@ -399,7 +410,6 @@ fn build_candidates(
         // mimo-v2.5 / mimo-v2-omni as vision-capable. The promotion step (below) would
         // never run because the provider was filtered out in routes.rs:114 first.
         let supports_vision = provider_info
-            .as_ref()
             .and_then(|p| {
                 let caps = p.parse_capabilities();
                 if caps.is_empty() {
@@ -411,7 +421,7 @@ fn build_candidates(
                     }))
                 }
             })
-            .or_else(|| provider_info.as_ref().and_then(|p| p.supports_vision));
+            .or_else(|| provider_info.and_then(|p| p.supports_vision));
 
         candidates.push(ProviderCandidate {
             provider_id: rpp.provider_id.clone(),
@@ -445,14 +455,23 @@ fn sort_candidates_by_strategy(
     strategy: &str,
 ) {
     match strategy {
-        "cheapest" => candidates.sort_by(|a, b| {
-            candidate_unit_cost(conn, a)
-                .partial_cmp(&candidate_unit_cost(conn, b))
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.priority.cmp(&b.priority))
-        }),
+        "cheapest" => {
+            // 价格键先算好再排序:之前在比较器里查库,n 个候选要 O(n log n) 次 SQL。
+            let mut keyed: Vec<(f64, ProviderCandidate)> = candidates
+                .iter()
+                .map(|c| (candidate_unit_cost(conn, c), c.clone()))
+                .collect();
+            keyed.sort_by(|(ca, a), (cb, b)| {
+                ca.partial_cmp(cb)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then(a.priority.cmp(&b.priority))
+            });
+            for (slot, (_, c)) in candidates.iter_mut().zip(keyed) {
+                *slot = c;
+            }
+        }
         "fastest" => {
-            let lat = storage::request_logs::avg_latency_by_provider(conn, 24).unwrap_or_default();
+            let lat = recent_latency_by_provider(conn);
             // 冷启动/闲置 provider 没有请求延迟,用主动探测值兜底(默认关,
             // 见 probe_latency 模块说明),都没有才排末尾。
             let probes = crate::gateway::probe_latency::snapshot(
@@ -470,6 +489,35 @@ fn sort_candidates_by_strategy(
         }
         _ => {}
     }
+}
+
+/// fastest 排序用的近 24h 平均延迟缓存有效期。聚合 request_logs 是全表范围扫描,
+/// 每个请求都跑一遍太贵;30s 的滞后对延迟排序没有实际影响。
+const LATENCY_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+type LatencyCache = Option<(std::time::Instant, HashMap<String, f64>)>;
+static LATENCY_CACHE: std::sync::Mutex<LatencyCache> = std::sync::Mutex::new(None);
+
+fn recent_latency_by_provider(conn: &Connection) -> HashMap<String, f64> {
+    {
+        let guard = LATENCY_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((at, map)) = guard.as_ref() {
+            if at.elapsed() < LATENCY_CACHE_TTL {
+                return map.clone();
+            }
+        }
+    }
+    let fresh = match storage::request_logs::avg_latency_by_provider(conn, 24) {
+        Ok(map) => map,
+        Err(e) => {
+            // 查不到历史延迟时退化为只用探测值排序(与之前一致),但要留痕。
+            tracing::warn!(error = %e, "avg_latency_by_provider failed; fastest falls back to probes");
+            return HashMap::new();
+        }
+    };
+    *LATENCY_CACHE.lock().unwrap_or_else(|e| e.into_inner()) =
+        Some((std::time::Instant::now(), fresh.clone()));
+    fresh
 }
 
 /// 候选模型单价排序键：input+output 单价之和($/1M)。查不到价时返回 MAX 排末尾。
@@ -527,11 +575,21 @@ pub fn select_for_failover(
     analysis: Option<&RequestAnalysis>,
 ) -> Result<ProviderSelection, AppError> {
     let conn = db.get().map_err(|_| AppError::internal("DB lock failed"))?;
+    select_for_failover_with_conn(&conn, input_protocol, requested_model, analysis)
+}
 
-    let profile = storage::route_profiles::get_default_for_protocol(&conn, input_protocol)?;
+/// 同 [`select_for_failover`],但复用调用方的连接——网关热路径在 blocking
+/// 线程里一次借连接,把预算闸 / 选路 / 强制最便宜放进同一个任务。
+pub fn select_for_failover_with_conn(
+    conn: &Connection,
+    input_protocol: &str,
+    requested_model: Option<&str>,
+    analysis: Option<&RequestAnalysis>,
+) -> Result<ProviderSelection, AppError> {
+    let profile = storage::route_profiles::get_default_for_protocol(conn, input_protocol)?;
 
     if let Some(profile) = profile {
-        let rp_providers = storage::route_profiles::list_providers(&conn, &profile.id)?;
+        let rp_providers = storage::route_profiles::list_providers(conn, &profile.id)?;
         if rp_providers.is_empty() {
             return Err(AppError::new(
                 crate::errors::codes::ROUTE_PROFILE_EMPTY,
@@ -539,7 +597,9 @@ pub fn select_for_failover(
             ));
         }
 
-        let mut candidates = build_candidates(&conn, &rp_providers, requested_model, analysis)?;
+        let providers = load_provider_map(conn)?;
+        let mut candidates =
+            build_candidates(&providers, &rp_providers, requested_model, analysis)?;
         if candidates.is_empty() {
             return Err(AppError::new(
                 crate::errors::codes::NO_PROVIDER_CANDIDATE,
@@ -550,7 +610,7 @@ pub fn select_for_failover(
         // Failover 模式按 selection_strategy 重排候选（cheapest/fastest）；
         // manual 模式按 active_id 选、priority 维持原序，都不需要重排。
         if profile.mode != "manual" && profile.selection_strategy != "priority" {
-            sort_candidates_by_strategy(&conn, &mut candidates, &profile.selection_strategy);
+            sort_candidates_by_strategy(conn, &mut candidates, &profile.selection_strategy);
         }
 
         // Manual mode: use active_provider_id; Failover mode: first non-cooldown
@@ -575,7 +635,10 @@ pub fn select_for_failover(
             (c, "Failover: first available")
         };
 
-        let provider = storage::providers::get_by_id(&conn, &selected.provider_id)?;
+        let provider = providers
+            .get(&selected.provider_id)
+            .cloned()
+            .ok_or_else(|| AppError::not_found("Provider", &selected.provider_id))?;
 
         Ok(ProviderSelection {
             route_profile_id: profile.id,
@@ -588,7 +651,7 @@ pub fn select_for_failover(
             candidates,
         })
     } else {
-        select_global_fallback(&conn, requested_model, analysis)
+        select_global_fallback(conn, requested_model, analysis)
     }
 }
 
@@ -843,6 +906,35 @@ mod tests {
         sort_candidates_by_strategy(&conn, &mut cands3, "cheapest");
         assert_eq!(cands3[0].provider_name, "cheap");
         assert_eq!(cands3[1].provider_name, "unknown");
+    }
+
+    #[test]
+    fn cheapest_sort_breaks_price_ties_by_priority_and_keeps_unknown_last() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE model_pricing (id TEXT PRIMARY KEY, provider TEXT, model_pattern TEXT,
+                input_price REAL, output_price REAL, is_custom INTEGER, updated_at TEXT);
+             INSERT INTO model_pricing VALUES ('1','a','m', 2.0, 2.0, 0, '');
+             INSERT INTO model_pricing VALUES ('2','b','m', 2.0, 2.0, 0, '');
+             INSERT INTO model_pricing VALUES ('3','c','m', 1.0, 1.0, 0, '');",
+        )
+        .unwrap();
+        let mk = |name: &str, priority: i64| {
+            let mut c = candidate_with_defaults();
+            c.provider_id = name.to_string();
+            c.provider_name = name.to_string();
+            c.model = "m".to_string();
+            c.priority = priority;
+            c
+        };
+        // get_price 会按 model 名跨 provider 兜底查价,未知候选必须用没有定价的 model。
+        let mut unknown = mk("x", 0);
+        unknown.model = "no-price-model".to_string();
+        let mut cands = vec![unknown, mk("b", 3), mk("a", 2), mk("c", 5)];
+        sort_candidates_by_strategy(&conn, &mut cands, "cheapest");
+        let order: Vec<&str> = cands.iter().map(|c| c.provider_name.as_str()).collect();
+        // c 最便宜;a/b 同价按 priority;查不到价的 x 排最后
+        assert_eq!(order, vec!["c", "a", "b", "x"]);
     }
 
     #[test]
@@ -1442,7 +1534,6 @@ mod tests {
 
     #[test]
     fn build_candidates_skips_invalid_routing_conditions() {
-        let conn = Connection::open_in_memory().unwrap();
         let provider = RouteProfileProviderView {
             id: "rpp1".to_string(),
             provider_id: "p1".to_string(),
@@ -1465,7 +1556,8 @@ mod tests {
         };
         let analysis = test_analysis(100, false, false, "");
 
-        let candidates = build_candidates(&conn, &[provider], None, Some(&analysis)).unwrap();
+        let candidates =
+            build_candidates(&HashMap::new(), &[provider], None, Some(&analysis)).unwrap();
 
         assert!(
             candidates.is_empty(),
@@ -1530,8 +1622,9 @@ mod tests {
             consecutive_failures: 0,
         };
 
+        let providers = load_provider_map(&conn).unwrap();
         let candidates =
-            build_candidates(&conn, &[route_provider], Some("agentgate"), None).unwrap();
+            build_candidates(&providers, &[route_provider], Some("agentgate"), None).unwrap();
 
         assert!(
             candidates.is_empty(),

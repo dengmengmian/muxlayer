@@ -76,26 +76,22 @@ pub struct SkillFile {
     pub content: String,
 }
 
-fn home() -> PathBuf {
-    std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .map(PathBuf::from)
-        .unwrap_or_default()
-}
-
-/// 某来源的 skills 根目录。未知来源返回 `None`。
+/// 某来源的 skills 根目录。未知来源 / 家目录不可用返回 `None`
+/// (写操作经 `require_dir` 会先报出家目录错误)。
 fn skills_dir_for(source: &str) -> Option<PathBuf> {
+    let home = crate::fsutil::home_dir().ok()?;
     match source {
-        "claude" => Some(home().join(".claude").join("skills")),
-        "codex" => Some(home().join(".codex").join("skills")),
-        "opencode" => Some(home().join(".config").join("opencode").join("skills")),
-        "gemini" => Some(home().join(".gemini").join("skills")),
+        "claude" => Some(home.join(".claude").join("skills")),
+        "codex" => Some(home.join(".codex").join("skills")),
+        "opencode" => Some(home.join(".config").join("opencode").join("skills")),
+        "gemini" => Some(home.join(".gemini").join("skills")),
         _ => None,
     }
 }
 
 /// 校验来源合法并返回其根目录。
 fn require_dir(source: &str) -> Result<PathBuf, AppError> {
+    crate::fsutil::home_dir()?;
     skills_dir_for(source).ok_or_else(|| {
         AppError::new(
             crate::errors::codes::SKILL_BAD_SOURCE,
@@ -217,6 +213,8 @@ pub fn list_skills() -> Vec<Skill> {
 
 /// 启用/禁用：重命名 manifest 文件。已是目标状态则幂等返回。
 pub fn set_skill_enabled(source: &str, id: &str, enabled: bool) -> Result<Skill, AppError> {
+    // 整个读 → 改 → 写期间持有客户端配置锁,防止并发命令互相覆盖(见 fsutil)。
+    let _config_lock = crate::fsutil::lock_client_configs();
     validate_id(id)?;
     let dir = require_dir(source)?.join(id);
     if !dir.is_dir() {
@@ -257,6 +255,8 @@ fn rename(from: &Path, to: &Path) -> Result<(), AppError> {
 
 /// 删除一个 skill 目录。强二次确认在前端。
 pub fn delete_skill(source: &str, id: &str) -> Result<bool, AppError> {
+    // 整个读 → 改 → 写期间持有客户端配置锁,防止并发命令互相覆盖(见 fsutil)。
+    let _config_lock = crate::fsutil::lock_client_configs();
     validate_id(id)?;
     let dir = require_dir(source)?.join(id);
     if !dir.is_dir() {
@@ -276,6 +276,8 @@ pub fn delete_skill(source: &str, id: &str) -> Result<bool, AppError> {
 /// - ZIP 里必须能找到 `SKILL.md`（根目录或单层子目录），否则拒绝。
 /// - 目标目录已存在则拒绝，避免静默覆盖用户现有 skill。
 pub fn import_skill_from_zip(source: &str, bytes: &[u8]) -> Result<Skill, AppError> {
+    // 整个读 → 改 → 写期间持有客户端配置锁,防止并发命令互相覆盖(见 fsutil)。
+    let _config_lock = crate::fsutil::lock_client_configs();
     let root = require_dir(source)?;
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| {
         AppError::new(
@@ -303,6 +305,12 @@ pub fn import_skill_from_zip(source: &str, bytes: &[u8]) -> Result<Skill, AppErr
             )
         })?;
         let rel = safe.to_string_lossy().replace('\\', "/");
+        if safe_rel_path(&rel).is_none() {
+            return Err(AppError::new(
+                crate::errors::codes::SKILL_ZIP_UNSAFE,
+                format!("unsafe path in zip: {}", file.name()),
+            ));
+        }
         let mut buf = Vec::new();
         file.read_to_end(&mut buf).map_err(|e| {
             AppError::new(
@@ -465,9 +473,42 @@ fn collect_files(root: &Path, dir: &Path, out: &mut Vec<SkillFile>, skipped: &mu
     }
 }
 
+/// 校验导入文件的相对路径,返回可安全 join 到 skill 目录下的路径。
+///
+/// 所有平台统一拒绝:绝对路径(`/x`、`\x`)、盘符(`C:\x`、`c:x`)、UNC(`\\server\share`)、
+/// `..` 以及含 `:` 的分量(Windows ADS)。反斜杠先规范成 `/` 再按分量检查,最后再用
+/// `Path::components` 兜一遍只允许 `Normal`。ZIP 导入在 `enclosed_name` 之后也走这里。
+fn safe_rel_path(rel: &str) -> Option<PathBuf> {
+    if rel.is_empty() || rel.contains('\0') {
+        return None;
+    }
+    let normalized = rel.replace('\\', "/");
+    if normalized.starts_with('/') {
+        return None;
+    }
+    let mut out = PathBuf::new();
+    for part in normalized.split('/') {
+        match part {
+            "" | "." => continue,
+            ".." => return None,
+            p if p.contains(':') => return None,
+            p => out.push(p),
+        }
+    }
+    let only_normal = out
+        .components()
+        .all(|c| matches!(c, std::path::Component::Normal(_)));
+    if !only_normal || out.as_os_str().is_empty() {
+        return None;
+    }
+    Some(out)
+}
+
 /// 从备份 JSON 恢复 skill。每条按自身 `source` 写回 `skills/<name>/`；已存在的目录
 /// 跳过并上报，不覆盖用户现有 skill。返回成功导入的 skill 列表。
 pub fn import_skills(payload: &str) -> Result<Vec<Skill>, AppError> {
+    // 整个读 → 改 → 写期间持有客户端配置锁,防止并发命令互相覆盖(见 fsutil)。
+    let _config_lock = crate::fsutil::lock_client_configs();
     let export: SkillsExport = serde_json::from_str(payload).map_err(|e| {
         AppError::new(
             crate::errors::codes::SKILL_IMPORT_BAD_JSON,
@@ -487,15 +528,23 @@ pub fn import_skills(payload: &str) -> Result<Vec<Skill>, AppError> {
         if target.exists() {
             continue; // 不覆盖
         }
+        // 先校验全部路径再落盘:任一路径不安全就整体拒绝,不留半个 skill 目录。
+        let mut planned = Vec::with_capacity(item.files.len());
         for file in &item.files {
             let rel = if !item.enabled && file.rel_path == MANIFEST {
                 MANIFEST_DISABLED.to_string()
             } else {
                 file.rel_path.clone()
             };
-            if rel.contains("..") || rel.starts_with('/') {
-                continue;
-            }
+            let safe = safe_rel_path(&rel).ok_or_else(|| {
+                AppError::new(
+                    crate::errors::codes::SKILL_ZIP_UNSAFE,
+                    format!("unsafe path in import: {rel}"),
+                )
+            })?;
+            planned.push((safe, &file.content));
+        }
+        for (rel, content) in planned {
             let dest = target.join(&rel);
             if let Some(parent) = dest.parent() {
                 fs::create_dir_all(parent).map_err(|e| {
@@ -505,7 +554,7 @@ pub fn import_skills(payload: &str) -> Result<Vec<Skill>, AppError> {
                     )
                 })?;
             }
-            fs::write(&dest, &file.content).map_err(|e| {
+            fs::write(&dest, content).map_err(|e| {
                 AppError::new(
                     crate::errors::codes::SKILL_WRITE_FAILED,
                     format!("write failed: {e}"),
@@ -715,6 +764,55 @@ mod tests {
             assert_eq!(imported[0].source, "codex");
             assert!(dir.join("helper.py").exists());
         });
+    }
+
+    /// 回归:JSON 导入只拦 `..` 和前导 `/`;Windows 上 `C:\\x`、`\\\\server\\share`
+    /// 传给 Path::join 会直接替换目标目录 → 任意写。现在任何平台都整体拒绝。
+    #[test]
+    fn import_rejects_absolute_and_prefixed_rel_paths() {
+        with_temp_home(|| {
+            for bad in [
+                r"C:\evil.txt",
+                r"c:evil.txt",
+                r"\\server\share\evil.txt",
+                r"\evil.txt",
+                "/etc/evil",
+                r"..\evil.txt",
+                "a/../../evil.txt",
+                "notes.txt:stream",
+            ] {
+                let payload = serde_json::json!({
+                    "version": 1,
+                    "skills": [{
+                        "source": "claude",
+                        "name": "gamma",
+                        "enabled": true,
+                        "files": [
+                            {"rel_path": "SKILL.md", "content": "---\nname: gamma\n---\n"},
+                            {"rel_path": bad, "content": "pwned"}
+                        ]
+                    }]
+                });
+                let err = import_skills(&payload.to_string()).unwrap_err();
+                assert_eq!(err.code, crate::errors::codes::SKILL_ZIP_UNSAFE, "{bad}");
+                let dir = skills_dir_for("claude").unwrap().join("gamma");
+                assert!(!dir.exists(), "{bad}: nothing may be written");
+            }
+        });
+    }
+
+    #[test]
+    fn safe_rel_path_accepts_nested_relative_paths() {
+        assert_eq!(
+            safe_rel_path("scripts/helper.py"),
+            Some(PathBuf::from("scripts").join("helper.py"))
+        );
+        assert_eq!(
+            safe_rel_path(r"scripts\helper.py"),
+            Some(PathBuf::from("scripts").join("helper.py"))
+        );
+        assert_eq!(safe_rel_path("./SKILL.md"), Some(PathBuf::from("SKILL.md")));
+        assert_eq!(safe_rel_path(""), None);
     }
 
     #[test]

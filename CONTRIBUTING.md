@@ -79,7 +79,7 @@ If the provider needs special handling (like DeepSeek's schema cleaning or Kimi'
 ## Development Setup
 
 ```bash
-# Prerequisites: Node.js 20+, pnpm 10+, Rust 1.75+
+# Prerequisites: Node.js 22+ (see .nvmrc), pnpm 11, Rust 1.75+
 pnpm install
 pnpm tauri dev
 ```

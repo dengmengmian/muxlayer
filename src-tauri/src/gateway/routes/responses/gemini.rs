@@ -120,6 +120,7 @@ pub(super) async fn handle_gemini_non_stream_response(
                     output: out_tok,
                     cache_write: None,
                     cache_read: None,
+                    input_semantics: crate::gateway::usage::InputCacheSemantics::IncludesCacheRead,
                 },
             );
             Ok(Json(responses_resp).into_response())
@@ -228,12 +229,14 @@ pub(super) async fn handle_gemini_stream_response(
                                 output: out_tok,
                                 cache_write: None,
                                 cache_read: None,
+                                input_semantics:
+                                    crate::gateway::usage::InputCacheSemantics::IncludesCacheRead,
                             },
                         );
                     }
                     Err(err_msg) => {
-                        let err =
-                            AppError::new(crate::errors::codes::UPSTREAM_STREAM_ERROR, &err_msg);
+                        // 客户端断开记 499 + client disconnected,上游失败记 502。
+                        let err = stream_task_error(&err_msg);
                         log_request_error_full(
                             &db,
                             &client_type,
@@ -244,7 +247,7 @@ pub(super) async fn handle_gemini_stream_response(
                             &provider_name,
                             &model_clone,
                             &err,
-                            502,
+                            stream_error_status(&err),
                             latency,
                         );
                     }

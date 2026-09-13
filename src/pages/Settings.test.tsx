@@ -53,6 +53,7 @@ function gatewaySettings(): any {
 describe("Settings", () => {
   beforeEach(() => {
     __resetGlobalStoresForTest();
+    localStorage.clear();
     vi.mocked(api.getGatewaySettings).mockResolvedValue(gatewaySettings());
     vi.mocked(api.getWakeStatus).mockResolvedValue({
       supported: true,
@@ -109,8 +110,39 @@ describe("Settings", () => {
     expect(screen.getByText("settings.tab.general")).toBeInTheDocument();
   });
 
+  it("offers only the light and dark brand themes", async () => {
+    render(
+      <MemoryRouter>
+        <Settings />
+      </MemoryRouter>
+    );
+
+    expect(await screen.findByRole("button", { name: /Dark/i })).toBeVisible();
+    expect(screen.getByRole("button", { name: /Light/i })).toBeVisible();
+    expect(screen.queryByText("Slate Steel")).not.toBeInTheDocument();
+    expect(screen.queryByText("Forest Pine")).not.toBeInTheDocument();
+    expect(screen.queryByText("Midnight Violet")).not.toBeInTheDocument();
+    expect(screen.queryByText("Linen Cream")).not.toBeInTheDocument();
+    expect(screen.queryByText("Mist Blue")).not.toBeInTheDocument();
+    expect(screen.queryByText("Sakura")).not.toBeInTheDocument();
+  });
+
+  it("migrates an old dark theme before rendering the picker", async () => {
+    localStorage.setItem("agentgate_theme", "slate");
+
+    render(
+      <MemoryRouter>
+        <Settings />
+      </MemoryRouter>
+    );
+
+    const dark = await screen.findByRole("button", { name: /Dark/i });
+    expect(dark).toHaveAttribute("aria-pressed", "true");
+    expect(localStorage.getItem("agentgate_theme")).toBe("dark");
+  });
+
   it("toggles auto start gateway", async () => {
-    const { container } = render(
+    render(
       <MemoryRouter>
         <Settings />
       </MemoryRouter>
@@ -118,9 +150,12 @@ describe("Settings", () => {
 
     await screen.findByText("settings.auto_start_gateway");
 
-    const autoStart = container.querySelector(
-      'input[type="checkbox"]'
-    )! as HTMLElement;
+    const autoStart = await screen.findByRole("checkbox", {
+      name: "settings.auto_start_gateway",
+    });
+    expect(autoStart.nextElementSibling).toHaveClass(
+      "peer-focus-visible:ring-2"
+    );
     await act(async () => autoStart.click());
 
     await waitFor(() =>
@@ -199,5 +234,78 @@ describe("Settings", () => {
     await waitFor(() =>
       expect(api.exportConfigJson).toHaveBeenCalledWith(false)
     );
+  });
+});
+
+describe("Settings wake status polling", () => {
+  beforeEach(() => {
+    __resetGlobalStoresForTest();
+    vi.mocked(api.getGatewaySettings).mockResolvedValue(gatewaySettings());
+    vi.mocked(api.getWakeStatus).mockResolvedValue(null as any);
+    vi.mocked(api.getGatewayAuthSettings).mockResolvedValue({
+      token_path: "/tmp/token",
+    } as any);
+    vi.mocked(api.getPetSettings).mockResolvedValue({
+      pet_type: "robot",
+      visible: true,
+    } as any);
+    vi.mocked(api.getPetClickThrough).mockResolvedValue(false);
+    vi.mocked(api.listModelPricing).mockResolvedValue([]);
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function advance(ms: number) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  }
+
+  it("refreshes wake status every 5s while the general tab is shown", async () => {
+    render(
+      <MemoryRouter>
+        <Settings />
+      </MemoryRouter>
+    );
+    await advance(0);
+    vi.mocked(api.getWakeStatus).mockClear();
+
+    await advance(4999);
+    expect(api.getWakeStatus).not.toHaveBeenCalled();
+
+    await advance(1);
+    expect(api.getWakeStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not poll wake status while another tab is active", async () => {
+    render(
+      <MemoryRouter>
+        <Settings />
+      </MemoryRouter>
+    );
+    await advance(0);
+    await act(async () => screen.getByText("settings.tab.security").click());
+    vi.mocked(api.getWakeStatus).mockClear();
+
+    await advance(15000);
+    expect(api.getWakeStatus).not.toHaveBeenCalled();
+  });
+
+  it("refreshes wake status immediately when switching back to the general tab", async () => {
+    render(
+      <MemoryRouter>
+        <Settings />
+      </MemoryRouter>
+    );
+    await advance(0);
+    await act(async () => screen.getByText("settings.tab.security").click());
+    vi.mocked(api.getWakeStatus).mockClear();
+
+    await act(async () => screen.getByText("settings.tab.general").click());
+    await advance(0);
+    expect(api.getWakeStatus).toHaveBeenCalledTimes(1);
   });
 });

@@ -5,6 +5,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import { invoke } from "@tauri-apps/api/core";
+import type { BindingsInput } from "./api";
 import {
   listProviders,
   getProvider,
@@ -303,5 +304,18 @@ describe("API error normalization edge cases", () => {
     };
     vi.mocked(invoke).mockRejectedValue(err);
     await expect(listProviders()).rejects.toEqual(err);
+  });
+});
+
+describe("BindingsInput boundary type", () => {
+  it("lets Option fields be omitted but keeps Rust-required fields required", () => {
+    type RustInput = { name: string; note: string | null; added: number };
+    const complete: BindingsInput<RustInput> = { name: "x", added: 1 };
+    const frontendWithoutNewField: { name: string; note?: string | null } = {
+      name: "x",
+    };
+    // @ts-expect-error `added` 是 Rust 端必填字段，前端 input 缺失时必须编译失败
+    const missing: BindingsInput<RustInput> = frontendWithoutNewField;
+    expect([complete, missing]).toHaveLength(2);
   });
 });

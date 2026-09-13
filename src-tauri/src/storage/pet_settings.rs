@@ -89,7 +89,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(updated.pet_type, "cat");
-        assert_eq!(updated.visible, false);
+        assert!(!updated.visible);
         assert_eq!(updated.pos_x, 123.0);
         assert_eq!(updated.pos_y, 456.0);
     }

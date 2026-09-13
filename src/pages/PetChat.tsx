@@ -176,17 +176,12 @@ export function PetChat() {
   return (
     <div
       data-testid="pet-chat-page"
-      className="flex min-h-0 flex-col space-y-4 overflow-hidden"
-      style={{ height: "calc(100vh - 136px)" }}
+      className="desktop-page h-full min-h-0 overflow-hidden"
     >
-      <header className="relative overflow-hidden rounded-xl border border-accent/20 bg-card p-5 shadow-sm">
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-accent/10 to-transparent" />
-        <div className="relative flex flex-wrap items-start justify-between gap-4">
+      <header className="desktop-page-header">
+        <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <p className="text-xs font-medium uppercase tracking-[0.18em] text-accent">
-              {t("petchat.console")}
-            </p>
-            <h2 className="mt-2 flex items-center gap-2 text-lg font-semibold text-text-primary">
+            <h2 className="flex items-center gap-2 text-lg font-semibold text-text-primary">
               <MessageCircle className="h-5 w-5" />
               {t("petchat.title")}
             </h2>
@@ -206,7 +201,7 @@ export function PetChat() {
         </div>
       </header>
 
-      <section className="flex min-h-0 flex-1 flex-col rounded-xl border border-border bg-card shadow-sm">
+      <section className="surface-panel flex min-h-0 flex-1 flex-col overflow-hidden">
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <div>
             <h3 className="text-sm font-semibold text-text-primary">
@@ -216,7 +211,7 @@ export function PetChat() {
               {t("petchat.conversation_stream_hint")}
             </p>
           </div>
-          <span className="rounded-full bg-card-secondary px-2 py-0.5 font-mono text-[11px] text-text-muted">
+          <span className="rounded-full bg-card-secondary px-2 py-0.5 font-mono text-xs text-text-muted">
             {messages.length}
           </span>
         </div>
@@ -248,7 +243,7 @@ export function PetChat() {
                 <div
                   className={
                     m.role === "user"
-                      ? "max-w-[75%] rounded-2xl rounded-br-sm bg-accent px-3 py-2 text-sm text-white"
+                      ? "max-w-[75%] rounded-2xl rounded-br-sm bg-accent px-3 py-2 text-sm text-on-accent"
                       : "max-w-[75%] rounded-2xl rounded-bl-sm border border-border bg-bg px-3 py-2 text-sm text-text-primary"
                   }
                 >
@@ -340,7 +335,7 @@ export function PetChat() {
             </button>
             <button
               onClick={saveMemory}
-              className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-white"
+              className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-on-accent"
             >
               {t("petchat.memory_save")}
             </button>
@@ -373,7 +368,7 @@ export function PetChat() {
           <button
             onClick={handleSend}
             disabled={!input.trim() || sending}
-            className="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-opacity disabled:opacity-40"
+            className="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-on-accent transition-opacity disabled:opacity-40"
           >
             <Send className="h-4 w-4" />
             {t("petchat.send")}

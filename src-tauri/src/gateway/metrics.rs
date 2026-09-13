@@ -13,7 +13,8 @@
 
 use axum::response::IntoResponse;
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
-use std::sync::OnceLock;
+use std::collections::HashSet;
+use std::sync::{Mutex, OnceLock};
 
 /// 全局唯一 PrometheusHandle —— OnceLock 保证 init 幂等（重复调 init 没事）。
 static HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
@@ -56,36 +57,107 @@ pub async fn render() -> impl IntoResponse {
     }
 }
 
+// ── 标签基数控制 ──
+//
+// Prometheus 每个不同的标签组合都是一条独立时间序列。model / client 标签的
+// 取值来自请求(UA、上游模型名),不设上限时任意客户端都能把 /metrics 撑爆。
+
+/// 单个标签值的最大字符数。
+const MAX_LABEL_CHARS: usize = 64;
+/// model 标签最多保留的不同取值数,超出后归入 "other"。
+const MAX_MODEL_LABELS: usize = 256;
+
+/// 已知客户端(与 `routes::shared::detect_client_from_ua` 的输出及各路由默认值对齐),
+/// 其余一律记 "other"。
+const KNOWN_CLIENTS: &[&str] = &[
+    "Codex",
+    "Claude Code",
+    "Gemini CLI",
+    "Generic",
+    "OpenCode",
+    "AtomCode",
+    "Kimi CLI",
+    "Grok Build",
+    "DeepSeek Harness",
+    "Cursor",
+    "Cherry Studio",
+    "Continue",
+    "Cline",
+    "Roo Code",
+    "Hermes",
+    "Pet",
+    "OpenAI SDK",
+    "Anthropic SDK",
+    "Python SDK",
+    "Node SDK",
+    "curl",
+];
+
+static SEEN_MODELS: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+
+fn truncate_label(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_LABEL_CHARS)
+        .collect()
+}
+
+fn client_label(client: &str) -> &'static str {
+    KNOWN_CLIENTS
+        .iter()
+        .find(|known| **known == client)
+        .copied()
+        .unwrap_or("other")
+}
+
+fn model_label(model: &str) -> String {
+    let label = truncate_label(model);
+    let mut guard = SEEN_MODELS.lock().unwrap_or_else(|e| e.into_inner());
+    let seen = guard.get_or_insert_with(HashSet::new);
+    if seen.contains(&label) {
+        return label;
+    }
+    if seen.len() >= MAX_MODEL_LABELS {
+        return "other".to_string();
+    }
+    seen.insert(label.clone());
+    label
+}
+
 // ── Convenience helpers — 让 hotpath 调用点不用记 metric 名 ──
 
 /// 记一次完整请求的结果：route + client + provider + status_code。
 pub fn record_request(route: &str, client: &str, provider: &str, status: u16, latency_secs: f64) {
+    let client = client_label(client);
+    let provider = truncate_label(provider);
     metrics::counter!(
         "agentgate_requests_total",
         "route" => route.to_string(),
-        "client" => client.to_string(),
-        "provider" => provider.to_string(),
+        "client" => client,
+        "provider" => provider.clone(),
         "status" => status.to_string(),
     )
     .increment(1);
     metrics::histogram!(
         "agentgate_request_duration_seconds",
         "route" => route.to_string(),
-        "client" => client.to_string(),
-        "provider" => provider.to_string(),
+        "client" => client,
+        "provider" => provider,
     )
     .record(latency_secs);
 }
 
 /// 记 upstream token 用量（input / output / cache_read / cache_creation 分别记）。
+/// `model` 应传路由解析 / 映射后实际发给上游的模型名,标签做长度与基数封顶。
 pub fn record_tokens(provider: &str, model: &str, direction: &str, count: i64) {
     if count <= 0 {
         return;
     }
     metrics::counter!(
         "agentgate_upstream_tokens_total",
-        "provider" => provider.to_string(),
-        "model" => model.to_string(),
+        "provider" => truncate_label(provider),
+        "model" => model_label(model),
         "direction" => direction.to_string(),
     )
     .increment(count as u64);
@@ -95,7 +167,7 @@ pub fn record_tokens(provider: &str, model: &str, direction: &str, count: i64) {
 pub fn record_failover(from_provider: &str, reason: &str) {
     metrics::counter!(
         "agentgate_failover_attempts_total",
-        "from_provider" => from_provider.to_string(),
+        "from_provider" => truncate_label(from_provider),
         "reason" => reason.to_string(),
     )
     .increment(1);
@@ -144,6 +216,32 @@ mod tests {
     async fn body_to_string(body: axum::body::Body) -> String {
         let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
         String::from_utf8_lossy(&bytes).to_string()
+    }
+
+    #[test]
+    fn client_label_maps_unknown_user_agents_to_other() {
+        assert_eq!(client_label("Claude Code"), "Claude Code");
+        assert_eq!(client_label("Codex"), "Codex");
+        assert_eq!(client_label("MyCustomAgent/1.0"), "other");
+        assert_eq!(client_label(&"x".repeat(40)), "other");
+    }
+
+    #[test]
+    #[serial]
+    fn model_labels_are_truncated_and_cardinality_capped() {
+        let long = "m".repeat(500);
+        assert_eq!(model_label(&long).chars().count(), MAX_LABEL_CHARS);
+
+        let mut labels = HashSet::new();
+        for i in 0..(MAX_MODEL_LABELS * 2) {
+            labels.insert(model_label(&format!("attacker-model-{i}")));
+        }
+        assert!(
+            labels.len() <= MAX_MODEL_LABELS + 1,
+            "distinct model labels must be bounded, got {}",
+            labels.len()
+        );
+        assert!(labels.contains("other"));
     }
 
     #[test]

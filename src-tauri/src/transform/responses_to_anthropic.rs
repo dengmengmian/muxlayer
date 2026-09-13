@@ -79,7 +79,10 @@ pub fn convert(req: &ResponsesRequest, model: &str, auto_cache: bool) -> Result<
     }
 
     // 3. Convert input items to Claude messages
-    let input_messages = convert_input(&req.input, &mut system_blocks)?;
+    // tool_result 里的图片只发给 claude 模型：Anthropic 路径也服务 MiMo 等第三方
+    // 兼容上游，这里拿不到 provider 能力矩阵，按模型 id 保守判断。
+    let tool_result_images = model.to_ascii_lowercase().contains("claude");
+    let input_messages = convert_input(&req.input, &mut system_blocks, tool_result_images)?;
 
     // 4. Combine history + input messages
     let mut all_messages = history_messages;
@@ -282,12 +285,16 @@ fn count_cache_controls(body: &Value) -> usize {
 }
 
 /// Convert the Responses API `input` field to Claude messages.
-fn convert_input(input: &Value, system_blocks: &mut Vec<Value>) -> Result<Vec<Value>, AppError> {
+fn convert_input(
+    input: &Value,
+    system_blocks: &mut Vec<Value>,
+    tool_result_images: bool,
+) -> Result<Vec<Value>, AppError> {
     match input {
         Value::String(s) => Ok(vec![
             json!({"role": "user", "content": [{"type": "text", "text": s}]}),
         ]),
-        Value::Array(items) => convert_input_array(items, system_blocks),
+        Value::Array(items) => convert_input_array(items, system_blocks, tool_result_images),
         Value::Object(_) => {
             let blocks = extract_content_blocks(Some(input));
             if blocks.is_empty() {
@@ -307,6 +314,7 @@ fn convert_input(input: &Value, system_blocks: &mut Vec<Value>) -> Result<Vec<Va
 fn convert_input_array(
     items: &[Value],
     system_blocks: &mut Vec<Value>,
+    tool_result_images: bool,
 ) -> Result<Vec<Value>, AppError> {
     if !items.is_empty() && items.iter().all(is_content_part) {
         let blocks = extract_content_blocks(Some(&Value::Array(items.to_vec())));
@@ -464,19 +472,26 @@ fn convert_input_array(
                     ).with_suggestion("Each function_call_output must have a call_id matching a previous function_call"));
                 }
 
-                let output = item
-                    .get("output")
-                    .map(|o| {
-                        if o.is_string() {
-                            o.as_str().unwrap().to_string()
-                        } else if o.is_array() {
-                            // Flatten ContentPart array
-                            crate::transform::responses_to_chat::flatten_tool_output(o)
+                // tool_result.content 支持 text + image 块：目标模型支持视觉（claude）时
+                // ContentPart 数组转成 Anthropic 块（图片保留为 base64 / url source）；
+                // 否则与 Chat 路径一样降级成 "[image omitted]" 文本。无法识别出任何块时
+                // 退回字符串形态。
+                let output = match item.get("output") {
+                    Some(Value::String(s)) => json!(s),
+                    Some(o @ Value::Array(_)) if !tool_result_images => {
+                        json!(crate::transform::responses_to_chat::flatten_tool_output(o))
+                    }
+                    Some(o @ Value::Array(_)) => {
+                        let blocks = extract_content_blocks(Some(o));
+                        if blocks.is_empty() {
+                            json!(crate::transform::responses_to_chat::flatten_tool_output(o))
                         } else {
-                            o.to_string()
+                            json!(blocks)
                         }
-                    })
-                    .unwrap_or_default();
+                    }
+                    Some(o) => json!(o.to_string()),
+                    None => json!(""),
+                };
 
                 let sanitized = crate::transform::tool_calls::sanitize_call_id(call_id.unwrap());
                 messages.push(json!({
@@ -718,142 +733,48 @@ fn merge_consecutive_role_messages(messages: Vec<Value>) -> Vec<Value> {
 }
 
 /// Convert Responses API tools to Claude tool definitions.
+///
+/// 复用 Chat 路径的 `tool_calls::convert_tools`（覆盖 function A/B 结构、custom、
+/// local_shell、namespace 的 tools/children 递归展开；tool_search 除外），再把
+/// `{type:function, function:{name, description, parameters}}` 映射成
+/// Anthropic 的 `{name, description, input_schema}`。只剪 null 值 property，
+/// 不做 DeepSeek 式清洗——Anthropic 原生支持 additionalProperties 等字段。
 fn convert_tools(tools: &[Value]) -> Vec<Value> {
-    let mut result = Vec::new();
-
-    for tool in tools {
-        let tool_type = tool.get("type").and_then(|t| t.as_str()).unwrap_or("");
-        match tool_type {
-            "function" => {
-                if let Some(func) = tool.get("function") {
-                    // Structure B: {type: "function", function: {name, description, parameters}}
-                    let raw_name = func.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                    let name = crate::transform::tool_calls::sanitize_tool_name(raw_name);
-                    let desc = func
-                        .get("description")
-                        .and_then(|d| d.as_str())
-                        .unwrap_or("");
-                    let mut params = func
-                        .get("parameters")
-                        .cloned()
-                        .unwrap_or(json!({"type": "object", "properties": {}}));
-                    crate::transform::schema_cleaner::clean_schema_for_deepseek(&mut params);
-                    result.push(json!({
-                        "name": name.as_ref(),
-                        "description": desc,
-                        "input_schema": params
-                    }));
-                } else {
-                    // Structure A: flat {type: "function", name, description, parameters}
-                    let raw_name = tool.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                    let name = crate::transform::tool_calls::sanitize_tool_name(raw_name);
-                    let desc = tool
-                        .get("description")
-                        .and_then(|d| d.as_str())
-                        .unwrap_or("");
-                    let mut params = tool
-                        .get("parameters")
-                        .cloned()
-                        .unwrap_or(json!({"type": "object", "properties": {}}));
-                    crate::transform::schema_cleaner::clean_schema_for_deepseek(&mut params);
-                    result.push(json!({
-                        "name": name.as_ref(),
-                        "description": desc,
-                        "input_schema": params
-                    }));
+    // 不提供 tool_search：Anthropic 路径不转换 tool_search_call / tool_search_output
+    // 历史项，模型调用后拿不到结果会反复调用。
+    let tools: Vec<Value> = tools
+        .iter()
+        .filter(|t| t.get("type").and_then(|v| v.as_str()) != Some("tool_search"))
+        .cloned()
+        .collect();
+    let result = crate::transform::tool_calls::convert_tools(&tools, false)
+        .into_iter()
+        .filter_map(|tool| {
+            // provider_type 为空时 convert_tools 只产出 function 形态；其它 builtin 不支持，跳过
+            let func = tool.get("function")?;
+            let raw_name = func.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            let name = crate::transform::tool_calls::sanitize_tool_name(raw_name);
+            let desc = func
+                .get("description")
+                .and_then(|d| d.as_str())
+                .unwrap_or("");
+            // Anthropic input_schema 必须是 type:object；缺省 / 空对象补齐。
+            // null 值 property 对 Anthropic 也非法，剪掉（不做 DeepSeek 式剥除）。
+            let input_schema = match func.get("parameters") {
+                Some(p) if p.as_object().is_some_and(|o| !o.is_empty()) => {
+                    let mut p = p.clone();
+                    crate::transform::schema_cleaner::prune_null_properties(&mut p);
+                    p
                 }
-            }
-            "namespace" => {
-                let ns_name = tool.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                if let Some(Value::Array(sub_tools)) = tool.get("tools") {
-                    for sub in sub_tools {
-                        let sub_type = sub.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                        match sub_type {
-                            "function" => {
-                                let name = sub.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                                let desc = sub
-                                    .get("description")
-                                    .and_then(|d| d.as_str())
-                                    .unwrap_or("");
-                                let mut params = sub
-                                    .get("parameters")
-                                    .cloned()
-                                    .unwrap_or(json!({"type": "object", "properties": {}}));
-                                crate::transform::schema_cleaner::clean_schema_for_deepseek(
-                                    &mut params,
-                                );
-                                let prefixed = crate::transform::tool_calls::namespaced_chat_name(
-                                    ns_name, name,
-                                );
-                                let sanitized =
-                                    crate::transform::tool_calls::sanitize_tool_name(&prefixed);
-                                result.push(json!({
-                                    "name": sanitized.as_ref(),
-                                    "description": desc,
-                                    "input_schema": params
-                                }));
-                            }
-                            "custom" => {
-                                let raw_name = sub
-                                    .get("name")
-                                    .and_then(|n| n.as_str())
-                                    .unwrap_or("custom_tool");
-                                let prefixed = crate::transform::tool_calls::namespaced_chat_name(
-                                    ns_name, raw_name,
-                                );
-                                let name =
-                                    crate::transform::tool_calls::sanitize_tool_name(&prefixed);
-                                let desc = sub
-                                    .get("description")
-                                    .and_then(|d| d.as_str())
-                                    .unwrap_or("");
-                                result.push(json!({
-                                    "name": name.as_ref(),
-                                    "description": desc,
-                                    "input_schema": {"type": "object", "properties": {"input": {"type": "string"}}, "required": ["input"]}
-                                }));
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            "custom" => {
-                let raw_name = tool
-                    .get("name")
-                    .and_then(|n| n.as_str())
-                    .unwrap_or("custom_tool");
-                let name = crate::transform::tool_calls::sanitize_tool_name(raw_name);
-                let desc = tool
-                    .get("description")
-                    .and_then(|d| d.as_str())
-                    .unwrap_or("");
-                result.push(json!({
-                    "name": name.as_ref(),
-                    "description": desc,
-                    "input_schema": {"type": "object", "properties": {"input": {"type": "string"}}, "required": ["input"]}
-                }));
-            }
-            "local_shell" => {
-                result.push(json!({
-                    "name": "shell",
-                    "description": "Execute a shell command on the local machine. Returns stdout, stderr and exit code.",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "command": {"type": "array", "items": {"type": "string"}, "description": "Argv array"},
-                            "workdir": {"type": "string", "description": "Working directory (optional)."},
-                            "timeout_ms": {"type": "number", "description": "Timeout in milliseconds (optional)."}
-                        },
-                        "required": ["command"]
-                    }
-                }));
-            }
-            _ => {
-                // Skip web_search, code_interpreter, file_search, etc.
-            }
-        }
-    }
+                _ => json!({"type": "object", "properties": {}}),
+            };
+            Some(json!({
+                "name": name.as_ref(),
+                "description": desc,
+                "input_schema": input_schema
+            }))
+        })
+        .collect();
 
     crate::transform::tool_calls::dedupe_tools_by_name(result)
 }
@@ -886,17 +807,36 @@ fn convert_tool_choice(tc: &Value) -> Value {
 /// Convert reasoning effort to Claude thinking configuration.
 /// Anthropic 要求 thinking budget 最低 1024。
 const MIN_THINKING_BUDGET: i64 = 1024;
+/// 开思考时至少给正文留的 token 数,避免 budget 吃满 max_tokens 导致正文被截断。
+const MIN_OUTPUT_RESERVE: i64 = 1024;
+
+/// effort 字符串 → thinking budget 档位。未知 / auto 返回 None。
+fn effort_to_thinking_budget(effort: &str) -> Option<i64> {
+    match effort.trim().to_ascii_lowercase().as_str() {
+        "low" | "minimal" => Some(4096),
+        "medium" => Some(8192),
+        "high" => Some(16384),
+        "xhigh" | "max" | "highest" => Some(32768),
+        _ => None,
+    }
+}
+
+/// 把 budget 夹进 [1024, max_tokens - MIN_OUTPUT_RESERVE];装不下最低 budget 返回 None(不开思考)。
+fn clamp_thinking_budget(budget: i64, max_tokens: i64) -> Option<i64> {
+    let budget = budget.min(max_tokens - MIN_OUTPUT_RESERVE);
+    (budget >= MIN_THINKING_BUDGET).then_some(budget)
+}
 
 /// 按目标模型决定 thinking 配置。质量优先:**claude 系支持就开**(参考
 /// cc-switch thinking_optimizer),显式 `effort: none/off` 是唯一逃生口。
 /// 同时守住三个 Anthropic 硬约束防 400:
 /// 1. haiku 不支持 thinking → 一律不带;
 /// 2. thinking 与强制工具调用(tool_choice: any/tool)不兼容 → 不带;
-/// 3. budget_tokens 必须 ∈ [1024, max_tokens) → clamp,装不下就不开。
+/// 3. budget_tokens 必须 ∈ [1024, max_tokens) → clamp 并给正文留余量,装不下就不开。
 /// 形态:opus-4.6+ / sonnet-4.6 用 adaptive;其他 claude 用 enabled+budget,
-/// 未指定 effort 时 budget 顶到 max_tokens-1(对齐 cc-switch 的质量取向)。
+/// 未指定 effort 时 budget 顶满,只给正文留 MIN_OUTPUT_RESERVE。
 /// 非 claude 的 anthropic 兼容上游(MiMo 等)思考方言各异,只跟随显式 effort。
-fn convert_thinking(
+pub(crate) fn convert_thinking(
     reasoning: &Option<Value>,
     model: &str,
     max_tokens: i64,
@@ -915,13 +855,7 @@ fn convert_thinking(
     if matches!(effort.as_deref(), Some("none") | Some("off")) {
         return None;
     }
-    let effort_budget: Option<i64> = match effort.as_deref() {
-        Some("low") | Some("minimal") => Some(4096),
-        Some("medium") => Some(8192),
-        Some("high") => Some(16384),
-        Some("xhigh") | Some("max") | Some("highest") => Some(32768),
-        _ => None,
-    };
+    let effort_budget = effort.as_deref().and_then(effort_to_thinking_budget);
 
     if ["opus-4-8", "opus-4-7", "opus-4-6", "sonnet-4-6"]
         .iter()
@@ -930,16 +864,14 @@ fn convert_thinking(
         return Some(json!({"type": "adaptive"}));
     }
 
-    // budget 形态:claude 未指定 effort 时强开并顶满;非 claude 只跟随显式 effort。
+    // budget 形态:claude 未指定 effort 时强开并顶满(clamp 会给正文留余量);
+    // 非 claude 只跟随显式 effort。
     let budget = match effort_budget {
         Some(b) => b,
-        None if m.contains("claude") => max_tokens - 1,
+        None if m.contains("claude") => max_tokens,
         None => return None,
     };
-    let budget = budget.min(max_tokens - 1);
-    if budget < MIN_THINKING_BUDGET {
-        return None;
-    }
+    let budget = clamp_thinking_budget(budget, max_tokens)?;
     Some(json!({"type": "enabled", "budget_tokens": budget}))
 }
 
@@ -985,7 +917,7 @@ mod tests {
         ]));
         let mut system_blocks: Vec<Value> = vec![];
         let messages =
-            convert_input_array(&req.input.as_array().unwrap(), &mut system_blocks).unwrap();
+            convert_input_array(req.input.as_array().unwrap(), &mut system_blocks, true).unwrap();
         // 倒数第二条应该是 assistant，含 thinking + tool_use 两个块
         let assistant = messages
             .iter()
@@ -1019,7 +951,7 @@ mod tests {
         ]));
         let mut system_blocks: Vec<Value> = vec![];
         let messages =
-            convert_input_array(&req.input.as_array().unwrap(), &mut system_blocks).unwrap();
+            convert_input_array(req.input.as_array().unwrap(), &mut system_blocks, true).unwrap();
         let assistant = messages
             .iter()
             .rev()
@@ -1041,7 +973,7 @@ mod tests {
         ]));
         let mut system_blocks: Vec<Value> = vec![];
         let messages =
-            convert_input_array(&req.input.as_array().unwrap(), &mut system_blocks).unwrap();
+            convert_input_array(req.input.as_array().unwrap(), &mut system_blocks, true).unwrap();
         let assistant = messages
             .iter()
             .rev()
@@ -1187,14 +1119,147 @@ mod tests {
             convert_thinking(&Some(json!({"effort": "none"})), m, mt, false),
             None
         );
-        // 质量优先:未指定 / auto → claude 系强开,budget 顶到 max_tokens-1
+        // 质量优先:未指定 / auto → claude 系强开并顶满,只给正文留 1024
         assert_eq!(
             convert_thinking(&None, m, mt, false),
-            Some(json!({"type": "enabled", "budget_tokens": 63999}))
+            Some(json!({"type": "enabled", "budget_tokens": 62976}))
         );
         assert_eq!(
             convert_thinking(&Some(json!({"effort": "auto"})), m, mt, false),
-            Some(json!({"type": "enabled", "budget_tokens": 63999}))
+            Some(json!({"type": "enabled", "budget_tokens": 62976}))
+        );
+    }
+
+    #[test]
+    fn test_thinking_default_budget_leaves_room_for_output() {
+        // 未指定 effort 时旧逻辑 budget = max_tokens-1,正文只剩 1 个 token。
+        for mt in [8192_i64, 64000] {
+            let t = convert_thinking(&None, "claude-3-5-sonnet", mt, false).unwrap();
+            let budget = t["budget_tokens"].as_i64().unwrap();
+            assert!(
+                mt - budget >= 1024,
+                "max_tokens={mt} budget={budget} 必须给正文留 >=1024 token"
+            );
+        }
+    }
+
+    #[test]
+    fn test_convert_tools_skips_tool_search_and_keeps_namespace_children() {
+        // tool_search_call / tool_search_output 历史项在 Anthropic 路径不转换,
+        // 提供 tool_search 会让模型反复调用却拿不到结果 → 不提供。
+        // namespace 需读 children 并递归(曾只读 tools)。
+        let tools = vec![
+            json!({"type": "tool_search", "description": "find tools"}),
+            json!({
+                "type": "namespace",
+                "name": "mcp",
+                "children": [
+                    {"type": "function", "name": "read", "parameters": {"type": "object"}},
+                    {"type": "namespace", "name": "inner", "tools": [
+                        {"type": "function", "name": "deep", "parameters": {"type": "object"}}
+                    ]}
+                ]
+            }),
+        ];
+        let result = convert_tools(&tools);
+        let names: Vec<&str> = result.iter().filter_map(|t| t["name"].as_str()).collect();
+        assert_eq!(names, vec!["mcp__read", "inner__deep"]);
+        for t in &result {
+            assert_eq!(t["input_schema"]["type"], "object", "tool={t}");
+            assert!(t.get("type").is_none() && t.get("function").is_none());
+        }
+    }
+
+    #[test]
+    fn test_convert_tools_does_not_strip_schema_on_anthropic_path() {
+        // schema cleaner 是 DeepSeek quirk,Anthropic 原生支持 additionalProperties。
+        let tools = vec![json!({
+            "type": "function",
+            "name": "put",
+            "parameters": {"type": "object", "properties": {"k": {"type": "string"}}, "additionalProperties": false}
+        })];
+        let result = convert_tools(&tools);
+        assert_eq!(
+            result[0]["input_schema"]["additionalProperties"],
+            json!(false)
+        );
+    }
+
+    #[test]
+    fn test_convert_tools_prunes_null_properties_on_anthropic_path() {
+        // null 值 property 对官方 Anthropic 也非法:删掉并同步摘 required,
+        // 但不做 DeepSeek 的 additionalProperties 剥除。
+        let tools = vec![json!({
+            "type": "function",
+            "name": "put",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "k": {"type": "string"},
+                    "gone": null,
+                    "nested": {"type": "object", "properties": {"x": null, "y": {"type": "number"}}, "required": ["x", "y"]}
+                },
+                "required": ["k", "gone"],
+                "additionalProperties": false
+            }
+        })];
+        let result = convert_tools(&tools);
+        let schema = &result[0]["input_schema"];
+        assert!(
+            schema["properties"].get("gone").is_none(),
+            "schema={schema}"
+        );
+        assert_eq!(schema["required"], json!(["k"]));
+        assert!(schema["properties"]["nested"]["properties"]
+            .get("x")
+            .is_none());
+        assert_eq!(schema["properties"]["nested"]["required"], json!(["y"]));
+        assert_eq!(schema["additionalProperties"], json!(false));
+    }
+
+    #[test]
+    fn test_function_call_output_images_omitted_for_non_claude_models() {
+        // Anthropic 兼容的第三方上游(MiMo 等)不一定支持视觉:非 claude 模型保持
+        // "[image omitted]" 文本降级,不发 image 块。
+        let req = make_req(json!([
+            {"type": "function_call", "call_id": "c1", "name": "screenshot", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "c1", "output": [
+                {"type": "input_text", "text": "shot"},
+                {"type": "input_image", "image_url": "data:image/png;base64,QUJD"}
+            ]}
+        ]));
+        let body = convert(&req, "mimo-v2.5-pro", false).unwrap();
+        let msgs = body["messages"].as_array().unwrap();
+        let tool_result = &msgs.last().unwrap()["content"][0];
+        assert_eq!(tool_result["type"], "tool_result");
+        let content = tool_result["content"].as_str().expect("string content");
+        assert!(content.starts_with("shot"), "content={content}");
+        assert!(content.contains("image"), "content={content}");
+        assert!(!content.contains("QUJD"), "content={content}");
+    }
+
+    #[test]
+    fn test_function_call_output_images_become_tool_result_image_blocks() {
+        // tool_result.content 支持 image 块,Anthropic 路径不应降级成 "[image omitted]"。
+        let req = make_req(json!([
+            {"type": "function_call", "call_id": "c1", "name": "screenshot", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "c1", "output": [
+                {"type": "input_text", "text": "shot"},
+                {"type": "input_image", "image_url": "data:image/png;base64,QUJD"},
+                {"type": "input_image", "image_url": "https://example.com/a.png"}
+            ]}
+        ]));
+        let body = convert(&req, "claude-3-5-sonnet", false).unwrap();
+        let msgs = body["messages"].as_array().unwrap();
+        let tool_result = &msgs.last().unwrap()["content"][0];
+        assert_eq!(tool_result["type"], "tool_result");
+        assert_eq!(
+            tool_result["content"],
+            json!([
+                {"type": "text", "text": "shot"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "QUJD"}},
+                {"type": "image", "source": {"type": "url", "url": "https://example.com/a.png"}}
+            ])
         );
     }
 
@@ -1256,7 +1321,7 @@ mod tests {
                 8192,
                 false
             ),
-            Some(json!({"type": "enabled", "budget_tokens": 8191}))
+            Some(json!({"type": "enabled", "budget_tokens": 7168}))
         );
         // max_tokens 装不下最低 1024 budget → 不开
         assert_eq!(
@@ -1386,7 +1451,8 @@ mod tests {
             {"type": "input_text", "text": "describe this"},
             {"type": "input_image", "image_url": {"url": "data:image/png;base64,abc123"}}
         ]);
-        let messages = convert_input_array(items.as_array().unwrap(), &mut system_blocks).unwrap();
+        let messages =
+            convert_input_array(items.as_array().unwrap(), &mut system_blocks, true).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0]["role"], "user");
         let content = messages[0]["content"].as_array().unwrap();

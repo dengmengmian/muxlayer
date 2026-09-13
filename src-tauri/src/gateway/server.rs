@@ -124,13 +124,7 @@ pub async fn start(
 
     let active_requests = Arc::new(AtomicU64::new(0));
 
-    let state = GatewayState {
-        db,
-        http_client,
-        active_requests: active_requests.clone(),
-    };
-    let configured_body_limit_mb = state
-        .db
+    let configured_body_limit_mb = db
         .get()
         .ok()
         .and_then(|conn| crate::storage::gateway_settings::get(&conn).ok())
@@ -138,6 +132,13 @@ pub async fn start(
         .unwrap_or(DEFAULT_REQUEST_BODY_LIMIT_MB);
     let body_limit_mb = effective_request_body_limit_mb(configured_body_limit_mb);
     let body_limit_bytes = request_body_limit_bytes(body_limit_mb);
+
+    let state = GatewayState {
+        db,
+        http_client,
+        active_requests: active_requests.clone(),
+        request_body_limit: body_limit_bytes,
+    };
 
     // ── 主动延迟探测循环(喂 fastest 路由的冷启动)──
     // 默认关:探测发的是真实最小补全(speedtest::probe),会产生少量 token
@@ -180,8 +181,9 @@ pub async fn start(
     crate::gateway::metrics::init();
 
     let counter = active_requests.clone();
-    let app = Router::new()
-        .route("/health", get(routes::health))
+    // /metrics 只要本地 token:Docker 里 Prometheus 按服务名抓取(Host 是域名),
+    // token 已挡住 DNS rebinding 读取,不再叠加 Host/Origin 边界。
+    let metrics = Router::new()
         .route(
             "/metrics",
             get({
@@ -196,6 +198,10 @@ pub async fn start(
                 }
             }),
         )
+        .route_layer(axum::middleware::from_fn(require_metrics_token));
+    // 除 /health、/metrics 外所有端点都要本地 token + Host/Origin 边界校验,并且在
+    // body 提取之前完成:否则未鉴权的请求也能让网关先缓冲满 32MB 请求体。
+    let protected = Router::new()
         .route("/v1/models", get(routes::list_models))
         .route("/v1/responses", post(routes::handle_responses))
         .route("/responses", post(routes::handle_responses))
@@ -220,6 +226,11 @@ pub async fn start(
             "/v1beta/models/:model_action",
             post(routes::handle_gemini_generate),
         )
+        .route_layer(axum::middleware::from_fn(require_gateway_auth));
+    let app = Router::new()
+        .route("/health", get(routes::health))
+        .merge(metrics)
+        .merge(protected)
         .layer(axum::middleware::from_fn(
             move |req: axum::extract::Request, next: axum::middleware::Next| {
                 let counter = counter.clone();
@@ -248,32 +259,63 @@ pub async fn start(
         .with_state(state);
 
     // 可选 per-IP 限流(默认关)。AGENTGATE_RATE_LIMIT = 每 IP 每秒最大请求数。
-    // 在请求入口计一次,不占整条 SSE 流;SmartIp 提取器兼容反代,否则回落 peer IP。
+    // 在请求入口计一次,不占整条 SSE 流。默认按 TCP 对端 IP 计:X-Forwarded-For /
+    // X-Real-IP 客户端可随意伪造,信任它们等于限流形同虚设,还会让 IP 桶无界增长。
+    // 只有明确部署在反代后面时才设 MUXLAYER_TRUST_PROXY=1 改用转发头。
     let rate = crate::compat::env_value("MUXLAYER_RATE_LIMIT", "AGENTGATE_RATE_LIMIT")
         .and_then(|s| s.trim().parse::<u32>().ok())
         .filter(|n| *n > 0);
     let app = if let Some(r) = rate {
         use tower_governor::governor::GovernorConfigBuilder;
-        use tower_governor::key_extractor::SmartIpKeyExtractor;
+        use tower_governor::key_extractor::{PeerIpKeyExtractor, SmartIpKeyExtractor};
         use tower_governor::GovernorLayer;
-        let conf = Arc::new(
-            GovernorConfigBuilder::default()
-                .period(Duration::from_nanos(1_000_000_000u64 / r as u64))
-                .burst_size(r)
-                .key_extractor(SmartIpKeyExtractor)
-                .finish()
-                .expect("build governor config"),
-        );
-        // 后台定期清理过期 IP 桶,防止内存随不同 IP 数无界增长。
-        let limiter = conf.limiter().clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_secs(60)).await;
-                limiter.retain_recent();
+        let key_mode = rate_limit_key_mode(crate::compat::env_flag(
+            "MUXLAYER_TRUST_PROXY",
+            "AGENTGATE_TRUST_PROXY",
+        ));
+        let period = Duration::from_nanos(1_000_000_000u64 / r as u64);
+        // 两种提取器是不同类型,只能分支各建一份 config;清理任务定期回收过期 IP 桶,
+        // 防止内存随不同 IP 数无界增长。
+        let app = match key_mode {
+            RateLimitKeyMode::PeerIp => {
+                let conf = Arc::new(
+                    GovernorConfigBuilder::default()
+                        .period(period)
+                        .burst_size(r)
+                        .key_extractor(PeerIpKeyExtractor)
+                        .finish()
+                        .expect("build governor config"),
+                );
+                let limiter = conf.limiter().clone();
+                tokio::spawn(async move {
+                    loop {
+                        tokio::time::sleep(Duration::from_secs(60)).await;
+                        limiter.retain_recent();
+                    }
+                });
+                app.layer(GovernorLayer { config: conf })
             }
-        });
-        tracing::info!(per_ip_rps = r, "per-IP rate limiting enabled");
-        app.layer(GovernorLayer { config: conf })
+            RateLimitKeyMode::ForwardedHeaders => {
+                let conf = Arc::new(
+                    GovernorConfigBuilder::default()
+                        .period(period)
+                        .burst_size(r)
+                        .key_extractor(SmartIpKeyExtractor)
+                        .finish()
+                        .expect("build governor config"),
+                );
+                let limiter = conf.limiter().clone();
+                tokio::spawn(async move {
+                    loop {
+                        tokio::time::sleep(Duration::from_secs(60)).await;
+                        limiter.retain_recent();
+                    }
+                });
+                app.layer(GovernorLayer { config: conf })
+            }
+        };
+        tracing::info!(per_ip_rps = r, key = ?key_mode, "per-IP rate limiting enabled");
+        app
     } else {
         app
     };
@@ -327,7 +369,7 @@ pub async fn start(
         });
     }
 
-    // with_connect_info:SmartIpKeyExtractor 在没有 X-Forwarded-For 时回落到 peer IP。
+    // with_connect_info:限流按 peer IP 计(信任反代时 SmartIp 也回落到 peer IP)。
     let make_service = app.into_make_service_with_connect_info::<SocketAddr>();
 
     tracing::info!(
@@ -371,6 +413,48 @@ pub async fn start(
     };
 
     Ok((shutdown_tx, join_handle, active_requests, bound_port))
+}
+
+/// 鉴权中间件:本地 token + Host/Origin 边界校验。挂在除 /health、/metrics 以外的路由上,
+/// 在 handler 提取 body 之前执行。
+async fn require_gateway_auth(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if let Err(err) = routes::validate_auth(req.headers()) {
+        return err.into_response();
+    }
+    next.run(req).await
+}
+
+/// /metrics 鉴权中间件:只校验本地 token。
+async fn require_metrics_token(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if let Err(err) = routes::validate_token(req.headers()) {
+        return err.into_response();
+    }
+    next.run(req).await
+}
+
+/// 限流 key 的来源。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RateLimitKeyMode {
+    /// TCP 对端 IP(默认,不可伪造)。
+    PeerIp,
+    /// X-Forwarded-For / X-Real-IP / Forwarded(仅在可信反代后面使用)。
+    ForwardedHeaders,
+}
+
+fn rate_limit_key_mode(trust_proxy: bool) -> RateLimitKeyMode {
+    if trust_proxy {
+        RateLimitKeyMode::ForwardedHeaders
+    } else {
+        RateLimitKeyMode::PeerIp
+    }
 }
 
 fn effective_request_body_limit_mb(configured_mb: i64) -> i64 {
@@ -423,6 +507,31 @@ mod tests {
         std::env::remove_var("AGENTGATE_REQUEST_BODY_LIMIT_MB");
         assert_eq!(effective_request_body_limit_mb(4096), 128);
         assert_eq!(request_body_limit_bytes(4096), 128 * BYTES_PER_MIB);
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn rate_limit_trusts_forwarded_headers_only_when_opted_in() {
+        std::env::remove_var("MUXLAYER_TRUST_PROXY");
+        std::env::remove_var("AGENTGATE_TRUST_PROXY");
+        let from_env = || {
+            rate_limit_key_mode(crate::compat::env_flag(
+                "MUXLAYER_TRUST_PROXY",
+                "AGENTGATE_TRUST_PROXY",
+            ))
+        };
+        assert_eq!(from_env(), RateLimitKeyMode::PeerIp);
+
+        std::env::set_var("AGENTGATE_TRUST_PROXY", "1");
+        assert_eq!(from_env(), RateLimitKeyMode::ForwardedHeaders);
+        std::env::set_var("MUXLAYER_TRUST_PROXY", "0");
+        assert_eq!(
+            from_env(),
+            RateLimitKeyMode::PeerIp,
+            "current env name wins over legacy"
+        );
+        std::env::remove_var("MUXLAYER_TRUST_PROXY");
+        std::env::remove_var("AGENTGATE_TRUST_PROXY");
     }
 
     #[test]

@@ -38,6 +38,32 @@ fn test_convert_simple_string_input() {
 }
 
 #[test]
+fn test_embedded_tool_call_invalid_arguments_salvaged() {
+    // 内嵌 tool_call 不经过入站 function_call 的 salvage，靠第 7 步兜底：
+    // 半截 JSON → "{}"，合法 / 空参数原样保留。
+    let req = ResponsesRequest {
+        input: json!([
+            {"type": "message", "role": "user", "content": "go"},
+            {"type": "message", "role": "assistant", "content": [
+                {"type": "tool_call", "id": "c1", "name": "a", "arguments": "{\"x\":"},
+                {"type": "tool_call", "id": "c2", "name": "b", "arguments": "{\"y\":1}"},
+                {"type": "tool_call", "id": "c3", "name": "c", "arguments": ""}
+            ]}
+        ]),
+        ..Default::default()
+    };
+    let result = convert_with_provider(&req, "gpt-4", &DefaultProvider).unwrap();
+    let args: Vec<&str> = result
+        .messages
+        .iter()
+        .filter_map(|m| m.tool_calls.as_ref())
+        .flatten()
+        .map(|tc| tc.function.arguments.as_str())
+        .collect();
+    assert_eq!(args, vec!["{}", "{\"y\":1}", ""]);
+}
+
+#[test]
 fn test_convert_with_instructions() {
     let req = ResponsesRequest {
         model: Some("gpt-4".to_string()),
@@ -470,15 +496,16 @@ fn test_sanitize_invalid_tool_arguments() {
         tool_call_id: None,
         name: None,
     }];
-    // Directly test the sanitization logic by replicating the loop
+    // 与 convert 第 7 步共用同一个 salvage 实现
     for msg in &mut messages {
         if let Some(ref mut tcs) = msg.tool_calls {
             for tc in tcs {
-                if !tc.function.arguments.is_empty() {
-                    if serde_json::from_str::<Value>(&tc.function.arguments).is_err() {
-                        tc.function.arguments = "{}".to_string();
-                    }
-                }
+                tc.function.arguments = crate::transform::tool_calls::salvage_tool_arguments(
+                    &tc.function.arguments,
+                    &tc.function.name,
+                    &tc.id,
+                    None,
+                );
             }
         }
     }
@@ -717,7 +744,7 @@ fn test_extract_content_object_no_text() {
 fn test_convert_input_object() {
     let input = json!({"text": "hello object"});
     let mut events = Vec::new();
-    let result = convert_input(&input, &mut events).unwrap();
+    let result = convert_input(&input, "test-model", &mut events).unwrap();
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].content, Some(json!("hello object")));
     assert!(events.is_empty());
@@ -727,7 +754,7 @@ fn test_convert_input_object() {
 fn test_convert_input_number() {
     let input = json!(42);
     let mut events = Vec::new();
-    let result = convert_input(&input, &mut events).unwrap();
+    let result = convert_input(&input, "test-model", &mut events).unwrap();
     assert_eq!(result[0].content, Some(json!("42")));
     assert!(events.is_empty());
 }
@@ -937,7 +964,7 @@ fn test_convert_initial_top_level_content_parts_preserves_image() {
         {"type": "input_text", "text": "describe this"},
         {"type": "input_image", "image_url": {"url": "data:image/png;base64,abc123"}}
     ]);
-    let msgs = convert_input_array(items.as_array().unwrap(), &mut events).unwrap();
+    let msgs = convert_input_array(items.as_array().unwrap(), "test-model", &mut events).unwrap();
     assert_eq!(msgs.len(), 1);
     assert_eq!(msgs[0].role, "user");
     let content = msgs[0].content.as_ref().unwrap().as_array().unwrap();
@@ -1030,7 +1057,7 @@ fn reasoning_encrypted_content_round_trips_to_assistant_message() {
         json!({"type": "message", "role": "assistant", "content": "4"}),
     ];
     let mut events = Vec::new();
-    let msgs = convert_input_array(&items, &mut events).unwrap();
+    let msgs = convert_input_array(&items, "test-model", &mut events).unwrap();
     // user, assistant(reasoning=...)
     assert_eq!(msgs.len(), 2);
     assert_eq!(msgs[1].role, "assistant");
@@ -1058,7 +1085,7 @@ fn reasoning_encrypted_content_attaches_to_tool_call_turn() {
         json!({"type": "function_call_output", "call_id": "c1", "output": "found"}),
     ];
     let mut events = Vec::new();
-    let msgs = convert_input_array(&items, &mut events).unwrap();
+    let msgs = convert_input_array(&items, "test-model", &mut events).unwrap();
     // user + assistant(tool_calls, reasoning) + tool
     let assistant = msgs
         .iter()
@@ -1083,7 +1110,7 @@ fn reasoning_encrypted_content_takes_priority_over_summary() {
         json!({"type": "message", "role": "assistant", "content": "ok"}),
     ];
     let mut events = Vec::new();
-    let msgs = convert_input_array(&items, &mut events).unwrap();
+    let msgs = convert_input_array(&items, "test-model", &mut events).unwrap();
     assert_eq!(msgs[0].reasoning_content.as_deref(), Some("full trace"));
     assert!(events.is_empty());
 }

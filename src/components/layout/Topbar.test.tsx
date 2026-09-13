@@ -47,6 +47,46 @@ describe("Topbar", () => {
     expect(screen.getByText("127.0.0.1:8080")).toBeInTheDocument();
   });
 
+  it.each([
+    ["/quick-setup", "Quick Setup"],
+    ["/tools", "Clients"],
+    ["/providers", "Providers"],
+    ["/providers/provider-1", "Providers"],
+    ["/routes", "Routing"],
+    ["/gateway", "Service"],
+    ["/logs", "Logs"],
+    ["/diagnostics", "Diagnostics"],
+    ["/instructions", "Instructions"],
+    ["/mcp", "MCP"],
+    ["/skills", "Skills"],
+    ["/pet-chat", "Pet Chat"],
+    ["/settings", "Settings"],
+  ])("uses the correct title for %s", async (route, title) => {
+    useGatewayStatus.setState({
+      value: makeStatus(),
+      loading: false,
+      error: null,
+    });
+
+    renderWithProviders(<Topbar />, { route });
+
+    expect(screen.getByRole("heading", { name: title })).toBeInTheDocument();
+  });
+
+  it("uses running/info semantics instead of completed/success semantics", async () => {
+    useGatewayStatus.setState({
+      value: makeStatus({ running: true }),
+      loading: false,
+      error: null,
+    });
+
+    renderWithProviders(<Topbar />, { route: "/" });
+
+    const indicator = await screen.findByRole("status", { name: "Running" });
+    expect(indicator).toHaveClass("text-info");
+    expect(indicator).not.toHaveClass("text-success");
+  });
+
   it("shows diagnostics shortcut when gateway is stopped", async () => {
     vi.mocked(api.getGatewayStatus).mockResolvedValue(
       makeStatus({ running: false })

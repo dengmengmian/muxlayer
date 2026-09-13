@@ -49,7 +49,16 @@ pub fn spawn(db: crate::storage::db::DbPool) {
     crate::runtime::spawn(async move {
         tokio::time::sleep(STARTUP_DELAY).await;
         loop {
-            let result = sync_all_now(&db);
+            // 同步要扫大量文件并批量写库,放到阻塞线程池,不占 tokio worker。
+            let task_db = db.clone();
+            let result = match tokio::task::spawn_blocking(move || sync_all_now(&task_db)).await {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("[session-sync] sync task failed: {e}");
+                    tokio::time::sleep(INTERVAL).await;
+                    continue;
+                }
+            };
             if result.imported > 0 {
                 eprintln!(
                     "[session-sync] imported {} (scanned {} files, skipped {}, errors {})",

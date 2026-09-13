@@ -8,15 +8,18 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::errors::AppError;
+use crate::gateway::failover::Attempt;
+use crate::gateway::provider_selector::ProviderCandidate;
 use crate::models::provider::Provider;
 use crate::providers::adapter::{self, ProviderConfig};
 
 #[cfg(test)]
 use super::shared::native_model_override;
 use super::shared::{
-    detect_client_from_ua, lock_db, log_request_error, log_request_error_full, log_request_success,
-    native_model_override_for_images, refine_value_body, request_body_or_gateway_error,
-    sanitize_body, truncate_str, validate_auth, GatewayError,
+    check_budget, detect_client_from_ua, log_request_error, log_request_error_full,
+    log_request_success, native_model_override_for_images, refine_value_body,
+    request_body_or_gateway_error, sanitize_body, select_providers, trace_with_degradation_events,
+    truncate_str, GatewayError,
 };
 use super::GatewayState;
 
@@ -27,11 +30,10 @@ pub async fn handle_chat_completions(
     AxumState(state): AxumState<GatewayState>,
     body: Result<bytes::Bytes, axum::extract::rejection::BytesRejection>,
 ) -> Result<Response, GatewayError> {
+    // 鉴权 + Host/Origin 边界校验在 server.rs 的中间件里、读 body 之前完成。
     let body = request_body_or_gateway_error(body)?;
-    validate_auth(&headers)?;
     // Daily budget hard gate: block new requests or force cheapest (streams mid-flight not cut).
-    let force_cheapest =
-        crate::gateway::budget::check_new_request(&state.db).map_err(GatewayError)?;
+    let force_cheapest = check_budget(&state.db).await?;
     let start = Instant::now();
     let request_id = format!(
         "req_{}",
@@ -39,19 +41,20 @@ pub async fn handle_chat_completions(
     );
     let client_type = detect_client_from_ua(&headers, "Generic");
 
-    let body = crate::gateway::body_decode::decode(&headers, body).map_err(|e| {
-        log_request_error(
-            &state.db,
-            &client_type,
-            "/v1/chat/completions",
-            &request_id,
-            "",
-            None,
-            &e,
-            start.elapsed().as_millis() as i64,
-        );
-        GatewayError(e)
-    })?;
+    let body = crate::gateway::body_decode::decode(&headers, body, state.request_body_limit)
+        .map_err(|e| {
+            log_request_error(
+                &state.db,
+                &client_type,
+                "/v1/chat/completions",
+                &request_id,
+                "",
+                None,
+                &e,
+                start.elapsed().as_millis() as i64,
+            );
+            GatewayError(e)
+        })?;
 
     let body_json: serde_json::Value =
         serde_json::from_str(&body).unwrap_or_else(|_| serde_json::json!({}));
@@ -64,20 +67,14 @@ pub async fn handle_chat_completions(
     // Provider 选取：先按 openai_chat_completions 路由 profile 选；选不到再
     // fallback 到 anthropic_messages —— 让只配了 Anthropic 端点的 provider
     // 也能服务 Chat 客户端，下面 anthropic 分支负责协议转换。
-    let selection = crate::gateway::provider_selector::select_for_failover(
+    let selection = select_providers(
         &state.db,
-        "openai_chat_completions",
-        requested_model.as_deref(),
-        Some(&analysis),
+        &["openai_chat_completions", "anthropic_messages"],
+        requested_model.clone(),
+        analysis.clone(),
+        force_cheapest,
     )
-    .or_else(|_| {
-        crate::gateway::provider_selector::select_for_failover(
-            &state.db,
-            "anthropic_messages",
-            requested_model.as_deref(),
-            Some(&analysis),
-        )
-    })
+    .await
     .map_err(|e| {
         log_request_error(
             &state.db,
@@ -92,13 +89,7 @@ pub async fn handle_chat_completions(
         GatewayError(e)
     })?;
 
-    let mut selection = selection;
-    if force_cheapest {
-        let _ = crate::gateway::budget::apply_force_cheapest(&state.db, &mut selection);
-    }
-
     let is_failover = selection.mode == "failover" && selection.candidates.len() > 1;
-    let candidates = selection.candidates.clone();
     let raw_body = sanitize_body(&body);
 
     // 会话亲和：与 /v1/responses 对齐，cache-hit 后粘住同一上游以保 prompt cache。
@@ -113,183 +104,153 @@ pub async fn handle_chat_completions(
     // 带图请求跳过显式不支持 vision 的 provider(与 /v1/responses 对齐)。
     let request_has_images = analysis.has_images;
     let attempt_order = crate::gateway::failover::build_attempt_order(
-        &candidates,
+        &selection.candidates,
         &selection.provider.id,
         is_failover,
         request_has_images,
         affinity_sid,
     );
+    let providers = crate::gateway::failover::load_providers(&state.db, &attempt_order)
+        .await
+        .map_err(GatewayError)?;
 
-    let mut last_error: Option<AppError> = None;
-
-    for (attempt_idx, candidate) in attempt_order.iter().enumerate() {
-        let provider = {
-            let conn = state
-                .db
-                .get()
-                .map_err(|_| GatewayError(AppError::internal("DB lock")))?;
-            match crate::storage::providers::get_by_id(&conn, &candidate.provider_id) {
-                Ok(p) => p,
-                Err(_) => continue,
+    let ctx = ChatAttemptCtx {
+        state: &state,
+        headers: &headers,
+        body: &body,
+        raw_body: &raw_body,
+        requested_model: requested_model.as_deref(),
+        request_has_images,
+        request_id: &request_id,
+        start,
+        client_type: &client_type,
+        session_id: session_id.as_deref(),
+    };
+    let providers = &providers;
+    crate::gateway::failover::run_attempts(
+        &state.db,
+        &attempt_order,
+        is_failover,
+        |_, candidate| async move {
+            match providers.get(&candidate.provider_id) {
+                Some(provider) => attempt_chat_provider(ctx, provider, &candidate).await,
+                None => Attempt::Skip(AppError::not_found("Provider", &candidate.provider_id)),
             }
-        };
+        },
+    )
+    .await
+    .map_err(GatewayError)
+}
 
-        let config = match ProviderConfig::from_provider(&provider) {
-            Ok(c) => c,
-            Err(e) => {
-                last_error = Some(e);
-                continue;
-            }
-        };
+/// 一次 chat 请求在所有候选间共享的只读上下文。
+#[derive(Clone, Copy)]
+struct ChatAttemptCtx<'a> {
+    state: &'a GatewayState,
+    headers: &'a HeaderMap,
+    body: &'a str,
+    raw_body: &'a str,
+    requested_model: Option<&'a str>,
+    request_has_images: bool,
+    request_id: &'a str,
+    start: Instant,
+    client_type: &'a str,
+    session_id: Option<&'a str>,
+}
 
-        // Chat → Anthropic 转换分支：provider 是 anthropic 且配了 anthropic_base_url。
-        // 走 client_chat_to_anthropic_handle 转换请求体、调上游 Anthropic、再把响应/SSE
-        // 翻译成 Chat 形态发回。
-        if config.is_anthropic() && config.has_anthropic_url() {
-            let model_override = native_model_override_for_images(
-                &provider,
-                requested_model.as_deref(),
-                Some(&candidate.model),
-                request_has_images,
-            );
-            let model = model_override.unwrap_or_else(|| candidate.model.clone());
-            let result = client_chat_to_anthropic_handle(
-                state.clone(),
-                config.clone(),
-                provider.clone(),
-                &body,
-                model.clone(),
-                request_id.clone(),
-                raw_body.clone(),
-                start,
-                client_type.clone(),
-                session_id.clone(),
-                candidate.provider_id.clone(),
-            )
-            .await;
+/// 对单个候选发起一次 chat 请求,结果交给 failover 驱动决定是否换下一个。
+async fn attempt_chat_provider(
+    ctx: ChatAttemptCtx<'_>,
+    provider: &Provider,
+    candidate: &ProviderCandidate,
+) -> Attempt<Response> {
+    let config = match ProviderConfig::from_provider(provider) {
+        Ok(c) => c,
+        Err(e) => return Attempt::Skip(e),
+    };
 
-            match result {
-                Ok(response) => {
-                    if let Some(conn) = lock_db(&state.db) {
-                        let _ = crate::storage::provider_runtime_status::mark_success(
-                            &conn,
-                            &candidate.provider_id,
-                        );
-                    }
-                    return Ok(response);
-                }
-                Err(err) => {
-                    if let Some(conn) = lock_db(&state.db) {
-                        let _ = crate::storage::provider_runtime_status::mark_failure(
-                            &conn,
-                            &candidate.provider_id,
-                            &err.0.code,
-                            &err.0.message,
-                            candidate.cooldown_seconds,
-                        );
-                    }
-                    if is_failover
-                        && attempt_idx < attempt_order.len() - 1
-                        && crate::gateway::provider_selector::should_failover(
-                            Some(502),
-                            &err.0.message,
-                            candidate,
-                        )
-                    {
-                        last_error = Some(err.0);
-                        continue;
-                    }
-                    return Err(err);
-                }
-            }
-        }
-
-        let decision = match crate::gateway::route_decision::decide(
-            "/v1/chat/completions",
-            &provider.protocol,
-            &config.base_url,
-        ) {
-            Ok(d) => d,
-            Err(e) => {
-                last_error = Some(e);
-                continue;
-            }
-        };
-
-        if decision.mode != crate::gateway::route_decision::RouteMode::PassThrough {
-            last_error = Some(AppError::new(
-                crate::errors::codes::PROTOCOL_TRANSFORM_NOT_SUPPORTED,
-                "Not a pass-through provider",
-            ));
-            continue;
-        }
-
+    // Chat → Anthropic 转换分支：provider 是 anthropic 且配了 anthropic_base_url。
+    // 走 client_chat_to_anthropic_handle 转换请求体、调上游 Anthropic、再把响应/SSE
+    // 翻译成 Chat 形态发回。
+    if config.is_anthropic() && config.has_anthropic_url() {
         let model_override = native_model_override_for_images(
-            &provider,
-            requested_model.as_deref(),
+            provider,
+            ctx.requested_model,
             Some(&candidate.model),
-            request_has_images,
+            ctx.request_has_images,
         );
-        let result = crate::gateway::pass_through::handle(
-            &state.http_client,
-            &state.db,
-            &config,
-            &decision.target_url,
-            "/v1/chat/completions",
-            "openai_chat_completions",
-            &body,
-            model_override.as_deref(),
-            &request_id,
-            start,
-            &client_type,
-            Some(&headers),
-            session_id.as_deref(),
-            Some(candidate.provider_id.as_str()),
+        let model = model_override.unwrap_or_else(|| candidate.model.clone());
+        return match client_chat_to_anthropic_handle(
+            ctx.state.clone(),
+            config,
+            provider.clone(),
+            ctx.body,
+            model,
+            ctx.request_id.to_string(),
+            ctx.raw_body.to_string(),
+            ctx.start,
+            ctx.client_type.to_string(),
+            ctx.session_id.map(str::to_string),
+            candidate.provider_id.clone(),
         )
-        .await;
-
-        match result {
-            Ok(response) => {
-                if let Some(conn) = lock_db(&state.db) {
-                    let _ = crate::storage::provider_runtime_status::mark_success(
-                        &conn,
-                        &candidate.provider_id,
-                    );
-                }
-                return Ok(response);
-            }
-            Err(err) => {
-                if let Some(conn) = lock_db(&state.db) {
-                    let _ = crate::storage::provider_runtime_status::mark_failure(
-                        &conn,
-                        &candidate.provider_id,
-                        &err.code,
-                        &err.message,
-                        candidate.cooldown_seconds,
-                    );
-                }
-                if is_failover
-                    && attempt_idx < attempt_order.len() - 1
-                    && crate::gateway::provider_selector::should_failover(
-                        Some(502),
-                        &err.message,
-                        candidate,
-                    )
+        .await
+        {
+            Ok(response) => Attempt::Success(response),
+            Err(GatewayError(err)) => match crate::gateway::failover::classify_error(err) {
+                // 转换分支里不带 "HTTP nnn" 的上游错误(响应解析失败、Copilot token
+                // 交换失败)按 502 参与 failover 判断,与改造前一致。
+                Attempt::ProviderFailed(err)
+                    if crate::gateway::failover::upstream_status_of(&err).is_none() =>
                 {
-                    last_error = Some(err);
-                    continue;
+                    Attempt::ProviderFailed(err.with_upstream_status(502))
                 }
-                return Err(GatewayError(err));
-            }
-        }
+                other => other,
+            },
+        };
     }
 
-    Err(GatewayError(last_error.unwrap_or_else(|| {
-        AppError::new(
-            crate::errors::codes::FAILOVER_EXHAUSTED,
-            "All providers failed",
-        )
-    })))
+    let decision = match crate::gateway::route_decision::decide(
+        "/v1/chat/completions",
+        &provider.protocol,
+        &config.base_url,
+    ) {
+        Ok(d) => d,
+        Err(e) => return Attempt::Skip(e),
+    };
+
+    if decision.mode != crate::gateway::route_decision::RouteMode::PassThrough {
+        return Attempt::Skip(AppError::new(
+            crate::errors::codes::PROTOCOL_TRANSFORM_NOT_SUPPORTED,
+            "Not a pass-through provider",
+        ));
+    }
+
+    let model_override = native_model_override_for_images(
+        provider,
+        ctx.requested_model,
+        Some(&candidate.model),
+        ctx.request_has_images,
+    );
+    match crate::gateway::pass_through::handle(
+        &ctx.state.http_client,
+        &ctx.state.db,
+        &config,
+        &decision.target_url,
+        "/v1/chat/completions",
+        "openai_chat_completions",
+        ctx.body,
+        model_override.as_deref(),
+        ctx.request_id,
+        ctx.start,
+        ctx.client_type,
+        Some(ctx.headers),
+        ctx.session_id,
+        Some(candidate.provider_id.as_str()),
+    )
+    .await
+    {
+        Ok(response) => Attempt::Success(response),
+        Err(err) => Attempt::ProviderFailed(err),
+    }
 }
 
 // ── Chat 客户端 + Anthropic provider 协议转换 ──────────────────
@@ -299,7 +260,7 @@ pub async fn handle_chat_completions(
 // 1. Chat 请求体 → Anthropic Messages 请求体（`chat_to_anthropic::convert`）
 // 2. send_anthropic_stream / non_stream 调上游 Anthropic
 // 3. 上游 Anthropic 响应 → Chat 响应：
-//    - 非流式：`anthropic_to_chat::convert` 一次性转
+//    - 非流式：`anthropic_to_chat::convert_with_events` 一次性转（丢弃的块记降级事件）
 //    - 流式：`AnthropicToChatStream` 增量转译 SSE 帧
 async fn client_chat_to_anthropic_handle(
     state: GatewayState,
@@ -380,7 +341,8 @@ async fn client_chat_to_anthropic_handle(
         adapter::send_anthropic_non_stream(&state.http_client, &config, &anthropic_body).await;
     match result {
         Ok(upstream_json) => {
-            let chat_resp = crate::transform::anthropic_to_chat::convert(&upstream_json, &model);
+            let (chat_resp, degradation_events) =
+                crate::transform::anthropic_to_chat::convert_with_events(&upstream_json, &model);
             let latency = start.elapsed().as_millis() as i64;
             // usage 同时含 Anthropic + OpenAI 两形态字段，extract_cache_tokens 都识别
             let (in_tok, out_tok) = (
@@ -402,9 +364,10 @@ async fn client_chat_to_anthropic_handle(
                     crate::gateway::session_affinity::record_if_cache_hit(sid, &provider_id, usage);
                 }
             }
-            let trace =
-                json!({"mode": "transform", "protocol": "chat_to_anthropic", "stream": false})
-                    .to_string();
+            let trace = trace_with_degradation_events(
+                json!({"mode": "transform", "protocol": "chat_to_anthropic", "stream": false}),
+                &degradation_events,
+            );
             log_request_success(
                 &state.db,
                 &client_type,
@@ -425,6 +388,7 @@ async fn client_chat_to_anthropic_handle(
                     output: out_tok,
                     cache_write: cache_w,
                     cache_read: cache_r,
+                    input_semantics: crate::gateway::usage::InputCacheSemantics::ExcludesCache,
                 },
             );
             Ok(Json(chat_resp).into_response())
@@ -680,6 +644,7 @@ async fn client_chat_to_anthropic_stream(
                         output: out_tok,
                         cache_write: cache_w,
                         cache_read: cache_r,
+                        input_semantics: crate::gateway::usage::InputCacheSemantics::ExcludesCache,
                     },
                 );
             }
@@ -744,6 +709,7 @@ mod tests {
             db: pool,
             http_client: reqwest::Client::new(),
             active_requests: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            request_body_limit: 32 * 1024 * 1024,
         }
     }
 
@@ -948,7 +914,7 @@ mod tests {
     #[test]
     fn body_decode_plain_and_extract_model() {
         let body = Bytes::from_static(br#"{"model":"gpt-4o","messages":[]}"#);
-        let decoded = crate::gateway::body_decode::decode(&hdrs(None), body).unwrap();
+        let decoded = crate::gateway::body_decode::decode(&hdrs(None), body, 1024 * 1024).unwrap();
         assert_eq!(
             extract_requested_model(&decoded),
             Some("gpt-4o".to_string())
@@ -962,7 +928,9 @@ mod tests {
             .write_all(br#"{"model":"gpt-4","messages":[]}"#)
             .unwrap();
         let compressed = Bytes::from(encoder.finish().unwrap());
-        let decoded = crate::gateway::body_decode::decode(&hdrs(Some("gzip")), compressed).unwrap();
+        let decoded =
+            crate::gateway::body_decode::decode(&hdrs(Some("gzip")), compressed, 1024 * 1024)
+                .unwrap();
         assert_eq!(extract_requested_model(&decoded), Some("gpt-4".to_string()));
     }
 

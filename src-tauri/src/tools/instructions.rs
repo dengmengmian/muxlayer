@@ -47,15 +47,12 @@ impl InstructionsScope {
 
     /// 该 scope 对应的全局指令文件绝对路径。Windows 下 `HOME` 不存在，
     /// fallback 到 `USERPROFILE`。
-    pub fn path(self) -> PathBuf {
-        let home = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .unwrap_or_default();
-        let base = PathBuf::from(home);
-        match self {
+    pub fn path(self) -> Result<PathBuf, AppError> {
+        let base = crate::fsutil::home_dir()?;
+        Ok(match self {
             Self::ClaudeGlobal => base.join(".claude").join("CLAUDE.md"),
             Self::CodexGlobal => base.join(".codex").join("AGENTS.md"),
-        }
+        })
     }
 
     /// snapshot 时给 `client_apply_history` 用的文件名（仅 UI 展示，与
@@ -98,7 +95,8 @@ impl ApplyMode {
 }
 
 pub fn read(scope: InstructionsScope) -> InstructionsStatus {
-    let path = scope.path();
+    // 只读展示:家目录不可用时路径为空,按「不存在」展示。
+    let path = scope.path().unwrap_or_default();
     let (exists, content, size_bytes) = match fs::read_to_string(&path) {
         Ok(s) => {
             let len = s.len() as u64;
@@ -118,7 +116,9 @@ pub fn read(scope: InstructionsScope) -> InstructionsStatus {
 /// 写入整文件。如果父目录不存在会自动 `mkdir -p`——首次使用 Claude Code
 /// 或 Codex 之前用户可能根本没建过 `~/.claude/`。
 pub fn write(scope: InstructionsScope, content: &str) -> Result<InstructionsStatus, AppError> {
-    let path = scope.path();
+    // 整个读 → 改 → 写期间持有客户端配置锁,防止并发命令互相覆盖(见 fsutil)。
+    let _config_lock = crate::fsutil::lock_client_configs();
+    let path = scope.path()?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| {
             AppError::new(
@@ -127,7 +127,8 @@ pub fn write(scope: InstructionsScope, content: &str) -> Result<InstructionsStat
             )
         })?;
     }
-    fs::write(&path, content).map_err(|e| {
+    // 原子写:写到一半崩溃不会截断用户的全局指令文件;保留原权限。
+    crate::fsutil::atomic_write(&path, content.as_bytes(), None).map_err(|e| {
         AppError::new(
             crate::errors::codes::INSTRUCTIONS_WRITE_FAILED,
             format!("Cannot write {}: {e}", path.display()),
@@ -144,6 +145,8 @@ pub fn apply_template(
     template_id: &str,
     mode: ApplyMode,
 ) -> Result<InstructionsStatus, AppError> {
+    // 整个读 → 改 → 写期间持有客户端配置锁,防止并发命令互相覆盖(见 fsutil)。
+    let _config_lock = crate::fsutil::lock_client_configs();
     let tpl = super::instructions_templates::find(template_id).ok_or_else(|| {
         AppError::new(
             crate::errors::codes::INSTRUCTIONS_TEMPLATE_NOT_FOUND,
@@ -154,11 +157,18 @@ pub fn apply_template(
     let final_content = match mode {
         ApplyMode::Overwrite => tpl.content.to_string(),
         ApplyMode::Append => {
-            let existing = read(scope);
-            if !existing.exists || existing.content.trim().is_empty() {
+            // 读失败(权限 / 非 UTF-8)必须中止,不能当成空文件用模板覆盖。
+            let path = scope.path()?;
+            let existing = crate::fsutil::read_config_or_empty(&path).map_err(|e| {
+                AppError::new(
+                    crate::errors::codes::INSTRUCTIONS_WRITE_FAILED,
+                    format!("Cannot read {}: {e}", path.display()),
+                )
+            })?;
+            if existing.trim().is_empty() {
                 tpl.content.to_string()
             } else {
-                let mut out = existing.content.trim_end().to_string();
+                let mut out = existing.trim_end().to_string();
                 out.push_str("\n\n---\n\n");
                 out.push_str(tpl.content);
                 out
@@ -172,7 +182,10 @@ pub fn apply_template(
 /// 用于打 `client_apply_history` snapshot 的 (file_name, absolute_path) pair。
 /// 由 commands.rs 在 write/apply 前调用，保持和其他 5 个客户端同一套流程。
 pub fn snapshot_paths(scope: InstructionsScope) -> Vec<(&'static str, PathBuf)> {
-    vec![(scope.file_name(), scope.path())]
+    scope
+        .path()
+        .map(|p| vec![(scope.file_name(), p)])
+        .unwrap_or_default()
 }
 
 /// 指令备份（6.5）：把两个 scope 的全局指令内容打包成一份 JSON，便于迁移。
@@ -269,6 +282,22 @@ mod tests {
                 apply_template(InstructionsScope::ClaudeGlobal, "tdd", ApplyMode::Append).unwrap();
             assert!(!s.content.contains("---"));
             assert!(s.content.contains("TDD 模式"));
+        });
+    }
+
+    /// 回归:append 模式读现有内容失败(非 UTF-8 / 权限)时,旧实现当成空文件,
+    /// 直接用模板覆盖掉用户的 CLAUDE.md。
+    #[test]
+    fn apply_append_refuses_to_overwrite_unreadable_file() {
+        with_temp_home(|| {
+            let path = InstructionsScope::ClaudeGlobal.path().unwrap();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let original: &[u8] = b"# my rules\n\xff\xfe";
+            std::fs::write(&path, original).unwrap();
+            assert!(
+                apply_template(InstructionsScope::ClaudeGlobal, "tdd", ApplyMode::Append).is_err()
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), original);
         });
     }
 

@@ -116,26 +116,66 @@ pub fn delete(conn: &Connection, id: &str) -> Result<bool, AppError> {
             "Cannot delete the default route profile",
         ));
     }
-    conn.execute(
-        "DELETE FROM route_profile_providers WHERE route_profile_id = ?1",
-        [id],
-    )?;
-    conn.execute("DELETE FROM route_profiles WHERE id = ?1", [id])?;
+    in_savepoint(conn, |c| {
+        c.execute(
+            "DELETE FROM route_profile_providers WHERE route_profile_id = ?1",
+            [id],
+        )?;
+        c.execute("DELETE FROM route_profiles WHERE id = ?1", [id])?;
+        Ok(())
+    })?;
     Ok(true)
+}
+
+/// 多语句写操作的原子包装。用 SAVEPOINT 而不是 BEGIN:调用方(如 route_templates)
+/// 可能已在外层事务里,SAVEPOINT 既能独立开事务,也能嵌套在外层事务内。
+/// 语句失败或 RELEASE 失败(最外层 RELEASE 即 COMMIT,可能 BUSY / 延迟约束失败)都回滚,
+/// 保证连接回到进入前的事务状态,不会在池化连接上遗留写事务、永久持有写锁。
+/// (rusqlite 的 Savepoint 需要 &mut Connection,与本模块 &Connection 的调用方不兼容。)
+fn in_savepoint<T>(
+    conn: &Connection,
+    f: impl FnOnce(&Connection) -> Result<T, AppError>,
+) -> Result<T, AppError> {
+    let outermost = conn.is_autocommit();
+    conn.execute_batch("SAVEPOINT route_profiles_write")?;
+    let result = f(conn).and_then(|v| {
+        conn.execute_batch("RELEASE route_profiles_write")?;
+        Ok(v)
+    });
+    let Err(e) = result else {
+        return result;
+    };
+    if let Err(rb) =
+        conn.execute_batch("ROLLBACK TO route_profiles_write; RELEASE route_profiles_write")
+    {
+        // 保存点已不存在(如 SQLite 已自动回滚)或回滚本身失败:本函数开启的事务
+        // 仍挂着时整体 ROLLBACK 兜底;回滚错误一并暴露。
+        let mut detail = format!("rollback failed: {rb}");
+        if outermost && !conn.is_autocommit() {
+            if let Err(final_rb) = conn.execute_batch("ROLLBACK") {
+                detail.push_str(&format!("; final rollback failed: {final_rb}"));
+            }
+        }
+        return Err(e.with_detail(detail));
+    }
+    Err(e)
 }
 
 pub fn set_default(conn: &Connection, id: &str) -> Result<RouteProfile, AppError> {
     let profile = get_by_id(conn, id)?;
     let now = chrono::Utc::now().to_rfc3339();
-    // Clear default for same input_protocol
-    conn.execute(
-        "UPDATE route_profiles SET is_default = 0, updated_at = ?1 WHERE input_protocol = ?2",
-        params![&now, &profile.input_protocol],
-    )?;
-    conn.execute(
-        "UPDATE route_profiles SET is_default = 1, updated_at = ?1 WHERE id = ?2",
-        params![&now, id],
-    )?;
+    in_savepoint(conn, |c| {
+        // Clear default for same input_protocol
+        c.execute(
+            "UPDATE route_profiles SET is_default = 0, updated_at = ?1 WHERE input_protocol = ?2",
+            params![&now, &profile.input_protocol],
+        )?;
+        c.execute(
+            "UPDATE route_profiles SET is_default = 1, updated_at = ?1 WHERE id = ?2",
+            params![&now, id],
+        )?;
+        Ok(())
+    })?;
     get_by_id(conn, id)
 }
 
@@ -145,24 +185,27 @@ pub fn set_active_provider(
     provider_id: &str,
 ) -> Result<RouteProfile, AppError> {
     let now = chrono::Utc::now().to_rfc3339();
-    conn.execute(
-        "UPDATE route_profiles SET active_provider_id = ?1, updated_at = ?2 WHERE id = ?3",
-        params![provider_id, &now, profile_id],
-    )?;
+    in_savepoint(conn, |c| {
+        c.execute(
+            "UPDATE route_profiles SET active_provider_id = ?1, updated_at = ?2 WHERE id = ?3",
+            params![provider_id, &now, profile_id],
+        )?;
 
-    // Sync providers.is_active + gateway_settings
-    conn.execute(
-        "UPDATE providers SET is_active = 0, updated_at = ?1 WHERE is_active = 1",
-        [&now],
-    )?;
-    conn.execute(
-        "UPDATE providers SET is_active = 1, updated_at = ?1 WHERE id = ?2",
-        params![&now, provider_id],
-    )?;
-    conn.execute(
-        "UPDATE gateway_settings SET active_provider_id = ?1, updated_at = ?2 WHERE id = 1",
-        params![provider_id, &now],
-    )?;
+        // Sync providers.is_active + gateway_settings
+        c.execute(
+            "UPDATE providers SET is_active = 0, updated_at = ?1 WHERE is_active = 1",
+            [&now],
+        )?;
+        c.execute(
+            "UPDATE providers SET is_active = 1, updated_at = ?1 WHERE id = ?2",
+            params![&now, provider_id],
+        )?;
+        c.execute(
+            "UPDATE gateway_settings SET active_provider_id = ?1, updated_at = ?2 WHERE id = 1",
+            params![provider_id, &now],
+        )?;
+        Ok(())
+    })?;
 
     get_by_id(conn, profile_id)
 }
@@ -614,5 +657,197 @@ mod tests {
         // Migrations seed default profiles; we should find one for openai_responses
         let default = get_default_for_protocol(&conn, "openai_responses").unwrap();
         assert!(default.is_some());
+    }
+
+    fn default_ids(conn: &Connection, protocol: &str) -> Vec<String> {
+        let mut stmt = conn
+            .prepare("SELECT id FROM route_profiles WHERE input_protocol = ?1 AND is_default = 1")
+            .unwrap();
+        stmt.query_map([protocol], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<Vec<String>, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn set_default_is_atomic_when_second_statement_fails() {
+        // 复现:set_default 先清空同协议 default 再设新 default,两条语句无事务。
+        // 第二条失败(BUSY / 崩溃)会留下"该协议无 default",网关报 No route profile。
+        let conn = setup_db();
+        let old = default_ids(&conn, "openai_responses");
+        assert_eq!(old.len(), 1);
+        let p = create(
+            &conn,
+            CreateRouteProfileInput {
+                name: "New".to_string(),
+                input_protocol: "openai_responses".to_string(),
+                mode: None,
+            },
+        )
+        .unwrap();
+        // 用触发器让"设新 default"那条 UPDATE 失败,模拟中途出错。
+        conn.execute_batch(&format!(
+            "CREATE TRIGGER fail_set_default BEFORE UPDATE OF is_default ON route_profiles
+             WHEN NEW.is_default = 1 AND NEW.id = '{}'
+             BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+            p.id
+        ))
+        .unwrap();
+
+        assert!(set_default(&conn, &p.id).is_err());
+        assert_eq!(
+            default_ids(&conn, "openai_responses"),
+            old,
+            "失败后旧 default 必须保留"
+        );
+        assert!(conn.is_autocommit(), "失败后不应遗留未结束的事务");
+    }
+
+    #[test]
+    fn delete_is_atomic_when_profile_delete_fails() {
+        let conn = setup_db();
+        let provider_id = create_test_provider(&conn);
+        let p = create(
+            &conn,
+            CreateRouteProfileInput {
+                name: "Del".to_string(),
+                input_protocol: "openai_responses".to_string(),
+                mode: None,
+            },
+        )
+        .unwrap();
+        add_provider(
+            &conn,
+            &p.id,
+            &provider_id,
+            AddProviderToRouteInput {
+                priority: None,
+                model_override: None,
+                cooldown_seconds: None,
+                failover_on_status_codes: None,
+                failover_on_error_keywords: None,
+                routing_conditions: None,
+            },
+        )
+        .unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER fail_delete BEFORE DELETE ON route_profiles
+             BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+        )
+        .unwrap();
+
+        assert!(delete(&conn, &p.id).is_err());
+        let members: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM route_profile_providers WHERE route_profile_id = ?1",
+                [&p.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(members, 1, "profile 删除失败时成员不能已被删掉");
+        assert!(conn.is_autocommit());
+    }
+
+    #[test]
+    fn set_active_provider_is_atomic_when_settings_update_fails() {
+        let conn = setup_db();
+        let new_provider = create_test_provider(&conn);
+        let profile = get_default_for_protocol(&conn, "openai_responses")
+            .unwrap()
+            .unwrap();
+        let active_before: Vec<String> = conn
+            .prepare("SELECT id FROM providers WHERE is_active = 1")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER fail_settings BEFORE UPDATE ON gateway_settings
+             BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+        )
+        .unwrap();
+
+        assert!(set_active_provider(&conn, &profile.id, &new_provider).is_err());
+        let active_after: Vec<String> = conn
+            .prepare("SELECT id FROM providers WHERE is_active = 1")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            active_after, active_before,
+            "失败后 providers.is_active 必须回滚"
+        );
+        let rp = get_by_id(&conn, &profile.id).unwrap();
+        assert_eq!(rp.active_provider_id, profile.active_provider_id);
+    }
+
+    #[test]
+    fn set_active_provider_works_inside_outer_transaction() {
+        // route_templates 在外层事务里调用 set_active_provider,内部不能再 BEGIN。
+        let conn = setup_db();
+        let new_provider = create_test_provider(&conn);
+        let profile = get_default_for_protocol(&conn, "openai_responses")
+            .unwrap()
+            .unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        set_active_provider(&tx, &profile.id, &new_provider).unwrap();
+        tx.commit().unwrap();
+        let rp = get_by_id(&conn, &profile.id).unwrap();
+        assert_eq!(
+            rp.active_provider_id.as_deref(),
+            Some(new_provider.as_str())
+        );
+    }
+
+    #[test]
+    fn in_savepoint_rolls_back_when_release_fails() {
+        // 最外层 RELEASE 等同 COMMIT,可能失败(BUSY / 延迟约束)。失败时若不回滚,
+        // 池化连接会一直挂着写事务、永久持有写锁。
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE parent (id TEXT PRIMARY KEY);
+             CREATE TABLE child (pid TEXT REFERENCES parent(id) DEFERRABLE INITIALLY DEFERRED);",
+        )
+        .unwrap();
+
+        let result = in_savepoint(&conn, |c| {
+            c.execute("INSERT INTO child VALUES ('missing')", [])?;
+            Ok(())
+        });
+        assert!(result.is_err(), "延迟外键违例应让 RELEASE 失败");
+        assert!(
+            conn.is_autocommit(),
+            "RELEASE 失败后连接必须回到 autocommit"
+        );
+        let children: i64 = conn
+            .query_row("SELECT COUNT(*) FROM child", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(children, 0, "失败的写入必须回滚");
+        conn.execute("INSERT INTO parent VALUES ('p')", [])
+            .expect("后续写入应成功");
+    }
+
+    #[test]
+    fn in_savepoint_statement_failure_leaves_autocommit_and_allows_writes() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t (id TEXT PRIMARY KEY);")
+            .unwrap();
+        let result = in_savepoint(&conn, |c| {
+            c.execute("INSERT INTO t VALUES ('a')", [])?;
+            c.execute("INSERT INTO t VALUES ('a')", [])?;
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert!(conn.is_autocommit());
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+        conn.execute("INSERT INTO t VALUES ('b')", [])
+            .expect("后续写入应成功");
     }
 }

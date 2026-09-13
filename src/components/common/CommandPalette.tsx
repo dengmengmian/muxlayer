@@ -19,7 +19,9 @@ import {
 } from "lucide-react";
 import * as api from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
-import { useProviders } from "@/store/global";
+import { useGatewayStatus, useProviders } from "@/store/global";
+import { toast } from "@/components/common/Toast";
+import type { GatewayStatus } from "@/types/gateway";
 
 interface Action {
   id: string;
@@ -165,13 +167,7 @@ export function CommandPalette({
         hint: t("cmdk.action"),
         icon: Play,
         keywords: "start gateway 启动",
-        run: async () => {
-          try {
-            await api.startGateway();
-          } catch {
-            /* toast handled elsewhere */
-          }
-        },
+        run: () => runGatewayCommand(api.startGateway),
       },
       {
         id: "act:stop",
@@ -179,13 +175,7 @@ export function CommandPalette({
         hint: t("cmdk.action"),
         icon: Square,
         keywords: "stop gateway 停止",
-        run: async () => {
-          try {
-            await api.stopGateway();
-          } catch {
-            /* */
-          }
-        },
+        run: () => runGatewayCommand(api.stopGateway),
       },
       {
         id: "act:restart",
@@ -193,13 +183,7 @@ export function CommandPalette({
         hint: t("cmdk.action"),
         icon: RotateCcw,
         keywords: "restart gateway 重启",
-        run: async () => {
-          try {
-            await api.restartGateway();
-          } catch {
-            /* */
-          }
-        },
+        run: () => runGatewayCommand(api.restartGateway),
       },
     ];
     const themeActions: Action[] = [
@@ -379,6 +363,16 @@ export function CommandPalette({
       </div>
     </div>
   );
+}
+
+/// start/stop/restart 返回的新状态直接写进全局 store（Topbar 等订阅者即时更新）；
+/// 失败给用户一个 error toast。
+async function runGatewayCommand(command: () => Promise<GatewayStatus>) {
+  try {
+    useGatewayStatus.getState().setValue(await command());
+  } catch (err) {
+    toast("error", (err as api.AppError).message);
+  }
 }
 
 /// 简单模糊匹配：query 的每个字符按顺序出现在 text 即匹配。

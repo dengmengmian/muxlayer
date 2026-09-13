@@ -17,6 +17,7 @@
 //!   - web_search native web search builtin
 //!   - cache      Anthropic-style prompt caching
 
+use crate::providers::model_id::strip_qualifier;
 use crate::storage::generated_provider_catalog as catalog;
 
 pub const CAP_TEXT: &str = "text";
@@ -166,16 +167,6 @@ fn seed_generic(mid: &str) -> Vec<String> {
         caps.push(CAP_REASONING.into());
     }
     caps
-}
-
-/// Strip a trailing `[...]` qualifier like `mimo-v2.5-pro[1m]` → `mimo-v2.5-pro`.
-fn strip_qualifier(model: &str) -> &str {
-    if let Some(stripped) = model.strip_suffix(']') {
-        if let Some(open) = stripped.rfind('[') {
-            return &stripped[..open];
-        }
-    }
-    model
 }
 
 fn dedup_sort(mut v: Vec<String>) -> Vec<String> {

@@ -9,8 +9,8 @@
 //! SSE 事件发给 client，首字延迟 = 上游首字延迟。
 //!
 //! 状态机要点：
-//! - 第一个 chunk 到达时 emit `message_start`（input_tokens 留 0，最后 usage
-//!   到达时由 message_delta 携带 output_tokens）
+//! - 第一个 chunk 到达时 emit `message_start`（input_tokens 通常只能留 0，最后
+//!   usage 到达时由 message_delta 携带 input/output/cache 全部 usage 字段）
 //! - 文本 delta → 必要时 emit `content_block_start{type:text}`、再 emit
 //!   `content_block_delta{type:text_delta}`
 //! - reasoning_content delta（DeepSeek-thinking / MiMo / o1 风格）→ 同上但
@@ -36,6 +36,14 @@ struct OpenBlock {
     anthropic_idx: usize,
 }
 
+/// 上游 tool_call delta 的归属键。标准上游带 index；部分上游并行调用只带 id
+/// 不带 index，此时按 id 区分，避免全部并进同一个 block。
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum ToolKey {
+    Index(i64),
+    Id(String),
+}
+
 pub struct ChatToAnthropicStream {
     message_id: String,
     model: String,
@@ -49,7 +57,12 @@ pub struct ChatToAnthropicStream {
     /// 上游 tool_call_index → 我方 OpenBlock 的映射。Anthropic content block
     /// 序号必须连续、按打开顺序递增；upstream tool_call_index 也是连续的但
     /// 单独编号体系，需要这层映射。
-    tool_blocks: HashMap<i64, OpenBlock>,
+    tool_blocks: HashMap<ToolKey, OpenBlock>,
+    /// 最近一次出现的 tool_call 键——既无 index 也无 id 的续传增量归到这里。
+    last_tool_key: Option<ToolKey>,
+    /// 上游 tool_call id → 已打开块的键。首块带 index、后续只带 id 的增量靠它
+    /// 续到同一个块，避免同一个 id 打开第二个 tool_use。
+    id_to_key: HashMap<String, ToolKey>,
     /// 下一个可分配的 Anthropic content_block index。
     next_anthropic_idx: usize,
     /// 终块带的 finish_reason；用来映射 Anthropic stop_reason。
@@ -74,6 +87,8 @@ impl ChatToAnthropicStream {
             text_block: None,
             thinking_block: None,
             tool_blocks: HashMap::new(),
+            last_tool_key: None,
+            id_to_key: HashMap::new(),
             next_anthropic_idx: 0,
             finish_reason: None,
             final_usage: None,
@@ -196,15 +211,31 @@ impl ChatToAnthropicStream {
             // tool_calls deltas
             if let Some(tcs) = &delta.tool_calls {
                 for tc in tcs {
-                    let tc_idx = tc.index.unwrap_or(0);
                     let func = tc.function.as_ref();
                     let name = func.and_then(|f| f.name.as_deref()).unwrap_or("");
                     let id = tc.id.as_deref().unwrap_or("");
+                    // index 优先；缺 index 时按 id 找已打开的块（可能是按 index 打开的），
+                    // 找不到再以 id 为键；两者都没有的续传增量归最近一个调用。
+                    let tc_key = match (tc.index, id) {
+                        (Some(i), _) => ToolKey::Index(i),
+                        (None, id) if !id.is_empty() => self
+                            .id_to_key
+                            .get(id)
+                            .cloned()
+                            .unwrap_or_else(|| ToolKey::Id(id.to_string())),
+                        (None, _) => self.last_tool_key.clone().unwrap_or(ToolKey::Index(0)),
+                    };
+                    if !id.is_empty() {
+                        self.id_to_key
+                            .entry(id.to_string())
+                            .or_insert_with(|| tc_key.clone());
+                    }
+                    self.last_tool_key = Some(tc_key.clone());
 
-                    // 第一次见这个 tc_idx 时打开 content_block。OpenAI 习惯：
+                    // 第一次见这个键时打开 content_block。OpenAI 习惯：
                     // 首个 delta 携带 id + function.name + arguments=""；后续
                     // delta 仅携带 arguments 增量。
-                    let need_open = !self.tool_blocks.contains_key(&tc_idx);
+                    let need_open = !self.tool_blocks.contains_key(&tc_key);
                     if need_open {
                         let anthropic_idx = self.alloc_idx();
                         let sanitized_id = crate::transform::tool_calls::sanitize_call_id(id);
@@ -222,13 +253,14 @@ impl ChatToAnthropicStream {
                                 }
                             }),
                         ));
-                        self.tool_blocks.insert(tc_idx, OpenBlock { anthropic_idx });
+                        self.tool_blocks
+                            .insert(tc_key.clone(), OpenBlock { anthropic_idx });
                     }
 
                     // arguments 增量 → input_json_delta
                     if let Some(args) = func.and_then(|f| f.arguments.as_deref()) {
                         if !args.is_empty() {
-                            let anthropic_idx = self.tool_blocks[&tc_idx].anthropic_idx;
+                            let anthropic_idx = self.tool_blocks[&tc_key].anthropic_idx;
                             events.push(sse_event(
                                 "content_block_delta",
                                 json!({
@@ -301,23 +333,21 @@ impl ChatToAnthropicStream {
             ));
         }
 
-        // message_delta：stop_reason 映射 + 终 usage 的 output_tokens
+        // message_delta：stop_reason 映射 + 终 usage。message_start 发出时上游
+        // usage 通常还没到（input_tokens 只能填 0），所以终块 usage 在这里带上
+        // input_tokens / cache_read_input_tokens 等全部字段，与非流式
+        // from_chat_response 的映射一致。
         let stop_reason = map_finish_reason(self.finish_reason.as_deref());
-        let output_tokens = self
-            .final_usage
-            .as_ref()
-            .and_then(|u| {
-                u.get("completion_tokens")
-                    .or_else(|| u.get("output_tokens"))
-            })
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
+        let usage = match self.final_usage.as_ref() {
+            Some(u) => crate::protocol::anthropic_messages::remap_usage_to_anthropic(Some(u)),
+            None => json!({"output_tokens": 0}),
+        };
         events.push(sse_event(
             "message_delta",
             json!({
                 "type": "message_delta",
                 "delta": {"stop_reason": stop_reason, "stop_sequence": Value::Null},
-                "usage": {"output_tokens": output_tokens}
+                "usage": usage
             }),
         ));
 
@@ -530,6 +560,117 @@ mod tests {
         assert!(joined1.contains("\"index\":0"));
         assert!(joined2.contains("\"index\":1"));
         assert!(joined2.contains("\"id\":\"c2\""));
+    }
+
+    #[test]
+    fn final_usage_carries_input_and_cache_read_tokens() {
+        let mut s = ChatToAnthropicStream::new("claude-3");
+        let _ = s.process_chunk(&parse(
+            r#"{"choices":[{"index":0,"delta":{"content":"hi"}}]}"#,
+        ));
+        let _ = s.process_chunk(&parse(
+            r#"{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+        ));
+        let _ = s.process_chunk(&parse(
+            r#"{"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":30}}}"#,
+        ));
+        let events = s.finalize();
+        let delta = events
+            .iter()
+            .find(|e| e.starts_with("event: message_delta"))
+            .expect("message_delta");
+        let data: Value =
+            serde_json::from_str(delta.lines().nth(1).unwrap().trim_start_matches("data: "))
+                .unwrap();
+        assert_eq!(data["usage"]["output_tokens"], 5);
+        // OpenAI 语义 prompt_tokens(100) 已含 cached(30);Anthropic 的 input_tokens
+        // 不含 cache_read,Claude Code 会把两者相加,必须扣掉避免 2× 上下文。
+        assert_eq!(data["usage"]["input_tokens"], 70);
+        assert_eq!(data["usage"]["cache_read_input_tokens"], 30);
+    }
+
+    #[test]
+    fn tool_call_deltas_without_index_are_keyed_by_id() {
+        // 部分上游并行 tool_call 不带 index 只带 id,不能全部并进 block 0。
+        let mut s = ChatToAnthropicStream::new("claude-3");
+        let mut events = s.process_chunk(&parse(
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"id":"a","function":{"name":"f","arguments":"{\"x\":1}"}}]}}]}"#,
+        ));
+        events.extend(s.process_chunk(&parse(
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"id":"b","function":{"name":"g","arguments":""}}]}}]}"#,
+        )));
+        // 后续无 id 无 index 的参数增量归属最近打开的块
+        events.extend(s.process_chunk(&parse(
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"function":{"arguments":"{\"y\":2}"}}]}}]}"#,
+        )));
+        let parsed: Vec<Value> = events
+            .iter()
+            .filter_map(|e| e.lines().nth(1))
+            .map(|d| serde_json::from_str(d.trim_start_matches("data: ")).unwrap())
+            .collect();
+        let starts: Vec<(i64, String)> = parsed
+            .iter()
+            .filter(|v| {
+                v["type"] == "content_block_start" && v["content_block"]["type"] == "tool_use"
+            })
+            .map(|v| {
+                (
+                    v["index"].as_i64().unwrap(),
+                    v["content_block"]["id"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(starts, vec![(0, "a".to_string()), (1, "b".to_string())]);
+        let deltas: Vec<(i64, String)> = parsed
+            .iter()
+            .filter(|v| v["delta"]["type"] == "input_json_delta")
+            .map(|v| {
+                (
+                    v["index"].as_i64().unwrap(),
+                    v["delta"]["partial_json"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            deltas,
+            vec![(0, r#"{"x":1}"#.to_string()), (1, r#"{"y":2}"#.to_string())]
+        );
+    }
+
+    #[test]
+    fn id_only_deltas_attach_to_block_opened_by_index() {
+        // 首块带 index + id,后续块只带 id 不带 index:必须续到同一个 tool_use 块,
+        // 不能再用同一个 id 打开第二个块。
+        let mut s = ChatToAnthropicStream::new("claude-3");
+        let mut events = s.process_chunk(&parse(
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"a","function":{"name":"f","arguments":""}}]}}]}"#,
+        ));
+        events.extend(s.process_chunk(&parse(
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"id":"a","function":{"arguments":"{\"x\":1}"}}]}}]}"#,
+        )));
+        let parsed: Vec<Value> = events
+            .iter()
+            .filter_map(|e| e.lines().nth(1))
+            .map(|d| serde_json::from_str(d.trim_start_matches("data: ")).unwrap())
+            .collect();
+        let starts = parsed
+            .iter()
+            .filter(|v| {
+                v["type"] == "content_block_start" && v["content_block"]["type"] == "tool_use"
+            })
+            .count();
+        assert_eq!(starts, 1);
+        let deltas: Vec<(i64, String)> = parsed
+            .iter()
+            .filter(|v| v["delta"]["type"] == "input_json_delta")
+            .map(|v| {
+                (
+                    v["index"].as_i64().unwrap(),
+                    v["delta"]["partial_json"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(deltas, vec![(0, r#"{"x":1}"#.to_string())]);
     }
 
     #[test]

@@ -5,7 +5,9 @@ import { chromium } from "playwright";
 
 const root = new URL("..", import.meta.url).pathname;
 const host = "127.0.0.1";
-const port = Number(process.env.AGENTGATE_PLAYWRIGHT_PORT || (await freePort()));
+const port = Number(
+  process.env.AGENTGATE_PLAYWRIGHT_PORT || (await freePort())
+);
 const baseUrl = `http://${host}:${port}`;
 const useDevServer = process.env.AGENTGATE_PLAYWRIGHT_DEV === "1";
 
@@ -24,7 +26,7 @@ const server = spawn(
     cwd: root,
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, BROWSER: "none" },
-  },
+  }
 );
 
 let stdout = "";
@@ -43,31 +45,64 @@ try {
   await waitForHttp(baseUrl);
 
   browser = await launchBrowser();
-  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  const context = await browser.newContext({
+    viewport: { width: 960, height: 600 },
+  });
   await context.addInitScript({ content: tauriMockScript() });
+  // 用打包时同一份 CSP 跑页面:策略把界面拦坏时,违规会作为 console error 让冒烟失败。
+  const csp = JSON.parse(
+    fs.readFileSync(new URL("src-tauri/tauri.conf.json", `file://${root}`), "utf8")
+  ).app?.security?.csp;
+  if (csp) {
+    await context.route("**/*", async (route) => {
+      const response = await route.fetch();
+      await route.fulfill({
+        response,
+        headers: { ...response.headers(), "content-security-policy": csp },
+      });
+    });
+  }
   page = await context.newPage();
   pageErrors = [];
-  page.on("pageerror", (error) => pageErrors.push(error.stack || error.message));
+  page.on("pageerror", (error) =>
+    pageErrors.push(error.stack || error.message)
+  );
   page.on("console", (message) => {
     if (message.type() === "error") pageErrors.push(message.text());
   });
 
   await page.goto(baseUrl, { waitUntil: "networkidle" });
   await assertHealthyPage(page, "/");
+  await assertNoDocumentOverflow(page, "/");
 
   const paths = [
     "/providers",
+    "/providers/p1",
     "/routes",
     "/gateway",
     "/logs",
+    "/diagnostics",
     "/tools",
+    "/instructions",
     "/mcp",
+    "/skills",
+    "/pet-chat",
+    "/quick-setup",
     "/settings",
   ];
   for (const path of paths) {
     await page.goto(`${baseUrl}${path}`, { waitUntil: "networkidle" });
     await assertHealthyPage(page, path);
+    await assertNoDocumentOverflow(page, path);
   }
+
+  await page.goto(`${baseUrl}/instructions`, { waitUntil: "networkidle" });
+  await page
+    .locator("main button")
+    .filter({ hasText: /^(Edit|编辑|common\.edit)$/ })
+    .first()
+    .click();
+  await assertLocatorWithinViewport(page, "main textarea", "/instructions");
 
   await expectLocator(page, 'a[href="/providers"]');
   await expectLocator(page, 'a[href="/gateway"]');
@@ -76,6 +111,25 @@ try {
   if (pageErrors.length > 0) {
     throw new Error(`Browser errors:\n${pageErrors.join("\n")}`);
   }
+
+  // 宠物窗口与主窗口共用 index.html,按 window label 分流;同样在 CSP 下渲染一遍,
+  // 只把 CSP 违规当失败(宠物窗口的 IPC 在 mock 里没覆盖全,其它报错不在这里判定)。
+  const cspViolations = [];
+  const petPage = await context.newPage();
+  await petPage.addInitScript({
+    content: tauriMockScript().replaceAll('"main"', '"pet"'),
+  });
+  petPage.on("console", (message) => {
+    if (/Content Security Policy/i.test(message.text())) {
+      cspViolations.push(message.text());
+    }
+  });
+  await petPage.goto(baseUrl, { waitUntil: "networkidle" });
+  await petPage.waitForTimeout(500);
+  if (cspViolations.length > 0) {
+    throw new Error(`Pet window CSP violations:\n${cspViolations.join("\n")}`);
+  }
+  await petPage.close();
 
   await browser.close();
   console.log("Playwright smoke passed.");
@@ -151,7 +205,9 @@ async function assertHealthyPage(page, path) {
   await page.locator("main").waitFor({ state: "visible", timeout: 10_000 });
   const text = (await page.locator("main").innerText()).trim();
   if (text.length < 8) {
-    throw new Error(`Page ${path} rendered too little content: ${JSON.stringify(text)}`);
+    throw new Error(
+      `Page ${path} rendered too little content: ${JSON.stringify(text)}`
+    );
   }
   const viteOverlay = await page.locator("vite-error-overlay").count();
   if (viteOverlay > 0) {
@@ -159,9 +215,31 @@ async function assertHealthyPage(page, path) {
   }
 }
 
+async function assertNoDocumentOverflow(page, path) {
+  const { clientWidth, scrollWidth } = await page.evaluate(() => ({
+    clientWidth: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+  }));
+  if (scrollWidth > clientWidth) {
+    throw new Error(
+      `Page ${path} overflows horizontally at 960x600: ${scrollWidth}px > ${clientWidth}px`
+    );
+  }
+}
+
 async function expectLocator(page, selector) {
   const count = await page.locator(selector).count();
   if (count < 1) throw new Error(`Expected selector ${selector}`);
+}
+
+async function assertLocatorWithinViewport(page, selector, path) {
+  const box = await page.locator(selector).first().boundingBox();
+  const viewport = page.viewportSize();
+  if (!box || !viewport || box.y < 0 || box.y + box.height > viewport.height) {
+    throw new Error(
+      `Expected ${selector} on ${path} to remain inside the ${viewport?.height ?? "unknown"}px viewport`
+    );
+  }
 }
 
 function tauriMockScript() {
@@ -275,6 +353,25 @@ function tauriMockScript() {
     };
     const commandData = {
       list_providers: providers,
+      get_provider: providers[0],
+      get_provider_health: {
+        provider: "Mock Provider",
+        h1_total: 1,
+        h1_success: 1,
+        h1_success_rate: 100,
+        h1_avg_latency_ms: 12,
+        h1_p95_latency_ms: 12,
+        h24_total: 1,
+        h24_success: 1,
+        h24_success_rate: 100,
+        h24_avg_latency_ms: 12,
+        recent_errors: [],
+      },
+      aggregate_provider_detail_stats: {
+        provider: "Mock Provider",
+        latency_points: [],
+        model_stats: [],
+      },
       list_provider_runtime_status: [],
       list_route_profiles: routeProfiles,
       get_route_profile: { profile: routeProfiles[0], providers: [routeProvider] },
@@ -323,7 +420,13 @@ function tauriMockScript() {
       get_pet_settings: { pet_type: "robot", visible: true, pos_x: null, pos_y: null },
       get_pet_click_through: false,
       list_instructions_templates: [],
-      read_global_instructions: "",
+      read_global_instructions: {
+        scope: "claude_global",
+        path: "/tmp/CLAUDE.md",
+        exists: false,
+        content: "",
+        size_bytes: 0,
+      },
       list_skills: [],
       run_full_self_test: [],
       run_health_check: [],
@@ -380,7 +483,7 @@ async function launchBrowser() {
     const fallback = systemChromiumPath();
     if (!fallback) throw error;
     console.warn(
-      `Playwright Chromium is not installed; using system browser: ${fallback}`,
+      `Playwright Chromium is not installed; using system browser: ${fallback}`
     );
     return await chromium.launch({
       headless: true,

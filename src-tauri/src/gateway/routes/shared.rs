@@ -277,6 +277,12 @@ pub(crate) fn origin_is_allowed(
 
 pub(crate) fn validate_auth(headers: &HeaderMap) -> Result<(), GatewayError> {
     validate_request_boundary(headers)?;
+    validate_token(headers)
+}
+
+/// 只校验本地 token,不看 Host/Origin。仅用于 /metrics:Prometheus 在 Docker 里按
+/// 服务名抓取(Host 是域名),token 本身已足以挡住 DNS rebinding 读取。
+pub(crate) fn validate_token(headers: &HeaderMap) -> Result<(), GatewayError> {
     // 1. Try standard Authorization: Bearer <token>
     let auth_header = headers
         .get("authorization")
@@ -564,15 +570,7 @@ pub(crate) fn sanitize_body(body: &str) -> String {
 }
 
 pub(crate) fn truncate_str(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        return s.to_string();
-    }
-    // Find the last char boundary at or before `max` to avoid panic on multibyte chars
-    let mut boundary = max;
-    while boundary > 0 && !s.is_char_boundary(boundary) {
-        boundary -= 1;
-    }
-    s[..boundary].to_string()
+    crate::gateway::stream_utf8::truncate_at_char_boundary(s, max).to_string()
 }
 
 pub(crate) fn trace_with_degradation_events(
@@ -615,7 +613,11 @@ pub(crate) fn enrich_trace_with_route_decision(
         .flatten()?;
     let providers = crate::storage::route_profiles::list_providers(conn, &profile.id).ok()?;
     let selected = providers.iter().find(|p| p.provider_name == provider_name);
+    // 每条日志都要走这里;raw_request 最大 1MB,整段反序列化只为判断有没有图太贵。
+    // 图片块必然含 "input_image" / "image_url" 字面量,先做子串预检,绝大多数纯
+    // 文本请求直接跳过解析。
     let request_has_images = route == "/v1/responses"
+        && (raw_request.contains("input_image") || raw_request.contains("image_url"))
         && serde_json::from_str::<ResponsesRequest>(raw_request)
             .map(|req| request_contains_images(&req))
             .unwrap_or(false);
@@ -733,11 +735,80 @@ pub(crate) fn log_request_error(
     );
 }
 
-/// 从连接池借一个连接,池满 / 超时返回 None(调用方决定怎么兜底)。
-pub(crate) fn lock_db(
+/// 流式响应中途客户端断开时写入请求日志的状态码(沿用 nginx 的 499 约定),
+/// 和上游失败(502)区分开,不污染 provider 健康统计。
+pub(crate) const CLIENT_DISCONNECTED_STATUS: i64 = 499;
+
+/// 客户端断开的日志标记错误。
+pub(crate) fn client_disconnected_error() -> AppError {
+    AppError::new(
+        crate::errors::codes::CLIENT_DISCONNECTED,
+        "client disconnected",
+    )
+    .with_detail("客户端在流式响应结束前断开,网关已停止读取上游")
+}
+
+/// SSE 转换任务返回的错误文本 → 日志用 AppError:客户端断开单独标记,其余是上游流错误。
+pub(crate) fn stream_task_error(message: &str) -> AppError {
+    if message == crate::gateway::sse::CLIENT_DISCONNECTED {
+        client_disconnected_error()
+    } else {
+        AppError::new(crate::errors::codes::UPSTREAM_STREAM_ERROR, message)
+    }
+}
+
+/// 流式任务结束时的错误 → 日志状态码:客户端断开记 499,其余按上游失败记 502。
+pub(crate) fn stream_error_status(err: &AppError) -> i64 {
+    if err.code == crate::errors::codes::CLIENT_DISCONNECTED {
+        CLIENT_DISCONNECTED_STATUS
+    } else {
+        502
+    }
+}
+
+/// 请求入口的日预算闸(同步 SQLite)放到 blocking 线程池里查。
+/// 返回 true 表示需要强制最便宜候选。
+pub(crate) async fn check_budget(db: &crate::storage::db::DbPool) -> Result<bool, GatewayError> {
+    crate::runtime::db_blocking(db, crate::gateway::budget::check_new_request_with_conn)
+        .await
+        .map_err(GatewayError)
+}
+
+/// 选路:按 `protocols` 顺序找第一个能选出 provider 的路由档位(后一个是兜底),
+/// 预算超限时重排为最便宜优先,全局兜底选路补上候选。一次 blocking 任务、
+/// 一条连接完成,不占 tokio worker。
+pub(crate) async fn select_providers(
     db: &crate::storage::db::DbPool,
-) -> Option<r2d2::PooledConnection<r2d2_sqlite::SqliteConnectionManager>> {
-    db.get().ok()
+    protocols: &'static [&'static str],
+    requested_model: Option<String>,
+    analysis: crate::gateway::provider_selector::RequestAnalysis,
+    force_cheapest: bool,
+) -> Result<crate::gateway::provider_selector::ProviderSelection, AppError> {
+    crate::runtime::db_blocking(db, move |conn| {
+        let mut result = Err(AppError::internal("no input protocol to select"));
+        for protocol in protocols {
+            result = crate::gateway::provider_selector::select_for_failover_with_conn(
+                conn,
+                protocol,
+                requested_model.as_deref(),
+                Some(&analysis),
+            );
+            if result.is_ok() {
+                break;
+            }
+        }
+        let mut selection = result?;
+        if force_cheapest {
+            if let Err(e) =
+                crate::gateway::budget::apply_force_cheapest_with_conn(conn, &mut selection)
+            {
+                tracing::warn!(error = %e, "force_cheapest reorder failed; keeping route order");
+            }
+        }
+        crate::gateway::failover::ensure_candidates(&mut selection);
+        Ok(selection)
+    })
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -763,47 +834,65 @@ pub(crate) fn log_request_success(
         output: output_tokens,
         cache_write: cache_write_tokens,
         cache_read: cache_read_tokens,
+        input_semantics: _,
     } = usage;
-    if let Some(conn) = lock_db(db) {
-        // Calculate cost from pricing table
-        let cost = crate::storage::pricing::calculate_cost_for_request(
-            &conn,
-            provider,
-            model,
-            input_tokens,
-            output_tokens,
-        );
+    // Prometheus 指标(纯内存,留在调用线程)
+    crate::gateway::metrics::record_request(
+        route,
+        client_type,
+        provider,
+        status_code as u16,
+        latency_ms as f64 / 1000.0,
+    );
+    for (direction, tokens) in [
+        ("input", input_tokens),
+        ("output", output_tokens),
+        ("cache_read", cache_read_tokens),
+        ("cache_write", cache_write_tokens),
+    ] {
+        if let Some(t) = tokens {
+            crate::gateway::metrics::record_tokens(provider, model, direction, t);
+        }
+    }
+
+    // 定价查询 + route_profiles 查询 + 最多 6×1MB 的 INSERT 全部挪到 blocking
+    // 线程池,不占 tokio worker;客户端不等日志落盘。
+    let client_type = client_type.to_string();
+    let route = route.to_string();
+    let request_id = request_id.to_string();
+    let raw_request = raw_request.to_string();
+    let converted_request = converted_request.to_string();
+    let raw_response = raw_response.to_string();
+    let converted_response = converted_response.to_string();
+    let tool_calls = tool_calls.map(str::to_string);
+    let provider = provider.to_string();
+    let model = model.to_string();
+    let trace_json = trace_json.map(str::to_string);
+    crate::runtime::db_blocking_detached(db, "log_request_success", move |conn| {
+        let cost = crate::gateway::usage::cost_for_request(conn, &provider, &model, &usage);
         let trace_json = enrich_trace_with_route_decision(
-            &conn,
-            route,
-            provider,
-            model,
-            raw_request,
-            trace_json,
+            conn,
+            &route,
+            &provider,
+            &model,
+            &raw_request,
+            trace_json.as_deref(),
         );
-        let _ = crate::storage::request_logs::insert(
-            &conn,
-            request_id,
-            client_type,
-            provider,
-            model,
-            route,
+        crate::storage::request_logs::insert(
+            conn,
+            &request_id,
+            &client_type,
+            &provider,
+            &model,
+            &route,
             status_code,
             latency_ms,
-            Some(raw_request),
-            Some(converted_request),
-            if raw_response.is_empty() {
-                None
-            } else {
-                Some(raw_response)
-            },
-            if converted_response.is_empty() {
-                None
-            } else {
-                Some(converted_response)
-            },
+            Some(&raw_request),
+            Some(&converted_request),
+            (!raw_response.is_empty()).then_some(raw_response.as_str()),
+            (!converted_response.is_empty()).then_some(converted_response.as_str()),
             None,
-            tool_calls,
+            tool_calls.as_deref(),
             None,
             trace_json.as_deref(),
             input_tokens,
@@ -813,31 +902,12 @@ pub(crate) fn log_request_success(
             cache_read_tokens,
             Some("gateway"),
             None,
-            Some(request_id),
-        );
-    }
-    // Prometheus 指标
-    crate::gateway::metrics::record_request(
-        route,
-        client_type,
-        provider,
-        status_code as u16,
-        latency_ms as f64 / 1000.0,
-    );
-    if let Some(t) = input_tokens {
-        crate::gateway::metrics::record_tokens(provider, model, "input", t);
-    }
-    if let Some(t) = output_tokens {
-        crate::gateway::metrics::record_tokens(provider, model, "output", t);
-    }
-    if let Some(t) = cache_read_tokens {
-        crate::gateway::metrics::record_tokens(provider, model, "cache_read", t);
-    }
-    if let Some(t) = cache_write_tokens {
-        crate::gateway::metrics::record_tokens(provider, model, "cache_write", t);
-    }
+            Some(&request_id),
+        )
+    });
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn log_request_error_full(
     db: &crate::storage::db::DbPool,
     client_type: &str,
@@ -864,26 +934,39 @@ pub(crate) fn log_request_error_full(
         "suggestion": err.suggestion,
     })
     .to_string();
-    if let Some(conn) = lock_db(db) {
-        let _ = crate::storage::request_logs::insert(
-            &conn,
-            request_id,
-            client_type,
-            if provider.is_empty() {
-                "unknown"
-            } else {
-                provider
-            },
-            if model.is_empty() { "unknown" } else { model },
-            route,
+    let provider = if provider.is_empty() {
+        "unknown"
+    } else {
+        provider
+    };
+    // Prometheus 指标（错误也算一次请求）
+    crate::gateway::metrics::record_request(
+        route,
+        client_type,
+        provider,
+        status_code as u16,
+        latency_ms as f64 / 1000.0,
+    );
+
+    let client_type = client_type.to_string();
+    let route = route.to_string();
+    let request_id = request_id.to_string();
+    let raw_request = raw_request.to_string();
+    let converted_request = converted_request.to_string();
+    let provider = provider.to_string();
+    let model = if model.is_empty() { "unknown" } else { model }.to_string();
+    crate::runtime::db_blocking_detached(db, "log_request_error", move |conn| {
+        crate::storage::request_logs::insert(
+            conn,
+            &request_id,
+            &client_type,
+            &provider,
+            &model,
+            &route,
             status_code,
             latency_ms,
-            Some(raw_request),
-            if converted_request.is_empty() {
-                None
-            } else {
-                Some(converted_request)
-            },
+            Some(&raw_request),
+            (!converted_request.is_empty()).then_some(converted_request.as_str()),
             None,
             None,
             None,
@@ -897,21 +980,51 @@ pub(crate) fn log_request_error_full(
             None, // no cache tokens for errors
             Some("gateway"),
             None,
-            Some(request_id),
-        );
-    }
-    // Prometheus 指标（错误也算一次请求）
-    crate::gateway::metrics::record_request(
-        route,
-        client_type,
-        if provider.is_empty() {
-            "unknown"
-        } else {
-            provider
-        },
-        status_code as u16,
-        latency_ms as f64 / 1000.0,
-    );
+            Some(&request_id),
+        )
+    });
+}
+
+/// /v1/messages 的最终错误出口。流 bootstrap 识别出的上游错误帧(有分类状态码、
+/// 没有原始 body)回 Anthropic 形态 `{"type":"error","error":{type,message}}`:
+/// overloaded_error → 529、rate_limit_error → 429,其余用分类状态码(非 4xx/5xx 按 502),
+/// 让 Claude Code 走自己的 overloaded / 限流重试。其它错误照旧交给 [`GatewayError`]。
+pub(crate) fn messages_error_response(err: AppError) -> Result<Response, GatewayError> {
+    let Some(status) = err
+        .upstream
+        .as_deref()
+        .filter(|u| u.body.is_none())
+        .map(|u| u.status)
+    else {
+        return Err(GatewayError(err));
+    };
+    let (frame_type, frame_message) = crate::gateway::sse_bootstrap::error_frame_fields(&err);
+    let status = match frame_type.as_deref() {
+        Some("overloaded_error") => 529,
+        Some("rate_limit_error") => 429,
+        _ if (400..600).contains(&status) => status,
+        _ => 502,
+    };
+    let error_type = frame_type.unwrap_or_else(|| {
+        match status {
+            401 => "authentication_error",
+            403 => "permission_error",
+            413 => "request_too_large",
+            429 => "rate_limit_error",
+            529 => "overloaded_error",
+            _ => "api_error",
+        }
+        .to_string()
+    });
+    let body = json!({
+        "type": "error",
+        "error": {
+            "type": error_type,
+            "message": frame_message.unwrap_or(err.message),
+        }
+    });
+    let status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
+    Ok((status, Json(body)).into_response())
 }
 
 // ── Error type for axum ────────────────────────────────────────
@@ -926,6 +1039,23 @@ impl From<AppError> for GatewayError {
 
 impl IntoResponse for GatewayError {
     fn into_response(self) -> Response {
+        // 直通上游的非 2xx:failover 用完后原样回上游状态码 + body,保持透传语义
+        // (客户端 SDK 按上游原始错误格式解析)。1xx/3xx 不是合法的最终错误,按 502。
+        if let Some(crate::errors::UpstreamFailure {
+            status,
+            body: Some(body),
+        }) = self.0.upstream.map(|u| *u)
+        {
+            let status = StatusCode::from_u16(status)
+                .ok()
+                .filter(|s| s.is_client_error() || s.is_server_error())
+                .unwrap_or(StatusCode::BAD_GATEWAY);
+            return Response::builder()
+                .status(status)
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(body))
+                .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response());
+        }
         let status = match self.0.code.as_str() {
             "RESPONSES_PARSE_ERROR"
             | "TRANSFORM_ERROR"

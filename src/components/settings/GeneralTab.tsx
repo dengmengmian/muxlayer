@@ -5,14 +5,15 @@ import type { Locale } from "@/lib/i18n";
 import type { GatewaySettings as GatewaySettingsType } from "@/types/gateway";
 import { toast } from "@/components/common/Toast";
 import type { WakeStatus } from "@/lib/bindings";
+import type { AppTheme } from "@/lib/theme";
 import { WakeSettings } from "./WakeSettings";
 
 interface Props {
   settings: GatewaySettingsType;
   locale: Locale;
   setLocale: (l: Locale) => void;
-  theme: string;
-  setTheme: (t: string) => void;
+  theme: AppTheme;
+  setTheme: (t: AppTheme) => void;
   handleUpdateAutoStart: (val: boolean) => Promise<void>;
   handleUpdateRefinerGlobal: (
     key:
@@ -47,10 +48,11 @@ interface Props {
   ToggleSwitch: React.ComponentType<{
     checked: boolean;
     onChange: (val: boolean) => void;
+    label: string;
   }>;
   ThemePicker: React.ComponentType<{
-    value: string;
-    onChange: (id: string) => void;
+    value: AppTheme;
+    onChange: (id: AppTheme) => void;
   }>;
 }
 
@@ -107,6 +109,7 @@ export function GeneralTab({
               <ToggleSwitch
                 checked={settings.auto_start}
                 onChange={handleUpdateAutoStart}
+                label={t("settings.auto_start_gateway")}
               />
             }
           />
@@ -117,6 +120,7 @@ export function GeneralTab({
               <ToggleSwitch
                 checked={launchAtLogin}
                 onChange={handleToggleLaunchAtLogin}
+                label={t("settings.launch_at_login")}
               />
             }
           />
@@ -155,6 +159,7 @@ export function GeneralTab({
               control={
                 <ToggleSwitch
                   checked={settings.outbound_proxy_enabled ?? false}
+                  label={t("settings.outbound_proxy")}
                   onChange={(v) =>
                     handleUpdateProxy({ outbound_proxy_enabled: v })
                   }
@@ -215,6 +220,7 @@ export function GeneralTab({
             control={
               <ToggleSwitch
                 checked={settings.auto_compact_enabled ?? true}
+                label={t("settings.auto_compact.enabled")}
                 onChange={(v) =>
                   handleUpdateCostAlert({ auto_compact_enabled: v })
                 }
@@ -297,6 +303,7 @@ export function GeneralTab({
                     checked={
                       localStorage.getItem("agentgate_show_quick_setup") === "1"
                     }
+                    label={t("settings.show_quick_setup")}
                     onChange={(val) => {
                       if (val) {
                         localStorage.setItem("agentgate_show_quick_setup", "1");
@@ -327,6 +334,7 @@ export function GeneralTab({
                     control={
                       <ToggleSwitch
                         checked={settings.body_filter_global}
+                        label={t("settings.body_filter")}
                         onChange={(v) =>
                           handleUpdateRefinerGlobal("body_filter_global", v)
                         }
@@ -339,6 +347,7 @@ export function GeneralTab({
                     control={
                       <ToggleSwitch
                         checked={settings.thinking_rectifier_global}
+                        label={t("settings.thinking_rectifier")}
                         onChange={(v) =>
                           handleUpdateRefinerGlobal(
                             "thinking_rectifier_global",
@@ -354,6 +363,7 @@ export function GeneralTab({
                     control={
                       <ToggleSwitch
                         checked={settings.error_mapper_global}
+                        label={t("settings.error_mapper")}
                         onChange={(v) =>
                           handleUpdateRefinerGlobal("error_mapper_global", v)
                         }
@@ -366,6 +376,7 @@ export function GeneralTab({
                     control={
                       <ToggleSwitch
                         checked={settings.health_probe_enabled}
+                        label={t("settings.health_probe")}
                         onChange={(v) =>
                           handleUpdateRefinerGlobal("health_probe_enabled", v)
                         }
@@ -378,6 +389,7 @@ export function GeneralTab({
                     control={
                       <ToggleSwitch
                         checked={settings.cost_alert_enabled}
+                        label={t("settings.cost_alert")}
                         onChange={(v) =>
                           handleUpdateCostAlert({ cost_alert_enabled: v })
                         }
@@ -421,6 +433,7 @@ export function GeneralTab({
                     control={
                       <ToggleSwitch
                         checked={settings.cost_budget_enabled ?? false}
+                        label={t("settings.cost_budget")}
                         onChange={(v) =>
                           handleUpdateCostAlert({ cost_budget_enabled: v })
                         }

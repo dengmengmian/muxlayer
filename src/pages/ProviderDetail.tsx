@@ -3,18 +3,12 @@ import { useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, AlertTriangle, Activity, Boxes } from "lucide-react";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { useI18n } from "@/lib/i18n";
-import { formatLatency, formatTimestamp } from "@/lib/utils";
+import { formatCost, formatLatency, formatTimestamp } from "@/lib/utils";
 import * as api from "@/lib/api";
 import type { ProviderView } from "@/types/provider";
 import type { ProviderHealth } from "@/types/stats";
 import type { ProviderDetailStats } from "@/types/request-log";
 import type { ProviderRuntimeStatus } from "@/types/route-profile";
-
-function formatCost(cost: number) {
-  if (cost <= 0) return "$0.00";
-  if (cost < 0.01) return `$${cost.toFixed(4)}`;
-  return `$${cost.toFixed(2)}`;
-}
 
 export function ProviderDetail() {
   const { t, locale } = useI18n();
@@ -86,10 +80,9 @@ export function ProviderDetail() {
   }
 
   return (
-    <div className="space-y-4">
-      <div className="relative overflow-hidden rounded-xl border border-accent/20 bg-card p-5 shadow-sm">
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-accent/10 to-transparent" />
-        <div className="relative flex flex-wrap items-start justify-between gap-4">
+    <div className="desktop-page">
+      <div className="desktop-page-header">
+        <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="space-y-3">
             <button
               onClick={() => navigate("/providers")}
@@ -99,10 +92,7 @@ export function ProviderDetail() {
               {t("providers.detail.back")}
             </button>
             <div>
-              <p className="text-xs font-medium uppercase tracking-[0.18em] text-accent">
-                {t("providers.detail.console")}
-              </p>
-              <div className="mt-2 flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <h1 className="text-xl font-semibold text-text-primary">
                   {provider.name}
                 </h1>
@@ -131,12 +121,12 @@ export function ProviderDetail() {
         </div>
       </div>
 
-      <section className="rounded-xl border border-border bg-card p-4 shadow-sm">
+      <section className="surface-panel p-4">
         <div className="mb-3 flex items-center justify-between gap-3">
           <h2 className="text-sm font-semibold text-text-primary">
             {t("providers.detail.health_strip")}
           </h2>
-          <span className="font-mono text-[11px] text-text-muted">
+          <span className="font-mono text-xs text-text-muted">
             {provider.id}
           </span>
         </div>
@@ -162,7 +152,7 @@ export function ProviderDetail() {
         </div>
       </section>
 
-      <section className="space-y-2 rounded-xl border border-border bg-card p-4 shadow-sm">
+      <section className="surface-panel space-y-2 p-4">
         <h2 className="flex items-center gap-2 text-sm font-semibold text-text-primary">
           <Activity className="h-4 w-4 text-accent" />
           {t("providers.detail.latency_monitor")}
@@ -193,12 +183,12 @@ export function ProviderDetail() {
         </div>
       </section>
 
-      <section className="space-y-2 rounded-xl border border-border bg-card p-4 shadow-sm">
+      <section className="surface-panel space-y-2 p-4">
         <h2 className="flex items-center gap-2 text-sm font-semibold text-text-primary">
           <Boxes className="h-4 w-4 text-accent" />
           {t("providers.detail.model_stats")}
         </h2>
-        <div className="overflow-hidden rounded-lg border border-border bg-card">
+        <div className="surface-scroll rounded-md border border-border bg-card">
           <table className="w-full text-left text-xs">
             <thead className="bg-card-secondary text-text-muted">
               <tr>
@@ -252,7 +242,7 @@ export function ProviderDetail() {
         </div>
       </section>
 
-      <section className="space-y-2 rounded-xl border border-border bg-card p-4 shadow-sm">
+      <section className="surface-panel space-y-2 p-4">
         <h2 className="flex items-center gap-2 text-sm font-semibold text-text-primary">
           <AlertTriangle className="h-4 w-4 text-warning" />
           {t("providers.health_recent_errors")}
@@ -292,7 +282,7 @@ export function ProviderDetail() {
 function MetricCard({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-lg border border-border/70 bg-card-secondary/45 p-3">
-      <p className="text-[11px] text-text-muted">{label}</p>
+      <p className="text-xs text-text-muted">{label}</p>
       <p className="mt-1 text-lg font-semibold text-text-primary">{value}</p>
     </div>
   );

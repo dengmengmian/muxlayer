@@ -40,6 +40,8 @@ pub struct DesktopPaths {
 
 /// 由「应用数据根目录」拼出全部相关路径。macOS 传 `~/Library/Application Support`，
 /// Windows 传 `%APPDATA%`。纯路径拼接，平台无关，便于单测。
+// Linux 无官方包,paths() 不调用它;不门控会在 Linux 构建里成为死代码。
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn paths_from_base(base: &std::path::Path) -> DesktopPaths {
     let threep = base.join("Claude-3p");
     DesktopPaths {
@@ -56,8 +58,7 @@ fn paths_from_base(base: &std::path::Path) -> DesktopPaths {
 pub fn paths() -> Result<DesktopPaths, AppError> {
     #[cfg(target_os = "macos")]
     {
-        let home = std::env::var("HOME").unwrap_or_default();
-        let app_support = PathBuf::from(&home).join("Library/Application Support");
+        let app_support = crate::fsutil::home_dir()?.join("Library/Application Support");
         Ok(paths_from_base(&app_support))
     }
     #[cfg(target_os = "windows")]
@@ -183,23 +184,36 @@ pub fn snapshot_paths() -> Vec<(&'static str, PathBuf)> {
     }
 }
 
-fn write_json(path: &PathBuf, value: &Value) -> Result<(), AppError> {
+/// 原子写 JSON + 读回校验。`mode` 见 [`crate::fsutil::atomic_write`]。
+fn write_json(path: &std::path::Path, value: &Value, mode: Option<u32>) -> Result<(), AppError> {
     let data = serde_json::to_vec_pretty(value)
         .map_err(|e| AppError::internal(format!("serialize json: {e}")))?;
-    fs::write(path, &data).map_err(|e| {
-        AppError::new(
-            crate::errors::codes::CLAUDE_DESKTOP_WRITE_FAILED,
-            format!("写入 {} 失败: {e}", path.display()),
-        )
-    })?;
-    crate::tools::config_verify::verify_written(path, &data)
-        .map_err(|e| AppError::new(crate::errors::codes::CLAUDE_DESKTOP_WRITE_FAILED, e))
+    crate::tools::client_files::write_verified(
+        path,
+        &data,
+        mode,
+        crate::errors::codes::CLAUDE_DESKTOP_WRITE_FAILED,
+    )
 }
 
-/// surgical merge _meta.json：保留用户已有 entries，加/更新 AgentGate 条目，
-/// 把 appliedId 切到 AgentGate。不动其他字段。
-fn upsert_applied_profile(meta_path: &PathBuf, id: &str, name: &str) -> Result<(), AppError> {
-    let mut meta = read_json(meta_path).unwrap_or_else(|| json!({}));
+/// 计算 surgical merge 后的 _meta.json：保留用户已有 entries，加/更新 AgentGate 条目，
+/// 把 appliedId 切到 AgentGate。不动其他字段。_meta.json 读不出来或不是合法
+/// JSON 时直接报错,绝不当成 `{}` 覆盖用户已有的 profile 列表。
+fn merged_meta(meta_path: &std::path::Path, id: &str, name: &str) -> Result<Value, AppError> {
+    let content = crate::tools::client_files::read_for_update(
+        meta_path,
+        crate::errors::codes::CLAUDE_DESKTOP_META_INVALID,
+    )?;
+    let mut meta: Value = if content.trim().is_empty() {
+        json!({})
+    } else {
+        serde_json::from_str(&content).map_err(|e| {
+            AppError::new(
+                crate::errors::codes::CLAUDE_DESKTOP_META_INVALID,
+                format!("_meta.json 解析失败: {e}"),
+            )
+        })?
+    };
     let obj = meta.as_object_mut().ok_or_else(|| {
         AppError::new(
             crate::errors::codes::CLAUDE_DESKTOP_META_INVALID,
@@ -215,7 +229,7 @@ fn upsert_applied_profile(meta_path: &PathBuf, id: &str, name: &str) -> Result<(
     entries.push(json!({ "id": id, "name": name }));
     obj.insert("entries".to_string(), Value::Array(entries));
     obj.insert("appliedId".to_string(), Value::String(id.to_string()));
-    write_json(meta_path, &meta)
+    Ok(meta)
 }
 
 /// 接入 Claude Desktop：在 configLibrary 写一个指向 MuxLayer 网关的 profile，并把
@@ -223,6 +237,8 @@ fn upsert_applied_profile(meta_path: &PathBuf, id: &str, name: &str) -> Result<(
 /// 要求用户已启用过 3p（configLibrary 目录存在）——避免去猜 deploymentMode 写法。
 /// 回滚由调用方经 apply_history 快照 snapshot_paths() 完成。
 pub fn apply(host: &str, port: i64, token: &str) -> Result<ClaudeDesktopApplyResult, AppError> {
+    // 整个读 → 改 → 写期间持有客户端配置锁,防止并发命令互相覆盖(见 fsutil)。
+    let _config_lock = crate::fsutil::lock_client_configs();
     let p = paths()?;
     let lib_dir = p.profile.parent().ok_or_else(|| {
         AppError::new(
@@ -238,8 +254,15 @@ pub fn apply(host: &str, port: i64, token: &str) -> Result<ClaudeDesktopApplyRes
     }
     let base_url = format!("http://{host}:{port}");
     let profile = generate_profile(host, port, token);
-    write_json(&p.profile, &profile)?;
-    upsert_applied_profile(&p.meta, PROFILE_ID, "MuxLayer")?;
+    // 先读取并合并 _meta.json(读不出 / 非法则整体中止),再写含 token 的
+    // profile(0600),最后切 appliedId——保证 appliedId 不会指向不存在的 profile。
+    let meta = merged_meta(&p.meta, PROFILE_ID, "MuxLayer")?;
+    write_json(
+        &p.profile,
+        &profile,
+        Some(crate::tools::client_files::SECRET_FILE_MODE),
+    )?;
+    write_json(&p.meta, &meta, None)?;
     Ok(ClaudeDesktopApplyResult {
         success: true,
         profile_path: p.profile.display().to_string(),
@@ -272,6 +295,52 @@ mod tests {
             .profile
             .ends_with(format!("Claude-3p/configLibrary/{PROFILE_ID}.json")));
         assert!(p.meta.ends_with("Claude-3p/configLibrary/_meta.json"));
+    }
+
+    /// 回归:_meta.json 读不出来 / 解析失败时,旧实现当成 `{}` 写回,用户在
+    /// Claude Desktop 里配过的其它 profile 条目全部丢失。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn apply_refuses_to_overwrite_corrupt_meta() {
+        let _guard = crate::test_utils::FS_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let temp = crate::test_utils::setup_temp_home();
+        let p = paths().unwrap();
+        std::fs::create_dir_all(p.meta.parent().unwrap()).unwrap();
+        let original: &[u8] = b"{\"entries\":[{\"id\":\"mine\"}], \xff";
+        std::fs::write(&p.meta, original).unwrap();
+        assert!(apply("127.0.0.1", 9090, "ag_local_x").is_err());
+        assert_eq!(std::fs::read(&p.meta).unwrap(), original);
+        crate::test_utils::cleanup(&temp);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn apply_writes_profile_owner_only_and_keeps_other_entries() {
+        use std::os::unix::fs::PermissionsExt;
+        let _guard = crate::test_utils::FS_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let temp = crate::test_utils::setup_temp_home();
+        let p = paths().unwrap();
+        std::fs::create_dir_all(p.meta.parent().unwrap()).unwrap();
+        std::fs::write(
+            &p.meta,
+            r#"{"entries":[{"id":"mine","name":"Mine"}],"appliedId":"mine"}"#,
+        )
+        .unwrap();
+        apply("127.0.0.1", 9090, "ag_local_x").unwrap();
+        let mode = std::fs::metadata(&p.profile).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "profile carries the gateway token");
+        let meta: Value = serde_json::from_slice(&std::fs::read(&p.meta).unwrap()).unwrap();
+        assert!(meta["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["id"] == "mine"));
+        assert_eq!(meta["appliedId"], PROFILE_ID);
+        crate::test_utils::cleanup(&temp);
     }
 
     #[test]

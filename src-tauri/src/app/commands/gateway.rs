@@ -152,7 +152,7 @@ pub async fn start_gateway(
     }
     .emit(&app_handle);
     let _ = PetGatewayStateChanged("running".into()).emit(&app_handle);
-    crate::app::tray::refresh_tray(&app_handle);
+    crate::app::tray::refresh_tray_blocking(&app_handle).await;
     get_gateway_status(state)
 }
 
@@ -195,7 +195,7 @@ pub async fn stop_gateway(
     }
     .emit(&app_handle);
     let _ = PetGatewayStateChanged("stopped".into()).emit(&app_handle);
-    crate::app::tray::refresh_tray(&app_handle);
+    crate::app::tray::refresh_tray_blocking(&app_handle).await;
     get_gateway_status(state)
 }
 

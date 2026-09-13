@@ -58,9 +58,11 @@ enum Commands {
         /// Display name
         #[arg(long, short)]
         name: Option<String>,
-        /// API key
-        #[arg(long, short = 'k', env = "AGENTGATE_API_KEY")]
-        api_key: String,
+        /// API key. Use `-` to read it from stdin; when omitted it is read from
+        /// MUXLAYER_PROVIDER_API_KEY (legacy: AGENTGATE_API_KEY). Passing the
+        /// literal key here leaves it in shell history / process listings.
+        #[arg(long, short = 'k')]
+        api_key: Option<String>,
         /// Base URL (auto-filled from type if omitted)
         #[arg(long)]
         base_url: Option<String>,
@@ -92,7 +94,7 @@ enum Commands {
     ProviderUpdate {
         /// Provider name to update
         name: String,
-        /// New API key
+        /// New API key (`-` reads it from stdin, avoiding shell history)
         #[arg(long, short = 'k')]
         api_key: Option<String>,
         /// New base URL
@@ -344,11 +346,12 @@ async fn main() {
             model,
             active,
         }) => {
+            let api_key = resolve_provider_api_key(api_key.as_deref(), true);
             cmd_provider_add(
                 &cli,
                 r#type,
                 name.as_deref(),
-                api_key,
+                &api_key,
                 base_url.as_deref(),
                 model.as_deref(),
                 *active,
@@ -368,6 +371,10 @@ async fn main() {
             responses_url,
             enabled,
         }) => {
+            // update 不读环境变量:没传 --api-key 就表示不改 key。
+            let api_key = api_key
+                .as_deref()
+                .map(|v| resolve_provider_api_key(Some(v), false));
             cmd_provider_update(
                 &cli,
                 name,
@@ -424,6 +431,37 @@ async fn main() {
     }
 }
 
+/// 解析 provider API key(规则见 `security::cli_exposure::resolve_api_key`);
+/// `use_env` 为 false 时不读环境变量。命令行明文传入时告警,解析失败直接退出。
+fn resolve_provider_api_key(cli_value: Option<&str>, use_env: bool) -> String {
+    use agentgate_lib::security::cli_exposure as exposure;
+    let env_value = if use_env {
+        agentgate_lib::compat::env_value(
+            exposure::PROVIDER_API_KEY_ENV,
+            exposure::LEGACY_PROVIDER_API_KEY_ENV,
+        )
+    } else {
+        None
+    };
+    let read_stdin = || {
+        let mut buf = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf).map(|_| buf)
+    };
+    match exposure::resolve_api_key(cli_value, env_value, read_stdin) {
+        Ok((key, source)) => {
+            if source == exposure::ApiKeySource::CommandLine {
+                eprintln!("{}", exposure::command_line_key_warning());
+                tracing::warn!("provider API key passed on the command line");
+            }
+            key
+        }
+        Err(e) => {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 async fn cmd_serve(
     cli: &Cli,
     host: &str,
@@ -433,6 +471,22 @@ async fn cmd_serve(
 ) {
     let db_dir = get_db_dir(cli);
     let db = open_db(cli);
+
+    // 历史 NULL cost 回填放阻塞线程池后台跑,不挡启动;幂等,每次启动重试直到补完。
+    {
+        let db = db.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = db.get().map_err(|e| e.to_string()).and_then(|conn| {
+                agentgate_lib::storage::pricing::backfill_costs(&conn)
+                    .map_err(|e| format!("{} {}", e.message, e.detail.unwrap_or_default()))
+            });
+            match result {
+                Ok(n) if n > 0 => eprintln!("[cost-backfill] Filled cost for {n} request logs"),
+                Ok(_) => {}
+                Err(e) => eprintln!("[cost-backfill] backfill failed: {e}"),
+            }
+        });
+    }
 
     // 声明式部署:AGENTGATE_CONFIG_FILE 指向一份导出的配置,库为空时种子化。
     if let Some(path) =
@@ -486,6 +540,13 @@ async fn cmd_serve(
         eprintln!("  TLS:        enabled (HTTPS)");
     }
     eprintln!();
+    if let Some(warning) =
+        agentgate_lib::security::cli_exposure::cleartext_bind_warning(host, tls.is_some())
+    {
+        tracing::warn!(host, "{warning}");
+        eprintln!("!!! WARNING: {warning}");
+        eprintln!();
+    }
 
     // SIGHUP 监听：收到信号清空内存缓存（session_affinity + provider runtime
     // status），DB 里的 provider 配置每次请求都即时读，本来就热的。

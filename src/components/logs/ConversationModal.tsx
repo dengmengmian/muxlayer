@@ -312,7 +312,7 @@ function MessageBubble({ msg }: { msg: ConversationMessage }) {
       <div
         className={`max-w-[82%] break-words px-3.5 py-2.5 text-sm leading-relaxed shadow-sm ${
           isUser
-            ? "rounded-2xl rounded-br-md bg-accent text-white"
+            ? "rounded-2xl rounded-br-md bg-accent text-on-accent"
             : "rounded-2xl rounded-bl-md border border-border bg-card text-text-primary"
         }`}
       >

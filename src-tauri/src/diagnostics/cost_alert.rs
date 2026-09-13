@@ -57,8 +57,17 @@ pub fn spawn(db: DbPool, app_handle: tauri::AppHandle) {
     });
 }
 
+/// 去重用的"今天"(YYYY-MM-DD)。与 `today_cost` 同口径按本地日,否则东八区
+/// 00:00–08:00 超阈值时会被误判成"昨天已提醒过"。时区可注入便于测试。
+fn alert_day<Tz: chrono::TimeZone>(now: chrono::DateTime<chrono::Utc>, tz: &Tz) -> String {
+    now.with_timezone(tz)
+        .date_naive()
+        .format("%Y-%m-%d")
+        .to_string()
+}
+
 fn run_once(db: &DbPool, app_handle: &tauri::AppHandle, last_alert_date: &mut Option<String>) {
-    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let today = alert_day(chrono::Utc::now(), &chrono::Local);
 
     // 短暂持锁读配置 + 今日花费,锁外再发通知。
     let (enabled, threshold, today_cost) = {
@@ -163,6 +172,18 @@ mod tests {
     #[test]
     fn same_day_no_repeat() {
         assert!(!should_alert(true, Some(10.0), 50.0, Some(TODAY), TODAY));
+    }
+
+    #[test]
+    fn alert_day_uses_local_calendar_day() {
+        // today_cost 按本地日统计,去重 key 必须同口径:UTC+8 的 04:00 已是次日。
+        use chrono::TimeZone;
+        let now = chrono::Utc.with_ymd_and_hms(2026, 6, 21, 20, 0, 0).unwrap();
+        let east8 = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+        assert_eq!(alert_day(now, &east8), "2026-06-22");
+        let west5 = chrono::FixedOffset::west_opt(5 * 3600).unwrap();
+        let early = chrono::Utc.with_ymd_and_hms(2026, 6, 22, 2, 0, 0).unwrap();
+        assert_eq!(alert_day(early, &west5), "2026-06-21");
     }
 
     #[test]

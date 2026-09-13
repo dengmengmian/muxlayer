@@ -2,7 +2,7 @@
 cask "agentgate" do
   arch arm: "aarch64", intel: "x64"
 
-  version "2.0.5"
+  version "2.0.6"
   sha256 arm:   "4f71ad260ef17f2f8c3c35900c3540dac4052f81f5f3dc7b453f0a3f31a42e9f",
          intel: "b43afca9215baf5a84bb2c67df363b3f1fe236a5a2bfe39c302a55a0e40a1510"
 

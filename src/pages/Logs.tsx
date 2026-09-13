@@ -102,10 +102,11 @@ export function Logs() {
     if (source && VALID_SOURCE_FILTERS.has(source)) setSourceFilter(source);
   }, [searchParams]);
 
-  // Reset to page 1 whenever filters change.
-  useEffect(() => {
-    setPage(1);
-  }, [
+  // 筛选条件变化时回到第 1 页。在渲染阶段同步调整（React 会在提交前用新
+  // page 重渲染），而不是放在 effect 里——effect 版本会让 loadLogs 先用旧
+  // page 发一次 list+count，再用 page 1 发第二次。关键字取防抖后的值，
+  // URL ?source= 带进来的筛选也走同一条路径。
+  const filterKey = JSON.stringify([
     debouncedKeyword,
     statusFilter,
     providerFilter,
@@ -116,6 +117,11 @@ export function Logs() {
     sourceFilter,
     sessionIdFilter,
   ]);
+  const [pageFilterKey, setPageFilterKey] = useState(filterKey);
+  if (pageFilterKey !== filterKey) {
+    setPageFilterKey(filterKey);
+    setPage(1);
+  }
 
   // 请求序号守卫：筛选/翻页快速变化或手动刷新交错时，会同时有多个
   // loadLogs 在飞；只让最后一次发起的请求写入结果，丢弃先发后到的旧响应，
@@ -280,14 +286,10 @@ export function Logs() {
   };
 
   return (
-    <div ref={topRef} className="space-y-4">
-      <div className="relative overflow-hidden rounded-xl border border-accent/20 bg-card p-5 shadow-sm">
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-accent/10 to-transparent" />
-        <div className="relative">
-          <p className="text-xs font-medium uppercase tracking-[0.18em] text-accent">
-            {t("logs.console")}
-          </p>
-          <h2 className="mt-2 flex items-center gap-2 text-lg font-semibold text-text-primary">
+    <div ref={topRef} className="desktop-page">
+      <div className="desktop-page-header">
+        <div>
+          <h2 className="flex items-center gap-2 text-lg font-semibold text-text-primary">
             <ScrollText className="h-4 w-4" />
             {t("nav.logs")}
           </h2>
@@ -299,8 +301,8 @@ export function Logs() {
 
       <div className="space-y-3">
         {/* 请求视图才展示页级流量快照；会话视图不相关，省掉整块空白。 */}
-        {viewMode === "list" && (
-          <section className="rounded-xl border border-border bg-card p-4 shadow-sm">
+        {viewMode === "list" && total > 0 && (
+          <section className="surface-panel p-4">
             <div className="mb-3">
               <h3 className="text-sm font-semibold text-text-primary">
                 {t("logs.traffic_snapshot")}
@@ -334,7 +336,7 @@ export function Logs() {
           </section>
         )}
 
-        <div className="rounded-xl border border-border bg-card px-3 py-2.5 shadow-sm">
+        <div className="surface-panel px-3 py-2.5">
           {/* 单行工具条：视图切换 + 筛选 + 操作，避免上下两层大留白 */}
           <div className="flex flex-wrap items-center gap-2">
             <div
@@ -348,7 +350,7 @@ export function Logs() {
               <button
                 type="button"
                 onClick={() => setViewMode("list")}
-                className={`flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${viewMode === "list" ? "bg-card text-text-primary shadow-sm" : "text-text-muted hover:text-text-primary"}`}
+                className={`flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${viewMode === "list" ? "bg-card text-text-primary" : "text-text-muted hover:text-text-primary"}`}
               >
                 <LayoutList className="h-3.5 w-3.5" />
                 {t("logs.view_list")}
@@ -356,7 +358,7 @@ export function Logs() {
               <button
                 type="button"
                 onClick={() => setViewMode("session")}
-                className={`flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${viewMode === "session" ? "bg-card text-text-primary shadow-sm" : "text-text-muted hover:text-text-primary"}`}
+                className={`flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${viewMode === "session" ? "bg-card text-text-primary" : "text-text-muted hover:text-text-primary"}`}
               >
                 <Layers className="h-3.5 w-3.5" />
                 {t("logs.view_session")}
@@ -483,7 +485,7 @@ export function Logs() {
               <button
                 type="button"
                 onClick={() => setSessionIdFilter("")}
-                className="max-w-[200px] truncate rounded-md bg-accent/10 px-2 py-1 font-mono text-[11px] text-accent transition-colors hover:bg-accent/15"
+                className="max-w-[200px] truncate rounded-md bg-accent/10 px-2 py-1 font-mono text-xs text-accent transition-colors hover:bg-accent/15"
                 title={sessionIdFilter}
               >
                 session:{sessionIdFilter.slice(0, 12)}…
@@ -589,7 +591,7 @@ export function Logs() {
         </div>
 
         {showSyncActions && (
-          <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card p-3">
+          <div className="surface-panel flex flex-wrap items-center gap-2 p-3">
             <button
               onClick={handleSyncClaude}
               disabled={syncing !== null}
@@ -652,9 +654,11 @@ export function Logs() {
         />
       ) : (
         <>
-          <RequestLogTable requests={logs} onSelect={handleSelect} />
+          <div className="surface-scroll">
+            <RequestLogTable requests={logs} onSelect={handleSelect} />
+          </div>
           {totalPages > 1 && (
-            <div className="flex items-center justify-between rounded-xl border border-border bg-card px-5 py-2.5">
+            <div className="surface-panel flex items-center justify-between px-5 py-2.5">
               <span className="text-xs text-text-muted">
                 {t("logs.page_prefix")}{" "}
                 <span className="font-mono text-text-primary">{page}</span> /{" "}
@@ -716,12 +720,12 @@ function LogSummaryItem({
 }) {
   return (
     <div className="rounded-lg border border-border/70 bg-card-secondary/45 px-4 py-3">
-      <div className="text-[11px] font-medium text-text-muted">{label}</div>
+      <div className="text-xs font-medium text-text-muted">{label}</div>
       <div className="mt-1 flex items-baseline gap-2">
         <span className="font-mono text-lg font-semibold text-text-primary">
           {value}
         </span>
-        <span className="truncate text-[11px] text-text-muted">{hint}</span>
+        <span className="truncate text-xs text-text-muted">{hint}</span>
       </div>
     </div>
   );

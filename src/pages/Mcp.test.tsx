@@ -48,7 +48,7 @@ describe("Mcp", () => {
     );
 
     await waitFor(() => expect(api.listMcpServers).toHaveBeenCalled());
-    expect(screen.getByText("mcp.console")).toBeInTheDocument();
+    expect(screen.getByText("mcp.title")).toBeInTheDocument();
     expect(screen.getByText("mcp.server_matrix")).toBeInTheDocument();
     expect(screen.getByText("filesystem")).toBeInTheDocument();
   });
@@ -90,6 +90,7 @@ describe("Mcp", () => {
     );
 
     expect(await screen.findByText("mcp.empty_title")).toBeInTheDocument();
+    expect(screen.queryByText("mcp.server_matrix")).toBeNull();
   });
 
   it("edits and deletes a server", async () => {

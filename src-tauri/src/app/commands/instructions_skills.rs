@@ -12,10 +12,7 @@ use crate::errors::AppError;
 pub fn list_instructions_templates(
 ) -> Result<Vec<crate::tools::instructions_templates::InstructionsTemplate>, AppError> {
     // 静态 slice → Vec 让 Tauri 能序列化。
-    Ok(crate::tools::instructions_templates::TEMPLATES
-        .iter()
-        .cloned()
-        .collect())
+    Ok(crate::tools::instructions_templates::TEMPLATES.to_vec())
 }
 
 /// 读取某 scope（claude_global / codex_global）的全局指令文件原文。
@@ -50,7 +47,7 @@ pub fn write_global_instructions(
         )
     })?;
     record_pre_apply(
-        &state,
+        &state.db,
         s.history_client_id(),
         "write",
         crate::tools::instructions::snapshot_paths(s),
@@ -82,7 +79,7 @@ pub fn apply_instructions_template(
     })?;
     let summary = format!("template {template_id} ({mode})");
     record_pre_apply(
-        &state,
+        &state.db,
         s.history_client_id(),
         "apply_template",
         crate::tools::instructions::snapshot_paths(s),
@@ -123,7 +120,7 @@ pub fn import_instructions(
             continue;
         }
         record_pre_apply(
-            &state,
+            &state.db,
             scope.history_client_id(),
             "import_backup",
             crate::tools::instructions::snapshot_paths(scope),

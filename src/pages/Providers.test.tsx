@@ -208,6 +208,13 @@ describe("Providers", () => {
 
     await screen.findByText("Delete Me");
     await act(async () => {
+      screen
+        .getByRole("button", {
+          name: /providers\.configuration_details|Configuration/i,
+        })
+        .click();
+    });
+    await act(async () => {
       screen.getByRole("button", { name: /providers\.delete|Delete/i }).click();
     });
 

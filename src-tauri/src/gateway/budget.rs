@@ -61,7 +61,12 @@ pub fn evaluate(
 /// Budget off / no threshold → no `request_logs` scan.
 pub fn evaluate_from_db(db: &DbPool) -> Result<BudgetDecision, AppError> {
     let conn = db.get().map_err(|_| AppError::internal("DB lock failed"))?;
-    let settings = crate::storage::gateway_settings::get(&conn)?;
+    evaluate_from_conn(&conn)
+}
+
+/// 同 [`evaluate_from_db`],复用调用方连接(网关在 blocking 线程里调用)。
+pub fn evaluate_from_conn(conn: &rusqlite::Connection) -> Result<BudgetDecision, AppError> {
+    let settings = crate::storage::gateway_settings::get(conn)?;
     if !settings.cost_budget_enabled
         || settings
             .cost_budget_threshold
@@ -69,7 +74,7 @@ pub fn evaluate_from_db(db: &DbPool) -> Result<BudgetDecision, AppError> {
     {
         return Ok(BudgetDecision::Allow);
     }
-    let today_cost = crate::storage::request_logs::today_cost_cached(&conn)?;
+    let today_cost = crate::storage::request_logs::today_cost_cached(conn)?;
     Ok(evaluate(
         settings.cost_budget_enabled,
         settings.cost_budget_threshold,
@@ -94,7 +99,13 @@ pub fn block_error(today_cost: f64, threshold: f64) -> AppError {
 /// Convenience: if decision is Block, return Err; if ForceCheapest return Ok(true);
 /// Allow → Ok(false).
 pub fn check_new_request(db: &DbPool) -> Result<bool, AppError> {
-    match evaluate_from_db(db)? {
+    let conn = db.get().map_err(|_| AppError::internal("DB lock failed"))?;
+    check_new_request_with_conn(&conn)
+}
+
+/// 同 [`check_new_request`],复用调用方连接。
+pub fn check_new_request_with_conn(conn: &rusqlite::Connection) -> Result<bool, AppError> {
+    match evaluate_from_conn(conn)? {
         BudgetDecision::Allow => Ok(false),
         BudgetDecision::ForceCheapest { .. } => Ok(true),
         BudgetDecision::Block {
@@ -114,7 +125,18 @@ pub fn apply_force_cheapest(
         return Ok(());
     }
     let conn = db.get().map_err(|_| AppError::internal("DB lock failed"))?;
-    crate::gateway::provider_selector::force_cheapest_order(&conn, &mut selection.candidates);
+    apply_force_cheapest_with_conn(&conn, selection)
+}
+
+/// 同 [`apply_force_cheapest`],复用调用方连接。
+pub fn apply_force_cheapest_with_conn(
+    conn: &rusqlite::Connection,
+    selection: &mut crate::gateway::provider_selector::ProviderSelection,
+) -> Result<(), AppError> {
+    if selection.candidates.is_empty() {
+        return Ok(());
+    }
+    crate::gateway::provider_selector::force_cheapest_order(conn, &mut selection.candidates);
     // Prefer first non-cooldown after sort; fall back to first.
     let pick = selection
         .candidates
@@ -123,7 +145,7 @@ pub fn apply_force_cheapest(
         .or_else(|| selection.candidates.first())
         .cloned();
     if let Some(c) = pick {
-        if let Ok(p) = crate::storage::providers::get_by_id(&conn, &c.provider_id) {
+        if let Ok(p) = crate::storage::providers::get_by_id(conn, &c.provider_id) {
             selection.provider = p;
             selection.model = c.model.clone();
             selection.reason = format!(

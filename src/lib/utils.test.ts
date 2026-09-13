@@ -4,6 +4,7 @@ import {
   formatTimestamp,
   formatLatency,
   formatOptionalLatency,
+  formatCost,
 } from "./utils";
 
 describe("cn", () => {
@@ -55,5 +56,30 @@ describe("formatOptionalLatency", () => {
   it("formats positive latency", () => {
     expect(formatOptionalLatency(500)).toBe("500ms");
     expect(formatOptionalLatency(1500)).toBe("1.5s");
+  });
+});
+
+describe("formatCost", () => {
+  it("shows unknown cost as a dash", () => {
+    expect(formatCost(null)).toBe("—");
+    expect(formatCost(undefined)).toBe("—");
+  });
+
+  it("shows zero and negative cost as $0.00", () => {
+    expect(formatCost(0)).toBe("$0.00");
+    expect(formatCost(-0.5)).toBe("$0.00");
+  });
+
+  it("keeps 4 decimals below one cent", () => {
+    expect(formatCost(0.00123)).toBe("$0.0012");
+  });
+
+  it("uses 3 decimals below one dollar", () => {
+    expect(formatCost(0.1234)).toBe("$0.123");
+  });
+
+  it("uses 2 decimals from one dollar up", () => {
+    expect(formatCost(1)).toBe("$1.00");
+    expect(formatCost(12.345)).toBe("$12.35");
   });
 });

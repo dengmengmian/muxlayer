@@ -26,10 +26,16 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
     // second connection while the first one is still creating the database.
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
     conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+    // WAL 下 NORMAL 仍保证崩溃一致性(仅可能丢最后几个未 checkpoint 的事务),
+    // 避免每次提交都 fsync;gateway/session_store.rs 同样设置。
+    conn.execute_batch("PRAGMA synchronous=NORMAL;")?;
     Ok(())
 }
 
 pub fn init_database(app_data_dir: &PathBuf) -> Result<DbPool, AppError> {
+    // 目录是否由本次初始化创建:用户经 MUXLAYER_DB_PATH / --db-path 指定的已有目录
+    // (如 /tmp、$HOME、bind mount)不能被改权限。
+    let dir_created = !app_data_dir.exists();
     fs::create_dir_all(app_data_dir)
         .map_err(|e| AppError::internal(format!("Failed to create app data directory: {e}")))?;
 
@@ -49,7 +55,56 @@ pub fn init_database(app_data_dir: &PathBuf) -> Result<DbPool, AppError> {
         migrations::run_migrations(&conn)?;
     }
 
+    // 收紧权限是加固而非启动前提:失败只告警,不能让应用起不来。
+    for warning in restrict_permissions(app_data_dir, dir_created, &db_path) {
+        tracing::warn!("{warning}");
+    }
+
     Ok(pool)
+}
+
+/// DB 内含明文 provider api_key 与原始请求/响应体,收紧为仅属主可读写:
+/// agentgate.db / -wal / -shm 0600(与 token 文件一致);目录仅在本次新建时改 0700。
+/// SQLite 创建 -wal / -shm 时沿用主库文件权限,所以主库改完后续新建的也是 0600。
+/// 返回每个失败步骤的告警文案,由调用方记日志。
+#[cfg(unix)]
+fn restrict_permissions(
+    dir: &std::path::Path,
+    dir_created: bool,
+    db_path: &std::path::Path,
+) -> Vec<String> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut warnings = Vec::new();
+    let mut set = |p: &std::path::Path, mode: u32| {
+        if let Err(e) = fs::set_permissions(p, fs::Permissions::from_mode(mode)) {
+            warnings.push(format!(
+                "Failed to restrict permissions of {}: {e}",
+                p.display()
+            ));
+        }
+    };
+    if dir_created {
+        set(dir, 0o700);
+    }
+    set(db_path, 0o600);
+    for suffix in ["-wal", "-shm"] {
+        let mut name = db_path.as_os_str().to_owned();
+        name.push(suffix);
+        let p = std::path::PathBuf::from(name);
+        if p.exists() {
+            set(&p, 0o600);
+        }
+    }
+    warnings
+}
+
+#[cfg(not(unix))]
+fn restrict_permissions(
+    _dir: &std::path::Path,
+    _dir_created: bool,
+    _db_path: &std::path::Path,
+) -> Vec<String> {
+    Vec::new()
 }
 
 #[cfg(test)]
@@ -103,5 +158,66 @@ mod tests {
         drop(c1);
         drop(c2);
         let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn connections_use_synchronous_normal() {
+        let temp = tempfile::tempdir().unwrap();
+        let pool = init_database(&temp.path().to_path_buf()).unwrap();
+        let conn = pool.get().unwrap();
+        let sync: i64 = conn
+            .query_row("PRAGMA synchronous", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(sync, 1, "WAL 下应为 NORMAL(1)");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_files_are_private_to_owner() {
+        // DB 里有明文 api_key 与原始请求体,不能按默认 umask 创建成 0644。
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("appdata");
+        let pool = init_database(&dir).unwrap();
+        let _conn = pool.get().unwrap();
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&dir.join("agentgate.db")), 0o600);
+        for suffix in ["agentgate.db-wal", "agentgate.db-shm"] {
+            let p = dir.join(suffix);
+            if p.exists() {
+                assert_eq!(mode(&p), 0o600, "{suffix}");
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preexisting_directory_mode_is_untouched() {
+        // 用户指定的已有目录(如 $HOME、/tmp、bind mount)不能被改成 0700,只收紧 DB 文件。
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("shared");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let pool = init_database(&dir).unwrap();
+        let _conn = pool.get().unwrap();
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o755, "已有目录权限必须保持原样");
+        assert_eq!(mode(&dir.join("agentgate.db")), 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn permission_failures_become_warnings_not_errors() {
+        // chmod 失败(文件系统不支持、非属主等)只产生告警,不能让初始化失败。
+        let temp = tempfile::tempdir().unwrap();
+        let missing_dir = temp.path().join("gone");
+        let missing_db = missing_dir.join("agentgate.db");
+        let warnings = restrict_permissions(&missing_dir, true, &missing_db);
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(warnings
+            .iter()
+            .all(|w| w.contains("Failed to restrict permissions")));
     }
 }

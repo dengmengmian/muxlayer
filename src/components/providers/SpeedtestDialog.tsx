@@ -74,7 +74,7 @@ export function SpeedtestDialog({ open, onClose }: SpeedtestDialogProps) {
           <button
             onClick={run}
             disabled={running}
-            className="flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-xs font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
+            className="flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-xs font-medium text-on-accent transition-colors hover:bg-accent/90 disabled:opacity-50"
           >
             {running ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />

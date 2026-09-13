@@ -432,9 +432,9 @@ async applyCodexConfig() : Promise<Result<CodexApplyConfigResult, AppError>> {
 }
 },
 /**
- * Restore Codex to its pre-MuxLayer state — the saved config.toml is
- * copied back so the user gets the official `[plugins.*]` / `[mcp_servers.*]`
- * blocks alive again. Used by the UI's "Switch to native mode" button.
+ * Restore Codex to its pre-MuxLayer state — surgically removes what apply
+ * wrote (restoring the values it overwrote), keeping everything the user
+ * added since. Used by the UI's "Switch to native mode" button.
  */
 async disableCodexAgentgate() : Promise<Result<CodexApplyConfigResult, AppError>> {
     try {
@@ -784,12 +784,10 @@ async openDshConfig() : Promise<Result<boolean, AppError>> {
 }
 },
 /**
- * After a client's config is rewritten, look up matching live processes
+ * After a client's config is rewritten, look up matching live CLI processes
  * so the UI can warn the user that the existing session needs to be
- * restarted to pick up the new config. Each `client_id` maps to one or
- * more process basenames (e.g. `codex` matches both the CLI and the
- * macOS desktop app). Returns an empty list on Windows (pgrep-only
- * detection); the caller treats empty as "couldn't detect", not "OK".
+ * restarted to pick up the new config. The caller treats an empty list as
+ * "couldn't detect", not "OK".
  */
 async detectClientRunning(clientId: string) : Promise<Result<RunningProcess[], AppError>> {
     try {
@@ -814,10 +812,9 @@ async killClientProcess(clientId: string, pid: number) : Promise<Result<null, Ap
 },
 /**
  * Restart Codex Desktop so freshly-written config.toml / auth.json take
- * effect. macOS only at the moment — `restart_codex_desktop` returns
- * `supported: false` on other platforms and the UI hides the button.
- * Never called automatically; only fires when the user clicks the button in
- * PostApplyDialog.
+ * effect. macOS / Windows only — returns `supported: false` elsewhere and the
+ * UI hides the button. Never kills the ChatGPT desktop app; see
+ * `chatgpt_needs_manual_restart`.
  */
 async restartCodexDesktop() : Promise<Result<CodexRestartResult, AppError>> {
     try {
@@ -826,6 +823,13 @@ async restartCodexDesktop() : Promise<Result<CodexRestartResult, AppError>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * 「重启 Codex」按钮是否可用:macOS 装了 Codex.app(/Applications 或
+ * ~/Applications)、Windows 找到 Codex.exe 时为 true,其它平台 false。只做 stat。
+ */
+async codexDesktopAvailable() : Promise<boolean> {
+    return await TAURI_INVOKE("codex_desktop_available");
 },
 /**
  * 列出某客户端的 apply/disable/toggle 历史（按时间倒序）。前端用来
@@ -920,8 +924,8 @@ async importMcpServers(payload: string, targetClients: string[]) : Promise<Resul
 },
 /**
  * 回滚到某条历史记录所代表的盘上状态。snapshot 反序列化后按 file 写回原
- * absolute_path（不存在的文件被删除）。回滚本身**不**记录新历史，避免反复
- * 回滚把保留窗撑满。
+ * absolute_path（不存在的文件被删除）。回滚本身**不**
+ * 记录新历史，避免反复回滚把保留窗撑满。
  */
 async rollbackClientApply(historyId: string) : Promise<Result<HistoryEntry, AppError>> {
     try {
@@ -1171,6 +1175,9 @@ async runRouteProfileCheck() : Promise<Result<CheckReport, AppError>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * 全量自检要跑多条 SQL + 读客户端配置文件,放到 blocking 线程。
+ */
 async runFullSelfTest() : Promise<Result<FullSelfTestReport, AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("run_full_self_test") };
@@ -1179,6 +1186,9 @@ async runFullSelfTest() : Promise<Result<FullSelfTestReport, AppError>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * 导出诊断包包含全量自检 + 写多个文件,同样不占主线程。
+ */
 async exportDiagnosticBundle(includeLogs: boolean | null, maxLogs: number | null) : Promise<Result<ExportResult, AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("export_diagnostic_bundle", { includeLogs, maxLogs }) };
@@ -1205,6 +1215,7 @@ async testToolConnection() : Promise<Result<JsonValue, AppError>> {
 },
 /**
  * Discover local Ollama / LM Studio / common OpenAI-compatible ports.
+ * 探测是阻塞 TCP + 阻塞 HTTP(最长约 2.4s),放到 blocking 线程,不占主线程。
  */
 async discoverLocalEndpoints() : Promise<Result<LocalEndpoint[], AppError>> {
     try {
@@ -1624,7 +1635,12 @@ killed: number;
 /**
  * 是否成功重新拉起。
  */
-relaunched: boolean }
+relaunched: boolean; 
+/**
+ * ChatGPT 桌面 app(内嵌 Codex)正在运行:我们不会结束它,需要用户手动重启
+ * 才能让新配置生效。
+ */
+chatgpt_needs_manual_restart: boolean }
 export type CodexToggleResult = { success: boolean; new_provider: string; config_path: string }
 /**
  * 会话里的一条对话消息——会话详情视图渲染气泡用。

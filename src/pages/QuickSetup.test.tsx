@@ -21,6 +21,7 @@ vi.mock("@/lib/providerAutoSetup", () => ({
 }));
 
 import * as api from "@/lib/api";
+import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { QuickSetup } from "./QuickSetup";
 
 afterEach(() => cleanup());
@@ -109,6 +110,57 @@ describe("QuickSetup", () => {
 
     const select = await screen.findByRole("combobox");
     expect(select).toHaveValue("openai");
+  });
+
+  it("offers a detected clipboard key on mount without filling it silently", async () => {
+    vi.mocked(readText).mockResolvedValue("sk-ant-api03-secretsecret");
+    render(
+      <MemoryRouter>
+        <QuickSetup />
+      </MemoryRouter>
+    );
+
+    expect(
+      await screen.findByText(/onboarding\.clipboard_hint/)
+    ).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/sk-xxx/)).toHaveValue("");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "onboarding.clipboard_use" })
+    );
+    expect(screen.getByPlaceholderText(/sk-xxx/)).toHaveValue(
+      "sk-ant-api03-secretsecret"
+    );
+  });
+
+  it("stays silent when the clipboard cannot be read", async () => {
+    vi.mocked(readText).mockRejectedValue(new Error("permission denied"));
+    render(
+      <MemoryRouter>
+        <QuickSetup />
+      </MemoryRouter>
+    );
+
+    expect(await screen.findByText("onboarding.welcome")).toBeInTheDocument();
+    await act(async () => {});
+    expect(screen.queryByText(/onboarding\.clipboard_hint/)).toBeNull();
+  });
+
+  it("masks the API key with a show/hide toggle", async () => {
+    render(
+      <MemoryRouter>
+        <QuickSetup />
+      </MemoryRouter>
+    );
+
+    const input = await screen.findByPlaceholderText(/sk-xxx/);
+    expect(input).toHaveAttribute("type", "password");
+
+    fireEvent.click(screen.getByRole("button", { name: "providers.show_key" }));
+    expect(input).toHaveAttribute("type", "text");
+
+    fireEvent.click(screen.getByRole("button", { name: "providers.hide_key" }));
+    expect(input).toHaveAttribute("type", "password");
   });
 
   it("completes only when provider+gateway+client+probe ok and shows first-request command", async () => {

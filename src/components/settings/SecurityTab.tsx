@@ -16,7 +16,7 @@ export function SecurityTab({
   t,
 }: Props) {
   return (
-    <section className="rounded-xl border border-border bg-card p-5">
+    <section className="surface-panel p-5">
       <h3 className="mb-4 flex items-center gap-2 text-sm font-semibold text-text-primary">
         <Shield className="h-4 w-4 text-accent" />
         {t("settings.gateway_security")}

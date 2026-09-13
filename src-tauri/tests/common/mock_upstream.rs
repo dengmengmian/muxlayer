@@ -119,6 +119,20 @@ impl MockUpstream {
             .await;
     }
 
+    /// Stub 任意 `POST {path}`:给定状态码 + content-type + 原始 body。
+    /// 用于 SSE 错误帧、非 JSON 错误页等 `stub_*_ok/err` 覆盖不到的形态。
+    pub async fn stub_raw(&self, route: &str, status: u16, content_type: &str, body: &str) {
+        Mock::given(method("POST"))
+            .and(path(route.to_string()))
+            .respond_with(
+                ResponseTemplate::new(status)
+                    .insert_header("content-type", content_type)
+                    .set_body_raw(body.as_bytes().to_vec(), content_type),
+            )
+            .mount(&self.server)
+            .await;
+    }
+
     /// Stub `POST /v1/messages` returning a minimal Anthropic message.
     pub async fn stub_anthropic_messages_ok(&self, model: &str, content: &str) {
         let body = anthropic_message_body(model, content);
@@ -162,6 +176,88 @@ impl MockUpstream {
             .await;
         self.stub_chat_completions_ok(model, content).await;
     }
+}
+
+/// 起一个只回一次的原始 HTTP/1.1 SSE 上游:先写响应头 + `first`,停 `gap`
+/// 后再写 `second` 并关连接。wiremock 的 body 是一次性写出的,模拟不了
+/// "首帧已转发给客户端、之后才出错"的时序,这里用裸 TCP 精确控制分段。
+/// 返回 `(base_url, hits)`,`hits` 记录被连接的次数。
+pub async fn start_split_sse_upstream(
+    first: String,
+    second: String,
+    gap: std::time::Duration,
+) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    start_trickle_sse_upstream(vec![first, second], gap).await
+}
+
+/// 裸 TCP SSE 上游:写完响应头后逐帧写 `frames`,帧与帧之间停 `gap`,写完关连接。
+/// 用于模拟慢速长流(如客户端中途断开)。写失败(对端已断)时直接结束。
+/// 返回 `(base_url, hits)`,`hits` 记录被连接的次数。
+pub async fn start_trickle_sse_upstream(
+    frames: Vec<String>,
+    gap: std::time::Duration,
+) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind trickle sse upstream");
+    let addr = listener.local_addr().expect("local addr");
+    let hits = std::sync::Arc::new(AtomicUsize::new(0));
+    let hits_task = hits.clone();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            hits_task.fetch_add(1, Ordering::SeqCst);
+            let frames = frames.clone();
+            tokio::spawn(async move {
+                // 读完请求头 + body(按 content-length),避免对端还在写时就回包。
+                let mut buf = Vec::new();
+                let mut tmp = [0u8; 4096];
+                loop {
+                    let n = match sock.read(&mut tmp).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => n,
+                    };
+                    buf.extend_from_slice(&tmp[..n]);
+                    let text = String::from_utf8_lossy(&buf).to_string();
+                    if let Some(head_end) = text.find("\r\n\r\n") {
+                        let len = text[..head_end]
+                            .lines()
+                            .find_map(|l| {
+                                let (k, v) = l.split_once(':')?;
+                                k.eq_ignore_ascii_case("content-length")
+                                    .then(|| v.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                            .unwrap_or(0);
+                        if buf.len() >= head_end + 4 + len {
+                            break;
+                        }
+                    }
+                }
+                let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n";
+                if sock.write_all(head.as_bytes()).await.is_err() {
+                    return;
+                }
+                for (i, frame) in frames.iter().enumerate() {
+                    if i > 0 {
+                        tokio::time::sleep(gap).await;
+                    }
+                    if sock.write_all(frame.as_bytes()).await.is_err()
+                        || sock.flush().await.is_err()
+                    {
+                        return;
+                    }
+                }
+                let _ = sock.shutdown().await;
+            });
+        }
+    });
+    (format!("http://{addr}"), hits)
 }
 
 #[derive(Debug, Clone)]

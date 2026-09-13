@@ -54,7 +54,13 @@ impl CcStatus {
 
 pub fn spawn(app_handle: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
-        let path = cc_notify_file();
+        let path = match cc_notify_file() {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("[cc-notify] 无法定位信箱文件,状态提醒不可用: {}", e.message);
+                return;
+            }
+        };
         // 记录启动时 mtime,避免把启动前的旧通知误弹一次。
         let mut last = file_mtime(&path);
         loop {
@@ -174,14 +180,14 @@ fn send_macos_system_notification(title: &str, body: &str) -> std::io::Result<()
     if output.status.success() {
         Ok(())
     } else {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
+        Err(std::io::Error::other(
             String::from_utf8_lossy(&output.stderr).into_owned(),
         ))
     }
 }
 
-#[cfg(target_os = "macos")]
+// 测试在所有平台都跑转义逻辑。
+#[cfg(any(target_os = "macos", test))]
 fn apple_script_quoted(value: &str) -> String {
     let mut quoted = String::with_capacity(value.len() + 2);
     quoted.push('"');

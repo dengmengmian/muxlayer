@@ -62,7 +62,7 @@ pub fn convert_with_provider_matrix(
     }
 
     // 2. Convert input
-    let input_messages = convert_input(&req.input, &mut diagnostic_events)?;
+    let input_messages = convert_input(&req.input, model, &mut diagnostic_events)?;
     messages.extend(input_messages);
 
     // 3. Convert tools (provider + matrix aware: Kimi $web_search builtin,
@@ -118,19 +118,17 @@ pub fn convert_with_provider_matrix(
     //    (some providers reject user→user or assistant→assistant sequences)
     messages = merge_consecutive_messages(messages);
 
-    // 7. Sanitize tool call arguments (invalid JSON -> "{}")
+    // 7. Sanitize tool call arguments (invalid JSON -> "{}")，与入站 function_call
+    //    共用 salvage_tool_arguments（覆盖 session history / 内嵌 tool_call 等来源）。
     for msg in &mut messages {
         if let Some(ref mut tcs) = msg.tool_calls {
             for tc in tcs {
-                if !tc.function.arguments.is_empty()
-                    && serde_json::from_str::<Value>(&tc.function.arguments).is_err()
-                {
-                    eprintln!(
-                        "[warn] Invalid JSON in tool call '{}' arguments, replaced with {{}}: {}",
-                        tc.function.name, tc.function.arguments
-                    );
-                    tc.function.arguments = "{}".to_string();
-                }
+                tc.function.arguments = tool_calls::salvage_tool_arguments(
+                    &tc.function.arguments,
+                    &tc.function.name,
+                    &tc.id,
+                    None,
+                );
             }
         }
     }

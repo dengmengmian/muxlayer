@@ -1,8 +1,11 @@
 {
   "name": "muxlayer",
   "private": true,
-  "version": "2.0.5",
+  "version": "2.0.6",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "vite",
     "build": "pnpm provider:catalog:check && tsc && vite build",
@@ -16,7 +19,8 @@
     "release:notes": "node scripts/extract-release-notes.mjs",
     "release:preflight": "bash scripts/release-preflight.sh",
     "test": "vitest",
-    "test:run": "vitest run",
+    "test:run": "vitest run && pnpm test:ui-css",
+    "test:ui-css": "node scripts/test-ui-css.mjs",
     "test:ci-local": "bash scripts/test-ci-local.sh",
     "test:playwright": "pnpm build && node scripts/test-playwright-smoke.mjs",
     "test:quickstart": "bash scripts/test-quickstart-core.sh",

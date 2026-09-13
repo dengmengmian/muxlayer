@@ -92,8 +92,8 @@ describe("Logs", () => {
       </MemoryRouter>
     );
 
-    expect(screen.getByText("logs.console")).toBeInTheDocument();
-    expect(screen.getByText("logs.traffic_snapshot")).toBeInTheDocument();
+    expect(screen.getByText("nav.logs")).toBeInTheDocument();
+    expect(screen.queryByText("logs.traffic_snapshot")).toBeNull();
     expect(screen.getByText("logs.view_list")).toBeInTheDocument();
     expect(screen.getByText("logs.view_session")).toBeInTheDocument();
 
@@ -196,5 +196,43 @@ describe("Logs", () => {
     await act(async () => screen.getByText("logs.clear_confirm").click());
 
     await waitFor(() => expect(api.clearRequestLogs).toHaveBeenCalled());
+  });
+  it("changing a filter on page 3 issues exactly one list query for page 1", async () => {
+    vi.mocked(api.listRequestLogs).mockResolvedValue([
+      logItem("a", "M"),
+    ] as any);
+    vi.mocked(api.countRequestLogs).mockResolvedValue(250);
+    (Element.prototype as any).scrollIntoView = vi.fn();
+
+    const { container } = render(
+      <MemoryRouter>
+        <Logs />
+      </MemoryRouter>
+    );
+
+    fireEvent.click(await screen.findByText("logs.page_next"));
+    await waitFor(() =>
+      expect(api.listRequestLogs).toHaveBeenLastCalledWith(
+        expect.objectContaining({ offset: 100 })
+      )
+    );
+    fireEvent.click(await screen.findByText("logs.page_next"));
+    await waitFor(() =>
+      expect(api.listRequestLogs).toHaveBeenLastCalledWith(
+        expect.objectContaining({ offset: 200 })
+      )
+    );
+    vi.mocked(api.listRequestLogs).mockClear();
+
+    const statusSelect = container.querySelector("select")!;
+    await act(async () => {
+      fireEvent.change(statusSelect, { target: { value: "error" } });
+    });
+
+    await waitFor(() => expect(api.listRequestLogs).toHaveBeenCalled());
+    expect(api.listRequestLogs).toHaveBeenCalledTimes(1);
+    expect(api.listRequestLogs).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "error", offset: 0 })
+    );
   });
 });

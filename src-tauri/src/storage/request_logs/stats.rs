@@ -126,6 +126,13 @@ fn aggregate_cost_grouped(
         col = group_col
     );
 
+    // 按模型聚合时一次性加载价格表,内存匹配,避免每个分组行各查一次库(N+1)。
+    let prices = if group_col == "model" {
+        Some(crate::storage::pricing::load_price_table(conn)?)
+    } else {
+        None
+    };
+
     let mut stmt = conn.prepare(&sql)?;
     // 顺序与 SQL 占位符一致:since 有值时 ?1=timestamp、?2=limit;无值时 ?1=limit。
     let mut params: Vec<&dyn rusqlite::types::ToSql> = Vec::new();
@@ -150,13 +157,10 @@ fn aggregate_cost_grouped(
     for r in rows {
         let mut item = r?;
         // 仅按模型聚合时判断该模型有没有价：用于 UI 区分"真免费"和"缺价算不出"。
-        if group_col == "model" {
-            item.has_price = crate::storage::pricing::get_price(
-                conn,
-                item.provider.as_deref().unwrap_or(""),
-                &item.key,
-            )
-            .is_some();
+        if let Some(prices) = &prices {
+            item.has_price = prices
+                .lookup(item.provider.as_deref().unwrap_or(""), &item.key)
+                .is_some();
         }
         out.push(item);
     }
@@ -188,11 +192,7 @@ pub fn aggregate_route_profile_stats(
 ) -> Result<Vec<crate::models::route_profile::RouteProfileStats>, AppError> {
     let mut sql = String::from(
         "SELECT
-            COALESCE(
-                request_logs.route_profile_id,
-                json_extract(request_logs.trace_json, '$.route_decision.profile_id'),
-                legacy_profile.id
-            ) AS profile_id,
+            COALESCE(request_logs.route_profile_id, legacy_profile.id) AS profile_id,
             COUNT(*) AS request_count,
             SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) AS success_count,
             SUM(CASE WHEN status_code < 200 OR status_code >= 400 THEN 1 ELSE 0 END) AS error_count,
@@ -201,7 +201,6 @@ pub fn aggregate_route_profile_stats(
          FROM request_logs
          LEFT JOIN route_profiles legacy_profile
            ON request_logs.route_profile_id IS NULL
-          AND json_extract(request_logs.trace_json, '$.route_decision.profile_id') IS NULL
           AND legacy_profile.enabled = 1
           AND legacy_profile.is_default = 1
           AND legacy_profile.input_protocol = CASE request_logs.route
@@ -213,7 +212,6 @@ pub fn aggregate_route_profile_stats(
          WHERE source = 'gateway'
            AND (
              request_logs.route_profile_id IS NOT NULL
-             OR json_extract(request_logs.trace_json, '$.route_decision.profile_id') IS NOT NULL
              OR legacy_profile.id IS NOT NULL
            )",
     );
@@ -386,39 +384,100 @@ pub fn get_stats(conn: &Connection) -> Result<RequestStats, AppError> {
     get_stats_for_range(conn, 7)
 }
 
-struct TodayCostCache {
-    day: String,
-    at: std::time::Instant,
-    cost: f64,
+pub(super) struct TodayCostCache {
+    /// 缓存对应的本地"今天"的 UTC 半开区间 [start, end)。
+    pub(super) start: String,
+    pub(super) end: String,
+    pub(super) at: std::time::Instant,
+    pub(super) cost: f64,
+}
+
+impl TodayCostCache {
+    /// 新写入一行时增量累加,而不是整体失效(网关每个请求都写日志,整体失效等于没缓存)。
+    pub(super) fn apply_insert(&mut self, timestamp: &str, cost: Option<f64>) {
+        if let Some(c) = cost {
+            if timestamp >= self.start.as_str() && timestamp < self.end.as_str() {
+                self.cost += c;
+            }
+        }
+    }
 }
 
 static TODAY_COST_CACHE: std::sync::Mutex<Option<TodayCostCache>> = std::sync::Mutex::new(None);
 const TODAY_COST_TTL: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// 本地日期 `date` 的 00:00 对应的 UTC 时刻。DST 跳变可能让本地 00:00 不存在,
+/// 此时顺延到当天第一个存在的本地时刻。
+fn local_midnight_utc<Tz: chrono::TimeZone>(
+    date: chrono::NaiveDate,
+    tz: &Tz,
+) -> chrono::DateTime<chrono::Utc> {
+    let mut t = date.and_time(chrono::NaiveTime::MIN);
+    for _ in 0..96 {
+        if let Some(dt) = tz.from_local_datetime(&t).earliest() {
+            return dt.with_timezone(&chrono::Utc);
+        }
+        t += chrono::Duration::minutes(15);
+    }
+    // 不存在一整天都没有合法本地时刻的时区;按 UTC 解释只是为了让函数全定义。
+    chrono::DateTime::from_naive_utc_and_offset(date.and_time(chrono::NaiveTime::MIN), chrono::Utc)
+}
+
+/// 本地日期 `date` 对应的 UTC 半开区间 [start, end),格式为 `…+00:00` 的 RFC3339。
+/// 存储的 timestamp 统一为 UTC RFC3339(`+00:00` 或历史的 `Z` 后缀),与该格式
+/// 按字符串比较即时间比较,可走 timestamp 索引。
+pub(super) fn local_day_range<Tz: chrono::TimeZone>(
+    date: chrono::NaiveDate,
+    tz: &Tz,
+) -> (String, String) {
+    let fmt =
+        |d: chrono::DateTime<chrono::Utc>| d.to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
+    let next = date.succ_opt().unwrap_or(date);
+    (
+        fmt(local_midnight_utc(date, tz)),
+        fmt(local_midnight_utc(next, tz)),
+    )
+}
+
 /// Cheap daily spend: only `SUM(cost)` for today's rows. Used by the budget gate.
+/// "今天"按本机时区切日。
 pub fn today_cost(conn: &Connection) -> Result<f64, AppError> {
-    let today_prefix = format!("{}%", chrono::Utc::now().format("%Y-%m-%d"));
+    today_cost_at(conn, chrono::Utc::now(), &chrono::Local)
+}
+
+/// `today_cost` 的可注入版本:`now` 与时区由调用方给定(测试用)。
+pub fn today_cost_at<Tz: chrono::TimeZone>(
+    conn: &Connection,
+    now: chrono::DateTime<chrono::Utc>,
+    tz: &Tz,
+) -> Result<f64, AppError> {
+    let (start, end) = local_day_range(now.with_timezone(tz).date_naive(), tz);
     conn.query_row(
-        "SELECT COALESCE(SUM(cost), 0.0) FROM request_logs WHERE timestamp LIKE ?1",
-        [&today_prefix],
+        "SELECT COALESCE(SUM(cost), 0.0) FROM request_logs WHERE timestamp >= ?1 AND timestamp < ?2",
+        [&start, &end],
         |r| r.get(0),
     )
     .map_err(AppError::from)
 }
 
 pub fn today_cost_cached(conn: &Connection) -> Result<f64, AppError> {
-    let day = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let now = chrono::Utc::now();
+    let (start, end) = local_day_range(
+        now.with_timezone(&chrono::Local).date_naive(),
+        &chrono::Local,
+    );
     if let Ok(guard) = TODAY_COST_CACHE.lock() {
         if let Some(cache) = guard.as_ref() {
-            if cache.day == day && cache.at.elapsed() < TODAY_COST_TTL {
+            if cache.start == start && cache.at.elapsed() < TODAY_COST_TTL {
                 return Ok(cache.cost);
             }
         }
     }
-    let cost = today_cost(conn)?;
+    let cost = today_cost_at(conn, now, &chrono::Local)?;
     if let Ok(mut guard) = TODAY_COST_CACHE.lock() {
         *guard = Some(TodayCostCache {
-            day,
+            start,
+            end,
             at: std::time::Instant::now(),
             cost,
         });
@@ -426,6 +485,16 @@ pub fn today_cost_cached(conn: &Connection) -> Result<f64, AppError> {
     Ok(cost)
 }
 
+/// 写入一行后把其成本增量计入今日缓存(行不在缓存那天则忽略)。
+pub(super) fn record_inserted_cost(timestamp: &str, cost: Option<f64>) {
+    if let Ok(mut guard) = TODAY_COST_CACHE.lock() {
+        if let Some(cache) = guard.as_mut() {
+            cache.apply_insert(timestamp, cost);
+        }
+    }
+}
+
+/// 删除 / 批量写入后整体失效,下次读取重新 SUM。
 pub fn invalidate_cost_caches() {
     if let Ok(mut g) = TODAY_COST_CACHE.lock() {
         *g = None;
@@ -437,10 +506,21 @@ pub fn invalidate_cost_caches() {
 /// window; only the `daily` Vec changes shape (length == daily_window, today
 /// last). Today's `cached_tokens` etc. are still pulled from the lifetime
 /// query path so dashboard cards stay correct regardless of selected range.
+/// "今天"与每日分桶按本机时区切日。
 pub fn get_stats_for_range(conn: &Connection, daily_window: i64) -> Result<RequestStats, AppError> {
+    get_stats_for_range_at(conn, daily_window, chrono::Utc::now(), &chrono::Local)
+}
+
+/// `get_stats_for_range` 的可注入版本:`now` 与时区由调用方给定(测试用)。
+pub fn get_stats_for_range_at<Tz: chrono::TimeZone>(
+    conn: &Connection,
+    daily_window: i64,
+    now: chrono::DateTime<chrono::Utc>,
+    tz: &Tz,
+) -> Result<RequestStats, AppError> {
     let daily_window = daily_window.clamp(1, 365);
-    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    let today_prefix = format!("{today}%");
+    let local_today = now.with_timezone(tz).date_naive();
+    let (today_start, today_end) = local_day_range(local_today, tz);
 
     // Request quality metrics are gateway-only. Client-local session imports
     // are usage records, not live proxy requests; they carry synthetic
@@ -472,18 +552,18 @@ pub fn get_stats_for_range(conn: &Connection, daily_window: i64) -> Result<Reque
             COALESCE(AVG(CASE WHEN source = 'gateway' AND status_code >= 200 AND status_code < 300 THEN latency_ms END), 0),
             COALESCE(SUM(input_tokens), 0),
             COALESCE(SUM(output_tokens), 0),
-            COALESCE(SUM(CASE WHEN source = 'gateway' AND timestamp LIKE ?1 THEN 1 ELSE 0 END), 0),
-            COALESCE(SUM(CASE WHEN source = 'gateway' AND timestamp LIKE ?1 AND (status_code >= 400 OR status_code < 200) THEN 1 ELSE 0 END), 0),
-            COALESCE(SUM(CASE WHEN timestamp LIKE ?1 THEN input_tokens ELSE 0 END), 0),
-            COALESCE(SUM(CASE WHEN timestamp LIKE ?1 THEN output_tokens ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN source = 'gateway' AND (timestamp >= ?1 AND timestamp < ?2) THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN source = 'gateway' AND (timestamp >= ?1 AND timestamp < ?2) AND (status_code >= 400 OR status_code < 200) THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN (timestamp >= ?1 AND timestamp < ?2) THEN input_tokens ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN (timestamp >= ?1 AND timestamp < ?2) THEN output_tokens ELSE 0 END), 0),
             COALESCE(SUM(cost), 0.0),
-            COALESCE(SUM(CASE WHEN timestamp LIKE ?1 THEN cost ELSE 0.0 END), 0.0),
+            COALESCE(SUM(CASE WHEN (timestamp >= ?1 AND timestamp < ?2) THEN cost ELSE 0.0 END), 0.0),
             COALESCE(SUM(cache_write_tokens), 0),
             COALESCE(SUM(cache_read_tokens), 0),
-            COALESCE(SUM(CASE WHEN timestamp LIKE ?1 THEN cache_write_tokens ELSE 0 END), 0),
-            COALESCE(SUM(CASE WHEN timestamp LIKE ?1 THEN cache_read_tokens ELSE 0 END), 0)
+            COALESCE(SUM(CASE WHEN (timestamp >= ?1 AND timestamp < ?2) THEN cache_write_tokens ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN (timestamp >= ?1 AND timestamp < ?2) THEN cache_read_tokens ELSE 0 END), 0)
         FROM request_logs",
-        [&today_prefix],
+        [&today_start, &today_end],
         |r| {
             Ok((
                 r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?,
@@ -494,25 +574,37 @@ pub fn get_stats_for_range(conn: &Connection, daily_window: i64) -> Result<Reque
     )?;
 
     // Daily aggregation over the requested window — single GROUP BY query.
-    let window_start = (chrono::Utc::now() - chrono::Duration::days(daily_window - 1))
-        .format("%Y-%m-%d")
-        .to_string();
+    // 每个本地日换算成 UTC 区间后用 VALUES 表 JOIN,既按本地日分桶(含 DST),
+    // 又保持 timestamp 区间比较可走索引。
+    let days: Vec<chrono::NaiveDate> = (0..daily_window)
+        .rev()
+        .map(|i| local_today - chrono::Duration::days(i))
+        .collect();
+    let mut day_params: Vec<String> = Vec::with_capacity(days.len() * 3);
+    for d in &days {
+        let (start, end) = local_day_range(*d, tz);
+        day_params.push(d.format("%Y-%m-%d").to_string());
+        day_params.push(start);
+        day_params.push(end);
+    }
+    let values = vec!["(?, ?, ?)"; days.len()].join(", ");
     let mut daily_map: std::collections::HashMap<String, (i64, i64, i64, i64, f64, i64, i64)> =
         std::collections::HashMap::new();
-    let mut stmt = conn.prepare(
-        "SELECT substr(timestamp, 1, 10) as day,
-                COALESCE(SUM(CASE WHEN source = 'gateway' THEN 1 ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN source = 'gateway' AND (status_code >= 400 OR status_code < 200) THEN 1 ELSE 0 END), 0),
-                COALESCE(SUM(input_tokens), 0),
-                COALESCE(SUM(output_tokens), 0),
-                COALESCE(SUM(cost), 0.0),
-                COALESCE(SUM(cache_write_tokens), 0),
-                COALESCE(SUM(cache_read_tokens), 0)
-         FROM request_logs
-         WHERE timestamp >= ?1
-         GROUP BY day",
-    )?;
-    let rows = stmt.query_map([&window_start], |r| {
+    let mut stmt = conn.prepare(&format!(
+        "WITH days(day, start_ts, end_ts) AS (VALUES {values})
+         SELECT days.day,
+                COALESCE(SUM(CASE WHEN r.source = 'gateway' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN r.source = 'gateway' AND (r.status_code >= 400 OR r.status_code < 200) THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(r.input_tokens), 0),
+                COALESCE(SUM(r.output_tokens), 0),
+                COALESCE(SUM(r.cost), 0.0),
+                COALESCE(SUM(r.cache_write_tokens), 0),
+                COALESCE(SUM(r.cache_read_tokens), 0)
+         FROM days
+         JOIN request_logs r ON r.timestamp >= days.start_ts AND r.timestamp < days.end_ts
+         GROUP BY days.day"
+    ))?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(day_params.iter()), |r| {
         Ok((
             r.get::<_, String>(0)?,
             r.get::<_, i64>(1)?,
@@ -524,14 +616,13 @@ pub fn get_stats_for_range(conn: &Connection, daily_window: i64) -> Result<Reque
             r.get::<_, i64>(7)?,
         ))
     })?;
-    for (day, count, errs, inp, outp, cost, cw, cr) in rows.flatten() {
+    for row in rows {
+        let (day, count, errs, inp, outp, cost, cw, cr) = row?;
         daily_map.insert(day, (count, errs, inp, outp, cost, cw, cr));
     }
     let mut daily = Vec::new();
-    for i in (0..daily_window).rev() {
-        let day = (chrono::Utc::now() - chrono::Duration::days(i))
-            .format("%Y-%m-%d")
-            .to_string();
+    for d in &days {
+        let day = d.format("%Y-%m-%d").to_string();
         let (count, errs, inp, outp, cost, cw, cr) = daily_map
             .get(&day)
             .copied()
@@ -560,20 +651,17 @@ pub fn get_stats_for_range(conn: &Connection, daily_window: i64) -> Result<Reque
                 count: r.get(1)?,
             })
         })?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<Result<_, _>>()?;
 
     // 今日 codex_compact 计数 — 单独查 trace_json,跟主聚合解耦。
-    let today_codex_compact: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM request_logs
-             WHERE source = 'gateway' AND timestamp LIKE ?1
+    let today_codex_compact: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM request_logs
+             WHERE source = 'gateway' AND (timestamp >= ?1 AND timestamp < ?2)
                AND trace_json IS NOT NULL
                AND trace_json LIKE '%\"mode\":\"codex_compact\"%'",
-            [&today_prefix],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
+        [&today_start, &today_end],
+        |r| r.get(0),
+    )?;
 
     Ok(RequestStats {
         total,
@@ -697,11 +785,10 @@ pub fn get_provider_health(
             Ok(RecentError {
                 timestamp: r.get(0)?,
                 status_code: r.get(1)?,
-                message: r.get::<_, String>(2).unwrap_or_default(),
+                message: r.get(2)?,
             })
         })?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<Result<_, _>>()?;
 
     Ok(ProviderHealth {
         provider: provider_name.to_string(),

@@ -44,7 +44,7 @@ describe("Instructions", () => {
     );
 
     await waitFor(() => expect(api.readGlobalInstructions).toHaveBeenCalled());
-    expect(screen.getByText("instructions.console")).toBeInTheDocument();
+    expect(screen.getByText("instructions.title")).toBeInTheDocument();
     expect(screen.getByText("instructions.target_matrix")).toBeInTheDocument();
     expect(screen.getByText("instructions.editor")).toBeInTheDocument();
   });

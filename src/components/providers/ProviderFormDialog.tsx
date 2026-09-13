@@ -1198,7 +1198,7 @@ export function ProviderFormDialog({
             </button>
             <button
               type="submit"
-              className="rounded-md bg-accent px-4 py-2 text-xs font-medium text-white transition-colors hover:bg-accent/90"
+              className="rounded-md bg-accent px-4 py-2 text-xs font-medium text-on-accent transition-colors hover:bg-accent/90"
             >
               {isEdit ? t("providers.save") : t("providers.create")}
             </button>

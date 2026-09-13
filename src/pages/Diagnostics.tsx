@@ -91,20 +91,19 @@ export function Diagnostics() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="desktop-page">
       {/* Actions */}
       <div
-        className="relative overflow-hidden rounded-xl border border-accent/20 bg-card p-5"
+        className="desktop-page-header command-strip relative overflow-hidden border-accent/25"
         style={{
-          boxShadow: "0 10px 30px rgba(194, 112, 43, 0.10)",
           background:
-            "linear-gradient(135deg, var(--color-card) 0%, rgba(194,112,43,0.07) 100%)",
+            "linear-gradient(135deg, var(--color-card) 0%, var(--color-accent-soft) 100%)",
         }}
       >
         <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-accent/50 to-transparent" />
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-accent">
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-accent">
               {t("diag.diagnostic_console")}
             </p>
             <h3 className="mt-1 text-sm font-semibold text-text-primary">
@@ -148,10 +147,7 @@ export function Diagnostics() {
 
       {/* Overall status */}
       {report && (
-        <div
-          className="rounded-xl border border-border bg-card p-5"
-          style={{ boxShadow: "0 12px 30px rgba(17, 24, 39, 0.05)" }}
-        >
+        <div className="surface-panel p-5">
           <div className="mb-4 flex items-center justify-between">
             <div className="flex items-center gap-3">
               {statusIcon(report.overall_status)}
@@ -166,7 +162,7 @@ export function Diagnostics() {
               {report.overall_status}
             </StatusBadge>
           </div>
-          <p className="text-[11px] text-text-muted">{report.created_at}</p>
+          <p className="text-xs text-text-muted">{report.created_at}</p>
         </div>
       )}
 
@@ -192,10 +188,7 @@ function ReportCard({ report }: { report: CheckReport }) {
   const [expanded, setExpanded] = useState(report.status !== "ok");
 
   return (
-    <div
-      className="rounded-xl border border-border bg-card"
-      style={{ boxShadow: "0 12px 30px rgba(17, 24, 39, 0.04)" }}
-    >
+    <div className="surface-panel">
       <button
         onClick={() => setExpanded(!expanded)}
         className="flex w-full items-center justify-between px-5 py-3 text-left"
@@ -234,15 +227,13 @@ function CheckItemRow({ check }: { check: CheckItem }) {
           <span className="text-xs font-medium text-text-primary">
             {check.name}
           </span>
-          <span className="text-[11px] text-text-secondary">
-            {check.message}
-          </span>
+          <span className="text-xs text-text-secondary">{check.message}</span>
         </div>
         {check.detail && (
-          <p className="mt-0.5 text-[11px] text-text-muted">{check.detail}</p>
+          <p className="mt-0.5 text-xs text-text-muted">{check.detail}</p>
         )}
         {check.suggestion && (
-          <p className="mt-0.5 text-[11px] text-accent">{check.suggestion}</p>
+          <p className="mt-0.5 text-xs text-accent">{check.suggestion}</p>
         )}
       </div>
     </div>

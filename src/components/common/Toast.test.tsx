@@ -32,6 +32,26 @@ describe("Toast", () => {
     expect(screen.getByText("Please check your input")).toBeInTheDocument();
   });
 
+  it("does not stack an identical toast that is still visible", () => {
+    render(<ToastContainer />);
+    act(() => {
+      toast("error", "Gateway unreachable");
+      toast("error", "Gateway unreachable");
+    });
+    expect(screen.getAllByText("Gateway unreachable")).toHaveLength(1);
+  });
+
+  it("keeps toasts with different messages or types separate", () => {
+    render(<ToastContainer />);
+    act(() => {
+      toast("error", "First failure");
+      toast("error", "Second failure");
+      toast("warning", "First failure");
+    });
+    expect(screen.getAllByText("First failure")).toHaveLength(2);
+    expect(screen.getByText("Second failure")).toBeInTheDocument();
+  });
+
   it("dismisses toast when close button is clicked", () => {
     vi.useFakeTimers();
     render(<ToastContainer />);

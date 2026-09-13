@@ -36,7 +36,7 @@ import type {
   GrokBuildConfigStatus,
   DeepSeekHarnessConfigStatus,
 } from "@/types/config";
-import type { GatewayStatus } from "@/types/gateway";
+import { useGatewayStatus } from "@/store/global";
 
 /// Master-detail 布局：左侧 5 行客户端列表常驻显示状态，右侧渲染选中客户端
 /// 的完整详情。比原先的手风琴更适合「同时管理 5 个客户端」的场景——总览不
@@ -48,6 +48,80 @@ type ClientId = ClientLogoId;
 /// - `detected`：检测到配置但未接入 MuxLayer
 /// - `absent`：未检测到
 type ClientPresence = "active" | "detected" | "absent";
+
+/// 需要确认弹窗的「应用配置」流程，按客户端表驱动：确认文案 + 写配置命令 +
+/// 应用成功后 PostApplyDialog 用的 clientId / 名称（clientId 同时是进程探测参数，
+/// Gemini CLI 在后端叫 "gemini"）。
+interface ApplyFlow {
+  clientId: string;
+  clientName: string;
+  titleKey: string;
+  messageKey: string;
+  apply: () => Promise<api.ApplyConfigResult>;
+}
+
+const APPLY_FLOWS = {
+  codex: {
+    clientId: "codex",
+    clientName: "Codex",
+    titleKey: "tools.apply_codex_title",
+    messageKey: "tools.apply_codex_msg",
+    apply: () => api.applyCodexConfig(),
+  },
+  claude_code: {
+    clientId: "claude_code",
+    clientName: "Claude Code",
+    titleKey: "tools.apply_claude_title",
+    messageKey: "tools.apply_claude_msg",
+    apply: () => api.applyClaudeCodeConfig(),
+  },
+  opencode: {
+    clientId: "opencode",
+    clientName: "OpenCode",
+    titleKey: "tools.apply_opencode_title",
+    messageKey: "tools.apply_opencode_msg",
+    apply: () => api.applyOpenCodeConfig(),
+  },
+  gemini_cli: {
+    clientId: "gemini",
+    clientName: "Gemini CLI",
+    titleKey: "tools.apply_gemini_title",
+    messageKey: "tools.apply_gemini_msg",
+    apply: () => api.applyGeminiConfig(),
+  },
+  atomcode: {
+    clientId: "atomcode",
+    clientName: "AtomCode",
+    titleKey: "tools.apply_atomcode_title",
+    messageKey: "tools.apply_atomcode_msg",
+    apply: () => api.applyAtomCodeConfig(),
+  },
+  kimi_cli: {
+    clientId: "kimi_cli",
+    clientName: "Kimi CLI",
+    titleKey: "tools.apply_kimi_title",
+    messageKey: "tools.apply_kimi_msg",
+    apply: () => api.applyKimiConfig(),
+  },
+  grok_build: {
+    clientId: "grok_build",
+    clientName: "Grok Build",
+    titleKey: "tools.apply_grok_title",
+    messageKey: "tools.apply_grok_msg",
+    apply: () => api.applyGrokConfig(),
+  },
+  deepseek_harness: {
+    clientId: "deepseek_harness",
+    clientName: "DeepSeek Harness",
+    titleKey: "tools.apply_dsh_title",
+    messageKey: "tools.apply_dsh_msg",
+    apply: () => api.applyDshConfig(),
+  },
+} satisfies Partial<Record<ClientId, ApplyFlow>>;
+
+/// 客户端配置 / 进程探测的轮询周期。读多个配置文件 + pgrep，变化频率低；
+/// usePolling 在窗口重新聚焦时会立即补一次。
+const DETECT_POLL_MS = 60_000;
 
 export function Tools() {
   const { t } = useI18n();
@@ -84,19 +158,12 @@ export function Tools() {
     useState<DeepSeekHarnessConfigStatus | null>(null);
   const [cdPreview, setCdPreview] = useState("");
   const [historyClients, setHistoryClients] = useState<string[]>([]);
-  const [gatewayStatus, setGatewayStatus] = useState<GatewayStatus | null>(
-    null
-  );
+  // gateway status 走全局 store——Topbar 常驻轮询，这里只订阅。
+  const gatewayStatus = useGatewayStatus((s) => s.value);
   const [startingGateway, setStartingGateway] = useState(false);
 
-  const [confirmApplyCodex, setConfirmApplyCodex] = useState(false);
-  const [confirmApplyClaude, setConfirmApplyClaude] = useState(false);
-  const [confirmApplyOpenCode, setConfirmApplyOpenCode] = useState(false);
-  const [confirmApplyGemini, setConfirmApplyGemini] = useState(false);
-  const [confirmApplyAtomCode, setConfirmApplyAtomCode] = useState(false);
-  const [confirmApplyKimi, setConfirmApplyKimi] = useState(false);
-  const [confirmApplyGrok, setConfirmApplyGrok] = useState(false);
-  const [confirmApplyDsh, setConfirmApplyDsh] = useState(false);
+  /// 等待用户确认的「应用配置」流程；null = 没有确认弹窗。
+  const [pendingApply, setPendingApply] = useState<ApplyFlow | null>(null);
 
   /// Post-apply summary: shown once per apply with config path + running
   /// process warning. Null means "no dialog open right now". Detect failure
@@ -138,20 +205,18 @@ export function Tools() {
 
   const load = useCallback(async () => {
     try {
-      const [c, cc, oc, gc, ac, cd, kimi, grok, dsh, gw, hist] =
-        await Promise.all([
-          api.detectCodexConfig(),
-          api.detectClaudeCodeEnv(),
-          api.detectOpenCodeConfig(),
-          api.detectGeminiConfig(),
-          api.detectAtomCodeConfig(),
-          api.detectClaudeDesktop().catch(() => null),
-          api.detectKimiConfig().catch(() => null),
-          api.detectGrokConfig().catch(() => null),
-          api.detectDshConfig().catch(() => null),
-          api.getGatewayStatus(),
-          api.clientsWithApplyHistory().catch(() => [] as string[]),
-        ]);
+      const [c, cc, oc, gc, ac, cd, kimi, grok, dsh, hist] = await Promise.all([
+        api.detectCodexConfig(),
+        api.detectClaudeCodeEnv(),
+        api.detectOpenCodeConfig(),
+        api.detectGeminiConfig(),
+        api.detectAtomCodeConfig(),
+        api.detectClaudeDesktop().catch(() => null),
+        api.detectKimiConfig().catch(() => null),
+        api.detectGrokConfig().catch(() => null),
+        api.detectDshConfig().catch(() => null),
+        api.clientsWithApplyHistory().catch(() => [] as string[]),
+      ]);
       setCodexStatus(c);
       setClaudeEnv(cc);
       setOpenCodeStatus(oc);
@@ -161,7 +226,6 @@ export function Tools() {
       setKimiStatus(kimi);
       setGrokStatus(grok);
       setDshStatus(dsh);
-      setGatewayStatus(gw);
       setHistoryClients(hist);
       const snippet = await api.generateCodexConfig();
       setCodexConfig(snippet);
@@ -174,9 +238,13 @@ export function Tools() {
 
   useEffect(() => {
     load();
+    // Topbar 通常已经拉过；store 为空时（如直接渲染本页）补一次。
+    if (!useGatewayStatus.getState().value) {
+      useGatewayStatus.getState().fetch();
+    }
   }, [load]);
   // window focus 时刷新——从终端切回时立刻看到 Codex 应用配置后的状态变化
-  usePolling(load, 15_000);
+  usePolling(load, DETECT_POLL_MS);
 
   // 客户端进程探测：配置已写盘后，进程仍跑旧配置是常见坑。
   // 只对已接入的客户端查 pgrep/tasklist，失败当 unknown（count 不写）。
@@ -232,15 +300,17 @@ export function Tools() {
   useEffect(() => {
     refreshProcessStatus();
   }, [refreshProcessStatus]);
-  usePolling(refreshProcessStatus, 15_000);
+  usePolling(refreshProcessStatus, DETECT_POLL_MS);
 
-  const handleApplyCodex = async () => {
+  const confirmPendingApply = async () => {
+    const flow = pendingApply;
+    if (!flow) return;
     try {
-      const result = await api.applyCodexConfig();
-      setConfirmApplyCodex(false);
+      const result = await flow.apply();
+      setPendingApply(null);
       load();
       if (result.success) {
-        await showPostApply("codex", "Codex", result.config_path);
+        await showPostApply(flow.clientId, flow.clientName, result.config_path);
       }
     } catch (err) {
       toast("error", (err as api.AppError).message);
@@ -293,19 +363,6 @@ export function Tools() {
   // existing "切换到官方" button covers it). Kept as a backend primitive for
   // future direct callers; UI keeps the single toggle.
 
-  const handleApplyClaude = async () => {
-    try {
-      const result = await api.applyClaudeCodeConfig();
-      setConfirmApplyClaude(false);
-      load();
-      if (result.success) {
-        await showPostApply("claude_code", "Claude Code", result.config_path);
-      }
-    } catch (err) {
-      toast("error", (err as api.AppError).message);
-    }
-  };
-
   const handleToggleClaude = async () => {
     try {
       const result = await api.toggleClaudeCodeProvider();
@@ -323,36 +380,10 @@ export function Tools() {
     }
   };
 
-  const handleApplyOpenCode = async () => {
-    try {
-      const result = await api.applyOpenCodeConfig();
-      setConfirmApplyOpenCode(false);
-      load();
-      if (result.success) {
-        await showPostApply("opencode", "OpenCode", result.config_path);
-      }
-    } catch (err) {
-      toast("error", (err as api.AppError).message);
-    }
-  };
-
   const handleGenerateClaudeSnippet = async () => {
     try {
       const snippet = await api.generateClaudeCodeEnv();
       setClaudeSnippet(snippet);
-    } catch (err) {
-      toast("error", (err as api.AppError).message);
-    }
-  };
-
-  const handleApplyGemini = async () => {
-    try {
-      const result = await api.applyGeminiConfig();
-      setConfirmApplyGemini(false);
-      load();
-      if (result.success) {
-        await showPostApply("gemini", "Gemini CLI", result.config_path);
-      }
     } catch (err) {
       toast("error", (err as api.AppError).message);
     }
@@ -370,62 +401,6 @@ export function Tools() {
         await showPostApply("gemini", "Gemini CLI", result.config_path);
       }
       load();
-    } catch (err) {
-      toast("error", (err as api.AppError).message);
-    }
-  };
-
-  const handleApplyAtomCode = async () => {
-    try {
-      const result = await api.applyAtomCodeConfig();
-      setConfirmApplyAtomCode(false);
-      load();
-      if (result.success) {
-        await showPostApply("atomcode", "AtomCode", result.config_path);
-      }
-    } catch (err) {
-      toast("error", (err as api.AppError).message);
-    }
-  };
-
-  const handleApplyKimi = async () => {
-    try {
-      const result = await api.applyKimiConfig();
-      setConfirmApplyKimi(false);
-      load();
-      if (result.success) {
-        await showPostApply("kimi_cli", "Kimi CLI", result.config_path);
-      }
-    } catch (err) {
-      toast("error", (err as api.AppError).message);
-    }
-  };
-
-  const handleApplyGrok = async () => {
-    try {
-      const result = await api.applyGrokConfig();
-      setConfirmApplyGrok(false);
-      load();
-      if (result.success) {
-        await showPostApply("grok_build", "Grok Build", result.config_path);
-      }
-    } catch (err) {
-      toast("error", (err as api.AppError).message);
-    }
-  };
-
-  const handleApplyDsh = async () => {
-    try {
-      const result = await api.applyDshConfig();
-      setConfirmApplyDsh(false);
-      load();
-      if (result.success) {
-        await showPostApply(
-          "deepseek_harness",
-          "DeepSeek Harness",
-          result.config_path
-        );
-      }
     } catch (err) {
       toast("error", (err as api.AppError).message);
     }
@@ -469,8 +444,7 @@ export function Tools() {
   const handleStartGateway = async () => {
     setStartingGateway(true);
     try {
-      const status = await api.startGateway();
-      setGatewayStatus(status);
+      useGatewayStatus.getState().setValue(await api.startGateway());
       toast("success", t("gateway.started"));
     } catch (err) {
       toast("error", (err as api.AppError).message);
@@ -624,14 +598,10 @@ export function Tools() {
     return <p className="text-xs text-text-muted">{t("common.loading")}</p>;
 
   return (
-    <div className="space-y-5">
-      <header className="relative overflow-hidden rounded-xl border border-accent/20 bg-card p-5 shadow-sm">
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-accent/10 to-transparent" />
-        <div className="relative">
-          <p className="text-xs font-medium uppercase tracking-[0.18em] text-accent">
-            {t("tools.console")}
-          </p>
-          <h2 className="mt-2 flex items-center gap-2 text-lg font-semibold text-text-primary">
+    <div className="desktop-page">
+      <header className="desktop-page-header">
+        <div>
+          <h2 className="flex items-center gap-2 text-lg font-semibold text-text-primary">
             <Monitor className="h-4 w-4" />
             {t("tools.clients")}
           </h2>
@@ -642,7 +612,7 @@ export function Tools() {
       </header>
 
       {/* Connection Status Bar */}
-      <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+      <div className="surface-panel p-4">
         <div className="mb-3">
           <h3 className="text-sm font-semibold text-text-primary">
             {t("tools.connection_path")}
@@ -651,8 +621,8 @@ export function Tools() {
             {t("tools.connection_path_hint")}
           </p>
         </div>
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-6">
+        <div className="flex min-w-0 items-center justify-between gap-3">
+          <div className="surface-scroll flex min-w-0 items-center gap-6 pb-1">
             <ConnectionStep
               label={t("tools.step_config")}
               ok={testResult?.config_ok ?? null}
@@ -698,12 +668,12 @@ export function Tools() {
           <div
             className={`mt-3 flex items-center justify-between rounded-md border px-3 py-2 ${
               gatewayStatus.running
-                ? "border-success/30 bg-success-soft"
+                ? "border-info/30 bg-info-soft"
                 : "border-warning/30 bg-warning/5"
             }`}
           >
             <p
-              className={`text-xs ${gatewayStatus.running ? "text-success" : "text-warning"}`}
+              className={`text-xs ${gatewayStatus.running ? "text-info" : "text-warning"}`}
             >
               {gatewayStatus.running
                 ? `${t("tools.gateway_running")} http://${gatewayStatus.host}:${gatewayStatus.port}`
@@ -730,7 +700,7 @@ export function Tools() {
         )}
         {testResult?.client_processes &&
           testResult.client_processes.length > 0 && (
-            <ul className="mt-2 space-y-1 text-[11px] text-text-muted">
+            <ul className="mt-2 space-y-1 text-xs text-text-muted">
               {testResult.client_processes.map((c) => (
                 <li key={c.client_id}>
                   <span className="font-medium text-text-secondary">
@@ -748,11 +718,11 @@ export function Tools() {
       </div>
 
       {/* Master-detail */}
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-[260px_minmax(0,1fr)]">
+      <div className="grid min-w-0 grid-cols-[220px_minmax(0,1fr)] gap-4">
         {/* Left list */}
-        <aside className="rounded-xl border border-border bg-card p-2">
+        <aside className="surface-panel p-2">
           {/* 4.1 状态总汇 + 4.2 漂移提示 */}
-          <div className="flex items-center justify-between px-2.5 py-1.5 text-[10px] text-text-muted">
+          <div className="flex items-center justify-between px-2.5 py-1.5 text-xs text-text-muted">
             <span>{t("tools.clients")}</span>
             <span>
               {t("tools.connected_count")}{" "}
@@ -761,7 +731,7 @@ export function Tools() {
             </span>
           </div>
           {clientRows.some((r) => r.drifted) && (
-            <div className="mb-1 px-2.5 text-[10px] text-warning">
+            <div className="mb-1 px-2.5 text-xs text-warning">
               {clientRows.filter((r) => r.drifted).length}{" "}
               {t("tools.drift_count_hint")}
             </div>
@@ -789,7 +759,7 @@ export function Tools() {
                       </div>
                       <div
                         className={
-                          "truncate text-[10px] " +
+                          "truncate text-xs " +
                           (row.drifted
                             ? "text-warning"
                             : selected
@@ -805,7 +775,7 @@ export function Tools() {
                         processRunning[row.id] !== undefined && (
                           <div
                             className={
-                              "truncate text-[10px] " +
+                              "truncate text-xs " +
                               (processRunning[row.id]! > 0
                                 ? "text-warning"
                                 : "text-text-muted")
@@ -835,7 +805,7 @@ export function Tools() {
             <CodexDetail
               status={codexStatus}
               codexConfig={codexConfig}
-              onApply={() => setConfirmApplyCodex(true)}
+              onApply={() => setPendingApply(APPLY_FLOWS.codex)}
               onToggle={handleToggleCodex}
               load={load}
               t={t}
@@ -845,7 +815,7 @@ export function Tools() {
             <ClaudeDetail
               env={claudeEnv}
               snippet={claudeSnippet}
-              onApply={() => setConfirmApplyClaude(true)}
+              onApply={() => setPendingApply(APPLY_FLOWS.claude_code)}
               onToggle={handleToggleClaude}
               onGenerateSnippet={handleGenerateClaudeSnippet}
               load={load}
@@ -855,7 +825,7 @@ export function Tools() {
           {selectedClientId === "opencode" && (
             <OpenCodeDetail
               status={openCodeStatus}
-              onApply={() => setConfirmApplyOpenCode(true)}
+              onApply={() => setPendingApply(APPLY_FLOWS.opencode)}
               load={load}
               t={t}
             />
@@ -863,7 +833,7 @@ export function Tools() {
           {selectedClientId === "gemini_cli" && (
             <GeminiDetail
               status={geminiStatus}
-              onApply={() => setConfirmApplyGemini(true)}
+              onApply={() => setPendingApply(APPLY_FLOWS.gemini_cli)}
               onToggle={handleToggleGemini}
               load={load}
               t={t}
@@ -872,7 +842,7 @@ export function Tools() {
           {selectedClientId === "atomcode" && (
             <AtomCodeDetail
               status={atomCodeStatus}
-              onApply={() => setConfirmApplyAtomCode(true)}
+              onApply={() => setPendingApply(APPLY_FLOWS.atomcode)}
               onToggle={handleToggleAtomCode}
               load={load}
               t={t}
@@ -881,7 +851,7 @@ export function Tools() {
           {selectedClientId === "kimi_cli" && (
             <KimiCliDetail
               status={kimiStatus}
-              onApply={() => setConfirmApplyKimi(true)}
+              onApply={() => setPendingApply(APPLY_FLOWS.kimi_cli)}
               load={load}
               t={t}
             />
@@ -889,7 +859,7 @@ export function Tools() {
           {selectedClientId === "grok_build" && (
             <GrokBuildDetail
               status={grokStatus}
-              onApply={() => setConfirmApplyGrok(true)}
+              onApply={() => setPendingApply(APPLY_FLOWS.grok_build)}
               load={load}
               t={t}
             />
@@ -897,13 +867,13 @@ export function Tools() {
           {selectedClientId === "deepseek_harness" && (
             <DeepSeekHarnessDetail
               status={dshStatus}
-              onApply={() => setConfirmApplyDsh(true)}
+              onApply={() => setPendingApply(APPLY_FLOWS.deepseek_harness)}
               load={load}
               t={t}
             />
           )}
           {selectedClientId === "claude_desktop" && (
-            <div className="rounded-xl border border-border bg-card p-5">
+            <div className="surface-panel p-5">
               <DetailHeader
                 clientId="claude_desktop"
                 name="Claude Desktop"
@@ -941,7 +911,7 @@ export function Tools() {
                     <span className="text-text-muted">
                       {t("tools.claude_desktop_profile_label")}
                     </span>
-                    <p className="break-all font-mono text-[11px] text-text-secondary">
+                    <p className="break-all font-mono text-xs text-text-secondary">
                       {claudeDesktopStatus.profile_path}
                     </p>
                   </div>
@@ -969,11 +939,11 @@ export function Tools() {
                   </div>
 
                   {cdPreview && (
-                    <pre className="mt-3 max-h-60 overflow-auto rounded-md bg-card-secondary p-3 text-[11px] text-text-primary">
+                    <pre className="mt-3 max-h-60 overflow-auto rounded-md bg-card-secondary p-3 text-xs text-text-primary">
                       {cdPreview}
                     </pre>
                   )}
-                  <p className="mt-3 text-[11px] text-text-muted">
+                  <p className="mt-3 text-xs text-text-muted">
                     {t("tools.claude_desktop_restart_hint")}
                   </p>
                 </>
@@ -984,76 +954,13 @@ export function Tools() {
       </div>
 
       <ConfirmDialog
-        open={confirmApplyCodex}
-        title={t("tools.apply_codex_title")}
-        message={t("tools.apply_codex_msg")}
+        open={pendingApply !== null}
+        title={pendingApply ? t(pendingApply.titleKey) : ""}
+        message={pendingApply ? t(pendingApply.messageKey) : ""}
         confirmLabel={t("common.apply")}
         variant="default"
-        onConfirm={handleApplyCodex}
-        onCancel={() => setConfirmApplyCodex(false)}
-      />
-      <ConfirmDialog
-        open={confirmApplyClaude}
-        title={t("tools.apply_claude_title")}
-        message={t("tools.apply_claude_msg")}
-        confirmLabel={t("common.apply")}
-        variant="default"
-        onConfirm={handleApplyClaude}
-        onCancel={() => setConfirmApplyClaude(false)}
-      />
-      <ConfirmDialog
-        open={confirmApplyOpenCode}
-        title={t("tools.apply_opencode_title")}
-        message={t("tools.apply_opencode_msg")}
-        confirmLabel={t("common.apply")}
-        variant="default"
-        onConfirm={handleApplyOpenCode}
-        onCancel={() => setConfirmApplyOpenCode(false)}
-      />
-      <ConfirmDialog
-        open={confirmApplyGemini}
-        title={t("tools.apply_gemini_title")}
-        message={t("tools.apply_gemini_msg")}
-        confirmLabel={t("common.apply")}
-        variant="default"
-        onConfirm={handleApplyGemini}
-        onCancel={() => setConfirmApplyGemini(false)}
-      />
-      <ConfirmDialog
-        open={confirmApplyAtomCode}
-        title={t("tools.apply_atomcode_title")}
-        message={t("tools.apply_atomcode_msg")}
-        confirmLabel={t("common.apply")}
-        variant="default"
-        onConfirm={handleApplyAtomCode}
-        onCancel={() => setConfirmApplyAtomCode(false)}
-      />
-      <ConfirmDialog
-        open={confirmApplyKimi}
-        title={t("tools.apply_kimi_title")}
-        message={t("tools.apply_kimi_msg")}
-        confirmLabel={t("common.apply")}
-        variant="default"
-        onConfirm={handleApplyKimi}
-        onCancel={() => setConfirmApplyKimi(false)}
-      />
-      <ConfirmDialog
-        open={confirmApplyGrok}
-        title={t("tools.apply_grok_title")}
-        message={t("tools.apply_grok_msg")}
-        confirmLabel={t("common.apply")}
-        variant="default"
-        onConfirm={handleApplyGrok}
-        onCancel={() => setConfirmApplyGrok(false)}
-      />
-      <ConfirmDialog
-        open={confirmApplyDsh}
-        title={t("tools.apply_dsh_title")}
-        message={t("tools.apply_dsh_msg")}
-        confirmLabel={t("common.apply")}
-        variant="default"
-        onConfirm={handleApplyDsh}
-        onCancel={() => setConfirmApplyDsh(false)}
+        onConfirm={confirmPendingApply}
+        onCancel={() => setPendingApply(null)}
       />
 
       <PostApplyDialog

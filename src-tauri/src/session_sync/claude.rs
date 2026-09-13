@@ -336,55 +336,66 @@ pub fn sync(db: &crate::storage::db::DbPool) -> Result<SyncResult, AppError> {
         return Ok(result);
     }
 
+    let conn = db.get().map_err(|_| AppError::internal("DB lock failed"))?;
+    import_parsed_rows(&conn, all_rows, &mut result)?;
+    Ok(result)
+}
+
+/// Phase 2 + 3:去重后批量写入(分批事务,见 `insert_session_logs`)。
+fn import_parsed_rows(
+    conn: &rusqlite::Connection,
+    all_rows: Vec<ParsedRow>,
+    result: &mut SyncResult,
+) -> Result<(), AppError> {
     // Phase 2: filter out external_ids we've already imported.
     let candidate_ids: Vec<String> = all_rows.iter().map(|r| r.message_id.clone()).collect();
-    let conn = db.get().map_err(|_| AppError::internal("DB lock failed"))?;
-    let already = storage::request_logs::external_ids_for_source(&conn, SOURCE, &candidate_ids)?;
+    let already = storage::request_logs::external_ids_for_source(conn, SOURCE, &candidate_ids)?;
+    // 价格表只加载一次,逐行内存匹配。
+    let prices = storage::pricing::load_price_table(conn)?;
 
     // Phase 3: write new rows.
+    let mut new_rows = Vec::new();
     for row in all_rows {
         if already.contains(&row.message_id) {
             result.skipped += 1;
             continue;
         }
-        let cost = storage::pricing::calculate_cost_for_request(
-            &conn,
-            PROVIDER_LABEL,
-            &row.model,
-            Some(row.input_tokens),
-            Some(row.output_tokens),
-        );
-        match storage::request_logs::insert_session_log(
-            &conn,
-            &row.timestamp,
-            CLIENT,
-            PROVIDER_LABEL,
-            &row.model,
-            ROUTE,
-            SOURCE,
-            &row.session_id,
-            &row.message_id,
-            Some(row.input_tokens),
-            Some(row.output_tokens),
-            if row.cache_write_tokens > 0 {
-                Some(row.cache_write_tokens)
-            } else {
-                None
-            },
-            if row.cache_read_tokens > 0 {
-                Some(row.cache_read_tokens)
-            } else {
-                None
-            },
+        let cache_write = (row.cache_write_tokens > 0).then_some(row.cache_write_tokens);
+        let cache_read = (row.cache_read_tokens > 0).then_some(row.cache_read_tokens);
+        // Anthropic 口径:input_tokens 不含缓存 token,缓存读写单独计费。
+        let cost = prices.lookup(PROVIDER_LABEL, &row.model).map(|price| {
+            storage::pricing::calculate_cost_with_cache(
+                Some(row.input_tokens),
+                Some(row.output_tokens),
+                cache_read,
+                cache_write,
+                &price,
+            )
+        });
+        new_rows.push(storage::request_logs::SessionLogRow {
+            timestamp: row.timestamp,
+            client: CLIENT.to_string(),
+            provider: PROVIDER_LABEL.to_string(),
+            model: row.model,
+            route: ROUTE.to_string(),
+            source: SOURCE.to_string(),
+            session_id: row.session_id,
+            external_id: row.message_id,
+            input_tokens: Some(row.input_tokens),
+            output_tokens: Some(row.output_tokens),
+            cache_write_tokens: cache_write,
+            cache_read_tokens: cache_read,
             cost,
-        ) {
-            Ok(()) => result.imported += 1,
-            Err(e) => result
-                .errors
-                .push(format!("insert msg {}: {}", row.message_id, e.message)),
-        }
+        });
     }
-    Ok(result)
+    let outcome = storage::request_logs::insert_session_logs(conn, &new_rows)?;
+    result.imported += outcome.imported;
+    for (id, e) in outcome.errors {
+        result
+            .errors
+            .push(format!("insert msg {id}: {}", e.message));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -444,7 +455,7 @@ mod tests {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let mut f = tmp.reopen().unwrap();
         writeln!(f, "{{not json").unwrap();
-        writeln!(f, "").unwrap();
+        writeln!(f).unwrap();
         writeln!(f, r#"{{"type":"assistant","sessionId":"s1","timestamp":"2026-01-01T00:00:00Z","message":{{"id":"msg_b","model":"claude-y","usage":{{"input_tokens":3,"output_tokens":4}}}}}}"#).unwrap();
 
         let mut result = SyncResult::default();
@@ -517,6 +528,56 @@ mod tests {
         .unwrap();
         assert!(already.contains("msg_existing"));
         assert!(!already.contains("msg_new"));
+    }
+
+    fn parsed(id: &str, ts: &str) -> ParsedRow {
+        ParsedRow {
+            message_id: id.to_string(),
+            session_id: "s1".to_string(),
+            timestamp: ts.to_string(),
+            model: "claude-sonnet-4-6".to_string(),
+            input_tokens: 1000,
+            output_tokens: 500,
+            cache_read_tokens: 10_000,
+            cache_write_tokens: 2000,
+        }
+    }
+
+    #[test]
+    fn import_counts_cache_tokens_in_cost_and_normalizes_timestamp() {
+        // Anthropic 的 input_tokens 不含缓存 token;重缓存会话只按 input/output 计费会严重低估。
+        let conn = Connection::open_in_memory().unwrap();
+        storage::migrations::run_migrations(&conn).unwrap();
+        let mut result = SyncResult::default();
+        import_parsed_rows(
+            &conn,
+            vec![parsed("msg_1", "2026-06-01T20:00:00+08:00")],
+            &mut result,
+        )
+        .unwrap();
+        assert_eq!(result.imported, 1);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        let (ts, cost, cr, cw): (String, f64, i64, i64) = conn
+            .query_row(
+                "SELECT timestamp, cost, cache_read_tokens, cache_write_tokens FROM request_logs WHERE external_id = 'msg_1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(ts, "2026-06-01T12:00:00+00:00");
+        assert_eq!((cr, cw), (10_000, 2000));
+        // (1000×3 + 500×15 + 10000×0.3 + 2000×3.75) / 1e6
+        assert!((cost - 0.021).abs() < 1e-12, "cost={cost}");
+
+        // 幂等:再次导入全部跳过。
+        let mut again = SyncResult::default();
+        import_parsed_rows(
+            &conn,
+            vec![parsed("msg_1", "2026-06-01T20:00:00+08:00")],
+            &mut again,
+        )
+        .unwrap();
+        assert_eq!((again.imported, again.skipped), (0, 1));
     }
 
     // 注：sync() 全链路测试需要 mock 文件系统 + DB，留作集成测试。

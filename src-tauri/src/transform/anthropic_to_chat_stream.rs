@@ -39,9 +39,9 @@ pub struct AnthropicToChatStream {
     next_tool_idx: i64,
     /// 从 message_delta 取的 stop_reason，待 message_stop 时映射 finish_reason。
     stop_reason: Option<String>,
-    /// 从 message_start / message_delta 拼出来的 prompt + completion tokens。
-    input_tokens: i64,
-    output_tokens: i64,
+    /// 从 message_start / message_delta 合并出来的 Anthropic usage（后到的字段覆盖先到的），
+    /// 终块统一经 anthropic_to_chat::remap_usage 映射，与非流式路径保持一致（含 cache 字段）。
+    usage: serde_json::Map<String, Value>,
     /// 防止 finalize / message_stop 重复 emit。
     stopped: bool,
 }
@@ -60,8 +60,7 @@ impl AnthropicToChatStream {
             tool_blocks: HashMap::new(),
             next_tool_idx: 0,
             stop_reason: None,
-            input_tokens: 0,
-            output_tokens: 0,
+            usage: serde_json::Map::new(),
             stopped: false,
         }
     }
@@ -104,14 +103,7 @@ impl AnthropicToChatStream {
             if let Some(m) = msg.get("model").and_then(|m| m.as_str()) {
                 self.model = m.to_string();
             }
-            if let Some(u) = msg.get("usage") {
-                if let Some(it) = u.get("input_tokens").and_then(|v| v.as_i64()) {
-                    self.input_tokens = it;
-                }
-                if let Some(ot) = u.get("output_tokens").and_then(|v| v.as_i64()) {
-                    self.output_tokens = ot;
-                }
-            }
+            self.merge_usage(msg.get("usage"));
         }
 
         vec![self.emit_chunk(json!({"role": "assistant", "content": ""}), None)]
@@ -206,12 +198,22 @@ impl AnthropicToChatStream {
                 }
             }
         }
-        if let Some(u) = data.get("usage") {
-            if let Some(ot) = u.get("output_tokens").and_then(|v| v.as_i64()) {
-                self.output_tokens = ot;
+        self.merge_usage(data.get("usage"));
+        Vec::new()
+    }
+
+    /// 合并一段 Anthropic usage：只收数值字段，后到的覆盖先到的
+    /// （message_delta 的 output_tokens 是累计值）。部分兼容上游在 message_delta
+    /// 里把已在 message_start 给过的字段填 0，0 不覆盖已有值。
+    fn merge_usage(&mut self, usage: Option<&Value>) {
+        if let Some(Value::Object(u)) = usage {
+            for (k, v) in u {
+                let zero_over_existing = v.as_i64() == Some(0) && self.usage.contains_key(k);
+                if v.is_number() && !zero_over_existing {
+                    self.usage.insert(k.clone(), v.clone());
+                }
             }
         }
-        Vec::new()
     }
 
     fn on_message_stop(&mut self) -> Vec<String> {
@@ -231,11 +233,9 @@ impl AnthropicToChatStream {
         // 终块：delta 留空，finish_reason 设值，usage 同包带过去。
         // include_usage 形态：终块的 choices[].delta 为空、choices[].finish_reason 有值，
         // 整 chunk 顶层带 usage。
-        let usage = json!({
-            "prompt_tokens": self.input_tokens,
-            "completion_tokens": self.output_tokens,
-            "total_tokens": self.input_tokens + self.output_tokens,
-        });
+        let usage = crate::transform::anthropic_to_chat::remap_usage(Some(&Value::Object(
+            self.usage.clone(),
+        )));
         events.push(self.emit_chunk(json!({}), Some((finish_reason, usage))));
 
         events
@@ -456,6 +456,34 @@ mod tests {
         assert!(joined.contains("\"completion_tokens\":5"));
         assert!(joined.contains("\"total_tokens\":105"));
         assert!(joined.contains("data: [DONE]"));
+    }
+
+    #[test]
+    fn final_usage_keeps_cache_tokens_like_non_stream() {
+        let mut s = AnthropicToChatStream::new("claude-3");
+        let _ = s.process_event(
+            "message_start",
+            &json!({"message": {"usage": {
+                "input_tokens": 10,
+                "cache_read_input_tokens": 7,
+                "cache_creation_input_tokens": 3,
+                "output_tokens": 1
+            }}}),
+        );
+        let _ = s.process_event(
+            "message_delta",
+            &json!({"delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 5}}),
+        );
+        let events = s.process_event("message_stop", &json!({}));
+        let chunk: Value =
+            serde_json::from_str(events.last().unwrap().trim().trim_start_matches("data: "))
+                .unwrap();
+        let usage = &chunk["usage"];
+        assert_eq!(usage["prompt_tokens"], 10);
+        assert_eq!(usage["completion_tokens"], 5);
+        assert_eq!(usage["prompt_tokens_details"]["cached_tokens"], 7);
+        assert_eq!(usage["cache_read_input_tokens"], 7);
+        assert_eq!(usage["cache_creation_input_tokens"], 3);
     }
 
     #[test]

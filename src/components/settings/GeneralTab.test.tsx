@@ -9,12 +9,15 @@ import { renderWithProviders } from "@/components/test-utils";
 const ToggleSwitch = ({
   checked,
   onChange,
+  label,
 }: {
   checked: boolean;
   onChange: (v: boolean) => void;
+  label: string;
 }) => (
   <input
     type="checkbox"
+    aria-label={label}
     checked={checked}
     onChange={(e) => onChange(e.target.checked)}
   />

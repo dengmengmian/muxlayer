@@ -1,4 +1,10 @@
-import { useState, useEffect, useCallback, type ReactNode } from "react";
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useRef,
+  type ReactNode,
+} from "react";
 import {
   Radio,
   Play,
@@ -16,7 +22,7 @@ import { StatusBadge } from "@/components/common/StatusBadge";
 import { toast } from "@/components/common/Toast";
 import { useI18n } from "@/lib/i18n";
 import { usePolling } from "@/lib/usePolling";
-import { formatLatency } from "@/lib/utils";
+import { formatCost, formatLatency } from "@/lib/utils";
 import {
   cacheHitRatePercent,
   estimateCacheSavingsUsd,
@@ -52,28 +58,21 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
-function formatCost(n: number): string {
-  if (n === 0) return "$0";
-  if (n < 0.01) return `$${n.toFixed(4)}`;
-  if (n < 1) return `$${n.toFixed(3)}`;
-  return `$${n.toFixed(2)}`;
-}
-
 // 成本分解小列表：每行 名称 + 占比条 + 请求数 + 成本，按成本倒序（后端已排）。
 function CostList({ title, rows }: { title: string; rows: CostBreakdown[] }) {
   const { t } = useI18n();
   const max = rows.reduce((m, r) => Math.max(m, r.cost), 0) || 1;
   return (
     <div>
-      <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-text-secondary">
+      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-secondary">
         {title}
       </div>
       {rows.length === 0 ? (
-        <p className="text-[11px] text-text-muted">—</p>
+        <p className="text-xs text-text-muted">—</p>
       ) : (
         <div className="space-y-1.5">
           {rows.map((r) => (
-            <div key={r.key} className="flex items-center gap-2 text-[11px]">
+            <div key={r.key} className="flex items-center gap-2 text-xs">
               <span
                 className="w-28 shrink-0 truncate font-mono text-text-primary"
                 title={r.key}
@@ -96,7 +95,7 @@ function CostList({ title, rows }: { title: string; rows: CostBreakdown[] }) {
               ) : (
                 <Link
                   to="/settings?tab=data"
-                  className="w-16 shrink-0 text-right text-[10px] text-accent hover:underline"
+                  className="w-16 shrink-0 text-right text-xs text-accent hover:underline"
                   title={t("stats.no_price_tip")}
                   onClick={(e) => e.stopPropagation()}
                 >
@@ -129,7 +128,7 @@ function StripMetric({
         : "text-text-primary";
   return (
     <div className="flex flex-col">
-      <span className="text-[10px] uppercase tracking-wide text-text-muted">
+      <span className="text-xs uppercase tracking-wide text-text-muted">
         {label}
       </span>
       <span className={`text-base font-semibold ${valueColor} tabular-nums`}>
@@ -153,7 +152,7 @@ function OnboardingPrompt({
   return (
     <div className="rounded-xl border-2 border-dashed border-accent/30 bg-accent-soft/30 p-6">
       <div className="flex items-start gap-4">
-        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-accent text-white">
+        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-accent text-on-accent">
           {icon}
         </div>
         <div className="min-w-0 flex-1">
@@ -212,7 +211,14 @@ export function Dashboard() {
   const [costByStrategy, setCostByStrategy] = useState<CostBreakdown[]>([]);
   const [rangeDays, setRangeDays] = useState<RangeDays>(7);
 
+  // 快速切换时间范围时，旧范围的慢请求可能后返回；序号守卫只让最新一次落盘。
+  const liveSeqRef = useRef(0);
+  // 进行中的 loadLive 数量：轮询 tick 遇到进行中的请求直接跳过，避免大库 /
+  // 长范围聚合慢于轮询周期时，每个 tick 都让上一次结果作废、面板永远不更新。
+  const liveInFlightRef = useRef(0);
   const loadLive = useCallback(async () => {
+    const seq = ++liveSeqRef.current;
+    liveInFlightRef.current += 1;
     try {
       const [l, st, cm, cc, rs] = await Promise.all([
         api.listRequestLogs({ limit: 5 }),
@@ -221,6 +227,7 @@ export function Dashboard() {
         api.aggregateCostByClient(rangeDays, 8),
         api.aggregateRouteProfileStats(rangeDays).catch(() => []),
       ]);
+      if (seq !== liveSeqRef.current) return;
       const rp = useRouteProfiles.getState().items;
       const nameMap = Object.fromEntries(rp.map((p) => [p.id, p.name]));
       const byStrategy: CostBreakdown[] = rs
@@ -254,9 +261,16 @@ export function Dashboard() {
         shallowEqual(prev, byStrategy) ? prev : byStrategy
       );
     } catch (err) {
+      if (seq !== liveSeqRef.current) return;
       toast("error", (err as api.AppError).message);
+    } finally {
+      liveInFlightRef.current -= 1;
     }
   }, [rangeDays, t]);
+  const pollLive = useCallback(() => {
+    if (liveInFlightRef.current > 0) return;
+    loadLive();
+  }, [loadLive]);
 
   const loadClients = useCallback(async () => {
     try {
@@ -297,11 +311,15 @@ export function Dashboard() {
 
   useEffect(() => {
     loadLive();
+  }, [loadLive]);
+  useEffect(() => {
     loadClients();
     useGatewayStatus.getState().fetch();
-  }, [loadLive, loadClients]);
-  usePolling(loadLive, 5000);
-  usePolling(loadClients, 30_000);
+  }, [loadClients]);
+  usePolling(pollLive, 5000);
+  // 客户端配置探测要读 8 个配置文件，变化频率低；usePolling 在窗口重新聚焦时
+  // 会立即补一次，所以周期放宽到 60s。
+  usePolling(loadClients, 60_000);
 
   // 命令返回最新状态，直接写入 store——Topbar 徽章同步更新，无需等下个轮询。
   const setStatus = useGatewayStatus.getState().setValue;
@@ -365,22 +383,29 @@ export function Dashboard() {
               host:port + running badge live in the global Topbar; we don't
               repeat them here. ── */}
       <div
-        className="relative overflow-hidden rounded-xl border border-accent/20 bg-card px-5 py-3"
+        className="relative overflow-hidden rounded-lg border border-accent/25 bg-card px-5 py-3 shadow-sm"
         style={{
-          boxShadow: "0 10px 30px rgba(194, 112, 43, 0.10)",
           background:
-            "linear-gradient(135deg, var(--color-card) 0%, rgba(194,112,43,0.07) 100%)",
+            "linear-gradient(135deg, var(--color-card) 0%, var(--color-accent-soft) 100%)",
         }}
       >
         <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-accent/50 to-transparent" />
         <div className="flex items-center justify-between gap-4">
           <div className="flex min-w-0 items-center gap-3">
             <div className="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent-soft">
-              <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-success shadow-[0_0_12px_rgba(56,161,105,0.55)]" />
+              <span
+                role="status"
+                aria-label={
+                  status.running ? t("topbar.running") : t("topbar.stopped")
+                }
+                className={`absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full ${
+                  status.running ? "bg-info animate-pulse-dot" : "bg-text-muted"
+                }`}
+              />
               <Radio className="h-4 w-4 text-accent" />
             </div>
             <div className="min-w-0">
-              <span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-accent">
+              <span className="text-xs font-semibold uppercase tracking-[0.16em] text-accent">
                 {t("dashboard.control_console")}
               </span>
               <div className="mt-1 flex min-w-0 items-baseline gap-3">
@@ -391,7 +416,7 @@ export function Dashboard() {
                   {status.active_provider ?? t("common.none")}
                 </span>
                 <span className="hidden text-text-muted/40 md:inline">·</span>
-                <span className="hidden truncate font-mono text-[11px] text-text-muted md:inline">
+                <span className="hidden truncate font-mono text-xs text-text-muted md:inline">
                   {status.input_protocol} → {status.output_protocol}
                 </span>
               </div>
@@ -402,14 +427,14 @@ export function Dashboard() {
               <>
                 <button
                   onClick={handleStop}
-                  className="flex items-center gap-1 rounded-md bg-error-soft px-2.5 py-1 text-[11px] font-medium text-error transition-colors hover:bg-error/20"
+                  className="flex items-center gap-1 rounded-md bg-error-soft px-2.5 py-1 text-xs font-medium text-error transition-colors hover:bg-error/20"
                 >
                   <Square className="h-3 w-3" />
                   {t("dashboard.stop")}
                 </button>
                 <button
                   onClick={handleRestart}
-                  className="flex items-center gap-1 rounded-md bg-warning-soft px-2.5 py-1 text-[11px] font-medium text-warning transition-colors hover:bg-warning/20"
+                  className="flex items-center gap-1 rounded-md bg-warning-soft px-2.5 py-1 text-xs font-medium text-warning transition-colors hover:bg-warning/20"
                 >
                   <RotateCcw className="h-3 w-3" />
                   {t("dashboard.restart")}
@@ -418,7 +443,7 @@ export function Dashboard() {
             ) : (
               <button
                 onClick={handleStart}
-                className="flex items-center gap-1 rounded-md bg-accent px-2.5 py-1 text-[11px] font-medium text-white transition-colors hover:bg-accent/90"
+                className="flex items-center gap-1 rounded-md bg-accent px-2.5 py-1 text-xs font-medium text-on-accent transition-colors hover:bg-accent/90"
               >
                 <Play className="h-3 w-3" />
                 {t("dashboard.start")}
@@ -508,7 +533,7 @@ export function Dashboard() {
                         className="flex max-w-md items-center justify-between gap-2 rounded-md border border-border bg-card px-3 py-2"
                       >
                         <div className="min-w-0">
-                          <div className="text-[10px] uppercase tracking-wide text-text-muted">
+                          <div className="text-xs uppercase tracking-wide text-text-muted">
                             {cmd.name}
                           </div>
                           <code className="block truncate font-mono text-xs text-text-primary">
@@ -543,11 +568,10 @@ export function Dashboard() {
       {/* ── 2. Today card — 6 primary metrics + cache inline footer when present ── */}
       {hasProviders && stats && stats.total > 0 && (
         <div
-          className="relative overflow-hidden rounded-xl border border-accent/15 bg-card px-6 py-4"
+          className="relative overflow-hidden border-y border-border bg-card/45 px-5 py-4"
           style={{
-            boxShadow: "0 12px 30px rgba(17, 24, 39, 0.06)",
             background:
-              "linear-gradient(180deg, rgba(194,112,43,0.06) 0%, var(--color-card) 42%)",
+              "linear-gradient(90deg, var(--color-accent-soft) 0%, transparent 45%)",
           }}
         >
           <div className="pointer-events-none absolute inset-x-6 top-0 h-px bg-gradient-to-r from-accent/0 via-accent/45 to-accent/0" />
@@ -556,11 +580,11 @@ export function Dashboard() {
               <span className="text-xs font-semibold uppercase tracking-wide text-text-secondary">
                 {t("stats.today_realtime")}
               </span>
-              <p className="mt-0.5 text-[11px] text-text-muted">
+              <p className="mt-0.5 text-xs text-text-muted">
                 {t("stats.realtime") || "实时刷新"}
               </p>
             </div>
-            <span className="rounded-full border border-success/20 bg-success/10 px-2 py-0.5 text-[10px] font-medium text-success">
+            <span className="rounded-full border border-success/20 bg-success/10 px-2 py-0.5 text-xs font-medium text-success">
               LIVE
             </span>
           </div>
@@ -601,7 +625,7 @@ export function Dashboard() {
             />
           </div>
           {stats.today_codex_compact > 0 && (
-            <div className="mt-3 flex items-center gap-2 border-t border-border pt-3 text-[11px] text-text-muted">
+            <div className="mt-3 flex items-center gap-2 border-t border-border pt-3 text-xs text-text-muted">
               <span className="font-medium text-text-secondary">
                 {t("stats.codex_compact") || "Codex 压缩"}
               </span>
@@ -619,7 +643,7 @@ export function Dashboard() {
           )}
           {(stats.today_cache_read_tokens > 0 ||
             stats.today_cache_write_tokens > 0) && (
-            <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-1 border-t border-border pt-3 text-[11px] text-text-muted">
+            <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-1 border-t border-border pt-3 text-xs text-text-muted">
               <span className="font-medium text-text-secondary">
                 {t("stats.cache")}
               </span>
@@ -673,7 +697,7 @@ export function Dashboard() {
                   if (save == null || save <= 0) return null;
                   return (
                     <span
-                      className="w-full text-[10px] text-success"
+                      className="w-full text-xs text-success"
                       title={t("stats.cache_savings_tip")}
                     >
                       {t("stats.cache_savings")}: ~${save.toFixed(4)}
@@ -689,10 +713,7 @@ export function Dashboard() {
               chart header (they only affect the chart, not today's strip). ── */}
       {hasProviders && stats && stats.total > 0 && (
         <>
-          <div
-            className="rounded-xl border border-border bg-card p-5"
-            style={{ boxShadow: "0 12px 30px rgba(17, 24, 39, 0.05)" }}
-          >
+          <div className="rounded-lg border border-border/80 bg-card p-5">
             <div className="mb-4 flex items-center justify-between gap-2">
               <h3 className="flex items-center gap-2 text-sm font-semibold text-text-primary">
                 <span className="flex h-7 w-7 items-center justify-center rounded-md bg-card-secondary">
@@ -709,7 +730,7 @@ export function Dashboard() {
                 </span>
               </h3>
               <div className="flex items-center gap-3">
-                <div className="hidden items-center gap-3 text-[10px] text-text-muted sm:flex">
+                <div className="hidden items-center gap-3 text-xs text-text-muted sm:flex">
                   <div className="flex items-center gap-1">
                     <div className="h-2 w-2 rounded-sm bg-accent/70" />
                     <span>{t("stats.success_rate_label") || "成功"}</span>
@@ -724,9 +745,9 @@ export function Dashboard() {
                     <button
                       key={opt.days}
                       onClick={() => setRangeDays(opt.days)}
-                      className={`rounded px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
+                      className={`rounded px-2.5 py-0.5 text-xs font-medium transition-colors ${
                         rangeDays === opt.days
-                          ? "bg-accent text-white"
+                          ? "bg-accent text-on-accent"
                           : "text-text-secondary hover:text-accent"
                       }`}
                     >
@@ -751,7 +772,7 @@ export function Dashboard() {
                 <div className="relative" style={{ paddingLeft: Y_AXIS_W }}>
                   {/* Y-axis tick labels, aligned with grid lines */}
                   <div
-                    className="pointer-events-none absolute left-0 top-0 flex flex-col justify-between text-right text-[10px] font-mono text-text-muted"
+                    className="pointer-events-none absolute left-0 top-0 flex flex-col justify-between text-right text-xs font-mono text-text-muted"
                     style={{ height: BAR_H, width: Y_AXIS_W - 6 }}
                   >
                     <span className="-translate-y-1/2">
@@ -834,7 +855,7 @@ export function Dashboard() {
                               className="pointer-events-none absolute opacity-0 transition-opacity group-hover:opacity-100"
                               style={{ bottom: totalH + 4 }}
                             >
-                              <span className="rounded bg-text-primary px-1.5 py-0.5 font-mono text-[10px] text-card whitespace-nowrap">
+                              <span className="rounded bg-text-primary px-1.5 py-0.5 font-mono text-xs text-card whitespace-nowrap">
                                 {d.total}
                               </span>
                             </div>
@@ -859,10 +880,10 @@ export function Dashboard() {
                           key={d.date}
                           className="flex flex-1 flex-col items-center gap-0.5"
                         >
-                          <span className="text-[10px] text-text-muted">
+                          <span className="text-xs text-text-muted">
                             {showDate ? d.date.slice(5) : ""}
                           </span>
-                          <span className="font-mono text-[11px] font-medium text-text-primary tabular-nums">
+                          <span className="font-mono text-xs font-medium text-text-primary tabular-nums">
                             {d.total > 0 ? d.total.toLocaleString() : "—"}
                           </span>
                           {showTokens && (
@@ -884,7 +905,7 @@ export function Dashboard() {
               );
               if (visible.length === 0) return null;
               return (
-                <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-border pt-3 text-[11px]">
+                <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-border pt-3 text-xs">
                   <span className="font-medium text-text-secondary">
                     {t("stats.top_providers")}
                   </span>
@@ -906,10 +927,7 @@ export function Dashboard() {
 
       {/* ── 3.5 成本分解：钱花在哪个模型 / 哪个客户端。仅有数据时显示。 ── */}
       {(costByModel.length > 0 || costByClient.length > 0) && (
-        <div
-          className="rounded-xl border border-border bg-card p-5"
-          style={{ boxShadow: "0 12px 30px rgba(17, 24, 39, 0.05)" }}
-        >
+        <div className="rounded-lg border border-border/80 bg-card p-5">
           <h3 className="mb-4 flex items-center gap-2 text-sm font-semibold text-text-primary">
             <span className="flex h-7 w-7 items-center justify-center rounded-md bg-card-secondary">
               <Coins className="h-4 w-4 text-accent" />

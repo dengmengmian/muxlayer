@@ -9,6 +9,8 @@ pub struct ChatCompletionsRequest {
     pub tools: Option<Vec<Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<Value>,
+    /// OpenAI 协议里 stream 可选,缺省 false;很多 SDK / curl 不带。
+    #[serde(default)]
     pub stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,

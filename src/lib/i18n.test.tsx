@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { I18nProvider, useI18n } from "./i18n";
+import { en } from "./i18n/en";
+import { zh } from "./i18n/zh";
 
 function TestComponent() {
   const { locale, setLocale, t } = useI18n();
@@ -79,5 +81,23 @@ describe("I18nProvider", () => {
       </I18nProvider>
     );
     expect(screen.getByText("no.such.key")).toBeInTheDocument();
+  });
+});
+
+describe("translation tables", () => {
+  it("en and zh define exactly the same keys", () => {
+    expect(Object.keys(zh).sort()).toEqual(Object.keys(en).sort());
+  });
+
+  it("has no empty strings in either locale", () => {
+    // 英文分页 "Page 2 / 5" 没有后缀，中文是「第 2 / 5 页」——唯一有意为空的值。
+    const intentionallyEmpty = new Set(["en:logs.page_suffix"]);
+    const empty = [
+      ...Object.entries(en).map(([k, v]) => [`en:${k}`, v] as const),
+      ...Object.entries(zh).map(([k, v]) => [`zh:${k}`, v] as const),
+    ]
+      .filter(([k, v]) => v.trim() === "" && !intentionallyEmpty.has(k))
+      .map(([k]) => k);
+    expect(empty).toEqual([]);
   });
 });

@@ -386,7 +386,8 @@ pub fn codex_config_check(db: &crate::storage::db::DbPool) -> CheckReport {
         if let Ok(settings) = storage::gateway_settings::get(&conn) {
             let expected_url = format!("http://{}:{}/v1", settings.host, settings.port);
             let content =
-                std::fs::read_to_string(crate::tools::codex::config_path()).unwrap_or_default();
+                std::fs::read_to_string(crate::tools::codex::config_path().unwrap_or_default())
+                    .unwrap_or_default();
             if content.contains(&expected_url) {
                 checks.push(CheckItem::ok(
                     "base_url",
@@ -436,7 +437,8 @@ pub fn claude_code_config_check(_db: &crate::storage::db::DbPool) -> CheckReport
     // Verify token matches
     if let Ok(current_token) = local_token::read_token() {
         let content =
-            std::fs::read_to_string(crate::tools::claude_code::settings_path()).unwrap_or_default();
+            std::fs::read_to_string(crate::tools::claude_code::settings_path().unwrap_or_default())
+                .unwrap_or_default();
         if content.contains(&current_token) {
             checks.push(CheckItem::ok(
                 "token_match",
@@ -584,6 +586,35 @@ pub fn full_self_test(db: &crate::storage::db::DbPool) -> FullSelfTestReport {
 
 // ── Diagnostic Bundle Export ──────────────────────────────────
 
+/// 写一个诊断包文件;失败直接返回错误,成功才记入 `files`(不再「写失败也报成功」)。
+fn write_bundle_file(
+    dir: &std::path::Path,
+    name: &str,
+    content: &str,
+    files: &mut Vec<String>,
+) -> Result<(), crate::errors::AppError> {
+    std::fs::write(dir.join(name), content).map_err(|e| {
+        crate::errors::AppError::new(
+            crate::errors::codes::DIAGNOSTIC_EXPORT_FAILED,
+            format!("Cannot write {name}: {e}"),
+        )
+    })?;
+    files.push(name.to_string());
+    Ok(())
+}
+
+fn to_pretty_json<T: serde::Serialize>(
+    value: &T,
+    name: &str,
+) -> Result<String, crate::errors::AppError> {
+    serde_json::to_string_pretty(value).map_err(|e| {
+        crate::errors::AppError::new(
+            crate::errors::codes::DIAGNOSTIC_EXPORT_FAILED,
+            format!("Cannot serialize {name}: {e}"),
+        )
+    })
+}
+
 pub fn export_bundle(
     db: &crate::storage::db::DbPool,
     include_logs: bool,
@@ -614,20 +645,28 @@ pub fn export_bundle(
 
     // 1. Self test report
     let report = full_self_test(db);
-    let report_json = serde_json::to_string_pretty(&report).unwrap_or_default();
-    fs::write(bundle_dir.join("self_test_report.json"), &report_json).ok();
-    files.push("self_test_report.json".to_string());
+    write_bundle_file(
+        &bundle_dir,
+        "self_test_report.json",
+        &to_pretty_json(&report, "self test report")?,
+        &mut files,
+    )?;
 
     // 2. Gateway status
     if let Ok(conn) = db.get() {
         if let Ok(settings) = storage::gateway_settings::get(&conn) {
-            let sj = serde_json::to_string_pretty(&settings).unwrap_or_default();
-            fs::write(bundle_dir.join("gateway_settings.json"), &sj).ok();
-            files.push("gateway_settings.json".to_string());
+            write_bundle_file(
+                &bundle_dir,
+                "gateway_settings.json",
+                &to_pretty_json(&settings, "gateway settings")?,
+                &mut files,
+            )?;
         }
 
         // 3. Providers (redacted)
         let providers = storage::providers::list_all(&conn).unwrap_or_default();
+        // 所有当前存储的 key / 自定义 header 值,用于日志文本的精确脱敏。
+        let known_secrets = redaction::provider_secrets(&providers);
         let redacted: Vec<serde_json::Value> = providers
             .iter()
             .map(|p| {
@@ -640,21 +679,21 @@ pub fn export_bundle(
                 })
             })
             .collect();
-        fs::write(
-            bundle_dir.join("providers.redacted.json"),
-            serde_json::to_string_pretty(&redacted).unwrap_or_default(),
-        )
-        .ok();
-        files.push("providers.redacted.json".to_string());
+        write_bundle_file(
+            &bundle_dir,
+            "providers.redacted.json",
+            &to_pretty_json(&redacted, "providers")?,
+            &mut files,
+        )?;
 
         // 4. Route profiles
         let profiles = storage::route_profiles::list_all(&conn).unwrap_or_default();
-        fs::write(
-            bundle_dir.join("route_profiles.json"),
-            serde_json::to_string_pretty(&profiles).unwrap_or_default(),
-        )
-        .ok();
-        files.push("route_profiles.json".to_string());
+        write_bundle_file(
+            &bundle_dir,
+            "route_profiles.json",
+            &to_pretty_json(&profiles, "route profiles")?,
+            &mut files,
+        )?;
 
         // 5. Recent logs (redacted)
         if include_logs {
@@ -672,20 +711,24 @@ pub fn export_bundle(
                 offset: None,
             };
             let logs = storage::request_logs::list(&conn, filter).unwrap_or_default();
-            let redacted_logs: Vec<serde_json::Value> = logs.iter().map(|l| {
-                serde_json::json!({
-                    "request_id": l.request_id, "timestamp": l.timestamp,
-                    "client": l.client, "provider": l.provider, "model": l.model,
-                    "route": l.route, "status_code": l.status_code, "latency_ms": l.latency_ms,
-                    "error_message": l.error_message.as_ref().map(|m| redaction::redact_text(m)),
+            let redacted_logs: Vec<serde_json::Value> = logs
+                .iter()
+                .map(|l| {
+                    serde_json::json!({
+                        "request_id": l.request_id, "timestamp": l.timestamp,
+                        "client": l.client, "provider": l.provider, "model": l.model,
+                        "route": l.route, "status_code": l.status_code, "latency_ms": l.latency_ms,
+                        "error_message": l.error_message.as_ref()
+                            .map(|m| redaction::redact_text_with_secrets(m, &known_secrets)),
+                    })
                 })
-            }).collect();
-            fs::write(
-                bundle_dir.join("recent_logs.redacted.json"),
-                serde_json::to_string_pretty(&redacted_logs).unwrap_or_default(),
-            )
-            .ok();
-            files.push("recent_logs.redacted.json".to_string());
+                .collect();
+            write_bundle_file(
+                &bundle_dir,
+                "recent_logs.redacted.json",
+                &to_pretty_json(&redacted_logs, "recent logs")?,
+                &mut files,
+            )?;
         }
     }
 
@@ -696,12 +739,12 @@ pub fn export_bundle(
         "codex": { "exists": codex.exists, "has_agentgate": codex.has_agentgate, "auth_mode": codex.auth_mode },
         "claude_code": { "exists": claude.settings_exists, "has_agentgate": claude.has_agentgate, "conflicts": claude.conflicts.len() },
     });
-    fs::write(
-        bundle_dir.join("config_summaries.json"),
-        serde_json::to_string_pretty(&config_summary).unwrap_or_default(),
-    )
-    .ok();
-    files.push("config_summaries.json".to_string());
+    write_bundle_file(
+        &bundle_dir,
+        "config_summaries.json",
+        &to_pretty_json(&config_summary, "config summaries")?,
+        &mut files,
+    )?;
 
     // 7. README
     let readme = "MuxLayer Diagnostic Bundle\n\
@@ -709,22 +752,23 @@ pub fn export_bundle(
         This bundle contains diagnostic information for troubleshooting.\n\
         All API keys and tokens have been redacted.\n\n\
         DO NOT share this bundle publicly if it contains request payloads.\n";
-    fs::write(bundle_dir.join("README.txt"), readme).ok();
-    files.push("README.txt".to_string());
+    write_bundle_file(&bundle_dir, "README.txt", readme, &mut files)?;
 
-    // 8. Manifest
+    // 8. Manifest(不计入 files 列表本身)
     let manifest = serde_json::json!({
-        "app_version": "0.1.0",
+        "app_version": env!("CARGO_PKG_VERSION"),
         "platform": std::env::consts::OS,
         "created_at": chrono::Utc::now().to_rfc3339(),
         "files": files,
         "redaction_enabled": true,
     });
-    fs::write(
-        bundle_dir.join("manifest.json"),
-        serde_json::to_string_pretty(&manifest).unwrap_or_default(),
-    )
-    .ok();
+    let mut manifest_files = Vec::new();
+    write_bundle_file(
+        &bundle_dir,
+        "manifest.json",
+        &to_pretty_json(&manifest, "manifest")?,
+        &mut manifest_files,
+    )?;
 
     let bundle_path = bundle_dir.to_string_lossy().to_string();
 
@@ -760,7 +804,7 @@ mod tests {
         let manager = SqliteConnectionManager::file(&db_path);
         let pool = Pool::builder().max_size(2).build(manager).unwrap();
         let conn = pool.get().unwrap();
-        crate::storage::migrations::run_migrations(&*conn).unwrap();
+        crate::storage::migrations::run_migrations(&conn).unwrap();
         (pool, temp)
     }
 
@@ -857,7 +901,7 @@ mod tests {
         let (pool, db_temp) = broken_db_pool();
         // Create and hold the only connection so subsequent get() calls time out.
         let conn = pool.get().unwrap();
-        crate::storage::migrations::run_migrations(&*conn).unwrap();
+        crate::storage::migrations::run_migrations(&conn).unwrap();
 
         let report = health_check(&pool);
         assert_check_status(&report, "db_lock", "failed");
@@ -1170,6 +1214,98 @@ mod tests {
         assert!(result.files.contains(&"self_test_report.json".to_string()));
         assert!(result.files.contains(&"README.txt".to_string()));
         assert!(std::path::Path::new(&result.path).exists());
+
+        cleanup(&home);
+        let _ = std::fs::remove_dir_all(&db_temp);
+    }
+
+    #[test]
+    fn export_bundle_manifest_uses_real_app_version() {
+        let _guard = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_temp_home();
+        let (pool, db_temp) = setup_db_pool();
+
+        let result = export_bundle(&pool, false, 10).unwrap();
+        let manifest: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(std::path::Path::new(&result.path).join("manifest.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(manifest["app_version"], env!("CARGO_PKG_VERSION"));
+        // 列出的每个文件都必须真实存在(不能写失败了还报成功)
+        for f in &result.files {
+            assert!(std::path::Path::new(&result.path).join(f).is_file(), "{f}");
+        }
+
+        cleanup(&home);
+        let _ = std::fs::remove_dir_all(&db_temp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_bundle_file_propagates_errors_and_does_not_list_failed_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        // root 无视目录权限时该用例无意义
+        let writable = std::fs::write(dir.path().join("probe"), "").is_ok();
+        let mut files = Vec::new();
+        let res = write_bundle_file(dir.path(), "x.json", "{}", &mut files);
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        if writable {
+            return;
+        }
+        assert!(res.is_err(), "write failure must be reported");
+        assert!(files.is_empty());
+    }
+
+    /// 回归:没有 sk- / ag_local_ 前缀的 provider key(Google AIza…、Kimi、自定义
+    /// header 值)出现在 error_message 里时,前缀启发式脱敏漏掉,诊断包直接泄露。
+    #[test]
+    fn export_bundle_redacts_exact_provider_secrets_in_logs() {
+        let _guard = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_temp_home();
+        let (pool, db_temp) = setup_db_pool();
+        let conn = pool.get().unwrap();
+        let provider = crate::storage::providers::list_all(&conn)
+            .unwrap()
+            .pop()
+            .unwrap();
+        crate::storage::providers::update(
+            &conn,
+            &provider.id,
+            UpdateProviderInput {
+                api_key: Some(r#"["AIzaSyNoPrefixKey0123456789","kimi9f8e7d6c5b4a"]"#.to_string()),
+                extra_headers: Some(r#"{"X-Custom-Auth":"hdr-secret-value-42"}"#.to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO request_logs (id, request_id, timestamp, error_message) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                "log-secret",
+                "req-secret",
+                "2024-01-01T00:00:00Z",
+                "upstream 401: key AIzaSyNoPrefixKey0123456789 / kimi9f8e7d6c5b4a / hdr-secret-value-42 rejected"
+            ],
+        )
+        .unwrap();
+        drop(conn);
+
+        let result = export_bundle(&pool, true, 10).unwrap();
+        let logs = std::fs::read_to_string(
+            std::path::Path::new(&result.path).join("recent_logs.redacted.json"),
+        )
+        .unwrap();
+        for secret in [
+            "AIzaSyNoPrefixKey0123456789",
+            "kimi9f8e7d6c5b4a",
+            "hdr-secret-value-42",
+        ] {
+            assert!(!logs.contains(secret), "{secret} leaked:\n{logs}");
+        }
+        assert!(logs.contains("rejected"));
 
         cleanup(&home);
         let _ = std::fs::remove_dir_all(&db_temp);

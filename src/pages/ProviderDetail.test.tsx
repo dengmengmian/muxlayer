@@ -44,7 +44,9 @@ describe("ProviderDetail", () => {
     );
 
     await waitFor(() => expect(api.getProvider).toHaveBeenCalledWith("p1"));
-    expect(screen.getByText("providers.detail.console")).toBeInTheDocument();
+    expect(
+      screen.queryByText("providers.detail.console")
+    ).not.toBeInTheDocument();
     expect(
       screen.getByText("providers.detail.health_strip")
     ).toBeInTheDocument();

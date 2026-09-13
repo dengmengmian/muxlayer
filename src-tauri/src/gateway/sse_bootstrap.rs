@@ -108,9 +108,8 @@ async fn bootstrap_detect_stream(
 }
 
 /// Scan the buffered prefix for an upstream-emitted error event. Returns
-/// `Some(AppError)` formatted so the routes attempt loop's status extraction
-/// (which greps the message for `"HTTP <code>"`) will pick it up and route
-/// failover decisions accordingly.
+/// `Some(AppError)` carrying the synthesized upstream status, so
+/// `failover::upstream_status_of` routes failover decisions accordingly.
 fn scan_for_error(buf: &[u8]) -> Option<AppError> {
     let text = String::from_utf8_lossy(buf);
     let mut last_event: Option<String> = None;
@@ -222,6 +221,25 @@ fn make_stream_error(status: u16, msg: &str, detail: &str) -> AppError {
         format!("Provider returned HTTP {status}: {msg}"),
     )
     .with_detail(format!("Provider returned HTTP {status}; {detail}"))
+    .with_upstream_status(status)
+}
+
+/// 从 [`make_stream_error`] 产出的错误里取回上游错误帧的 `error.type` / `error.message`。
+/// detail 形如 `Provider returned HTTP {status}; {帧 data}`;帧不是 JSON 时返回 None。
+pub fn error_frame_fields(err: &AppError) -> (Option<String>, Option<String>) {
+    let frame = err
+        .detail
+        .as_deref()
+        .and_then(|d| d.split_once("; "))
+        .and_then(|(_, data)| serde_json::from_str::<serde_json::Value>(data.trim()).ok());
+    let field = |key: &str| {
+        frame
+            .as_ref()
+            .and_then(|v| v.pointer(&format!("/error/{key}")))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    };
+    (field("type"), field("message"))
 }
 
 /// 把上游 `bytes_stream()` 抛出的 `reqwest::Error` 转成人类可读的消息。
@@ -274,6 +292,7 @@ mod tests {
         let buf = b"data: {\"error\":{\"message\":\"You exceeded your current quota\",\"code\":\"insufficient_quota\",\"type\":\"insufficient_quota\"}}\n\n";
         let err = scan_for_error(buf).expect("should detect quota error");
         assert_eq!(err.code, "UPSTREAM_STREAM_ERROR");
+        assert_eq!(err.upstream_status(), Some(429));
         assert!(err.message.contains("HTTP 429"), "got: {}", err.message);
     }
 

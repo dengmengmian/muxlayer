@@ -38,11 +38,29 @@ export function PostApplyDialog({
 }: Props) {
   const { t } = useI18n();
   const [restarting, setRestarting] = useState(false);
+  // 只有装了 Codex 桌面端才给重启按钮;Linux / 只有 CLI / 已并入 ChatGPT 时点了只会报错。
+  const [codexDesktop, setCodexDesktop] = useState(false);
   const [killingPid, setKillingPid] = useState<number | null>(null);
   const [alive, setAlive] = useState(processes);
   useEffect(() => {
     if (open) setAlive(processes);
   }, [open, processes]);
+  useEffect(() => {
+    if (!open || clientId !== "codex") return;
+    let cancelled = false;
+    api
+      .codexDesktopAvailable()
+      .then((available) => {
+        if (!cancelled) setCodexDesktop(available);
+      })
+      .catch(() => {
+        if (!cancelled) setCodexDesktop(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, clientId]);
+
   if (!open) return null;
 
   const handleKill = async (pid: number) => {
@@ -83,6 +101,10 @@ export function PostApplyDialog({
             ? t("tools.post_apply.restart_done")
             : t("tools.post_apply.restart_launched")
         );
+        // 重启 Codex 不会结束 ChatGPT 桌面端,它在跑时要用户自己重启才生效。
+        if (r.chatgpt_needs_manual_restart) {
+          toast("warning", t("tools.post_apply.chatgpt_manual_restart"));
+        }
         onClose();
       } else {
         toast("error", t("tools.post_apply.restart_failed"));
@@ -94,8 +116,8 @@ export function PostApplyDialog({
     }
   };
 
-  // Codex Desktop 是唯一一个 GUI 客户端；其他 4 个 CLI 重启 shell 无意义。
-  const showCodexRestart = clientId === "codex";
+  // Codex Desktop 是唯一一个 GUI 客户端；其他 CLI 重启 shell 无意义。
+  const showCodexRestart = clientId === "codex" && codexDesktop;
 
   return (
     <div className="fixed inset-0 z-[120] flex items-center justify-center">
@@ -172,21 +194,6 @@ export function PostApplyDialog({
                   </div>
                 ))}
               </div>
-              {showCodexRestart && (
-                <button
-                  type="button"
-                  onClick={handleRestartCodex}
-                  disabled={restarting}
-                  className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-md border border-warning/40 bg-warning/10 px-2 py-1.5 text-[11px] font-medium text-warning hover:bg-warning/20 disabled:opacity-60"
-                >
-                  {restarting ? (
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                  ) : (
-                    <RefreshCw className="h-3 w-3" />
-                  )}
-                  {t("tools.post_apply.restart_codex")}
-                </button>
-              )}
             </div>
           ) : (
             <div className="flex items-start gap-2 rounded-md border border-border bg-card-secondary p-3">
@@ -200,6 +207,24 @@ export function PostApplyDialog({
                 </p>
               </div>
             </div>
+          )}
+
+          {/* 精确进程匹配认不出 Codex 桌面端(可执行文件名是 Codex),按钮不能依赖进程列表;
+              按是否装了桌面端决定。没在跑时点它会直接拉起。 */}
+          {showCodexRestart && (
+            <button
+              type="button"
+              onClick={handleRestartCodex}
+              disabled={restarting}
+              className="flex w-full items-center justify-center gap-1.5 rounded-md border border-warning/40 bg-warning/10 px-2 py-1.5 text-[11px] font-medium text-warning hover:bg-warning/20 disabled:opacity-60"
+            >
+              {restarting ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <RefreshCw className="h-3 w-3" />
+              )}
+              {t("tools.post_apply.restart_codex")}
+            </button>
           )}
         </div>
 

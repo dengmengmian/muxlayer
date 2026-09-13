@@ -1,20 +1,12 @@
 use crate::errors::AppError;
 use crate::protocol::chat_completions::{ChatCompletionsRequest, ChatMessage};
+use crate::providers::model_id::strip_qualifier;
 use crate::transform::{degradation, reasoning_store, tool_calls};
 use serde_json::{json, Value};
 
 pub struct DeepSeekProvider;
 
 const MIXED_MODE_REASONING_PLACEHOLDER: &str = "(this turn ran without thinking mode)";
-
-fn strip_qualifier(model: &str) -> &str {
-    if let Some(stripped) = model.strip_suffix(']') {
-        if let Some(open) = stripped.rfind('[') {
-            return &stripped[..open];
-        }
-    }
-    model
-}
 
 fn is_deepseek_v4_family(model: &str) -> bool {
     matches!(
@@ -41,17 +33,17 @@ fn strip_reasoning_content(messages: &mut [ChatMessage]) {
     }
 }
 
-fn backfill_reasoning_content(messages: &mut [ChatMessage]) {
+fn backfill_reasoning_content(messages: &mut [ChatMessage], model: &str) {
     for msg in messages {
         if msg.role != "assistant" || msg.reasoning_content.is_some() {
             continue;
         }
 
         let text = msg.content.as_ref().and_then(|c| c.as_str()).unwrap_or("");
-        let stored = reasoning_store::lookup_by_content(text).or_else(|| {
+        let stored = reasoning_store::lookup_by_content(model, text).or_else(|| {
             msg.tool_calls.as_ref().and_then(|tcs| {
                 tcs.iter()
-                    .find_map(|tc| reasoning_store::lookup_by_tool_call_id(&tc.id))
+                    .find_map(|tc| reasoning_store::lookup_by_tool_call_id(model, &tc.id))
             })
         });
         msg.reasoning_content =
@@ -100,7 +92,7 @@ impl super::ProviderTransform for DeepSeekProvider {
                 req.top_p = None;
                 req.presence_penalty = None;
                 req.frequency_penalty = None;
-                backfill_reasoning_content(&mut req.messages);
+                backfill_reasoning_content(&mut req.messages, model);
             } else {
                 req.reasoning_effort = None;
                 strip_reasoning_content(&mut req.messages);

@@ -97,6 +97,59 @@ pub fn convert(upstream: &Value, model: &str) -> Value {
     })
 }
 
+/// 与 [`convert`] 相同，另外返回降级事件：Chat Completions 没有对应形态的
+/// Anthropic 块（redacted_thinking / server_tool_use / web_search_tool_result）
+/// 不做臆造转换，按块类型各记一条 capability_degradation 事件，供调用方写进
+/// request trace（`trace_with_degradation_events`）。
+pub fn convert_with_events(
+    upstream: &Value,
+    model: &str,
+) -> (
+    Value,
+    Vec<crate::protocol::chat_completions::CapabilityDegradationEvent>,
+) {
+    let mut dropped: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    if let Some(content) = upstream.get("content").and_then(|c| c.as_array()) {
+        for block in content {
+            let bt = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            if let Some(kind) = [
+                "redacted_thinking",
+                "server_tool_use",
+                "web_search_tool_result",
+            ]
+            .into_iter()
+            .find(|k| *k == bt)
+            {
+                *dropped.entry(kind).or_default() += 1;
+            }
+        }
+    }
+    let events = dropped
+        .into_iter()
+        .map(|(kind, count)| {
+            let (capability, reason) = match kind {
+                "redacted_thinking" => ("reasoning", "chat_completions_has_no_redacted_thinking"),
+                "server_tool_use" => ("web_search", "chat_completions_has_no_server_tool_use"),
+                _ => (
+                    "web_search",
+                    "chat_completions_has_no_web_search_tool_result",
+                ),
+            };
+            tracing::warn!(block = kind, count, "Anthropic block dropped converting to Chat Completions");
+            crate::transform::degradation::event(
+                capability,
+                "response_transform",
+                Some("anthropic"),
+                Some(model),
+                format!("{count} Anthropic `{kind}` block(s) dropped: Chat Completions has no equivalent"),
+                Some(count),
+                Some(reason),
+            )
+        })
+        .collect();
+    (convert(upstream, model), events)
+}
+
 /// Anthropic stop_reason → Chat finish_reason（与 `map_finish_reason_to_stop_reason` 反向）。
 fn map_stop_reason(stop_reason: &str, has_tool_use: bool) -> &'static str {
     match stop_reason {
@@ -115,7 +168,7 @@ fn map_stop_reason(stop_reason: &str, has_tool_use: bool) -> &'static str {
 /// - input_tokens / output_tokens 重命名为 prompt_tokens / completion_tokens
 /// - cache_read_input_tokens 同时塞 prompt_tokens_details.cached_tokens（OpenAI 形态）
 ///   和顶层 cache_read_input_tokens（保留 Anthropic 形态）；extract_cache_tokens 两边都识别。
-fn remap_usage(anthropic_usage: Option<&Value>) -> Value {
+pub(crate) fn remap_usage(anthropic_usage: Option<&Value>) -> Value {
     let Some(u) = anthropic_usage else {
         return json!({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0});
     };
@@ -244,6 +297,40 @@ mod tests {
         // 同时保留 Anthropic 字段，extract_cache_tokens 两边都识别
         assert_eq!(usage["cache_read_input_tokens"], 30);
         assert_eq!(usage["cache_creation_input_tokens"], 20);
+    }
+
+    #[test]
+    fn unsupported_blocks_recorded_as_degradation_events() {
+        // Chat 协议无对应形态的块不做臆造转换,但必须留下降级事件进 request trace。
+        let upstream = json!({
+            "content": [
+                {"type": "redacted_thinking", "data": "xxx"},
+                {"type": "server_tool_use", "id": "srv1", "name": "web_search", "input": {"query": "q"}},
+                {"type": "web_search_tool_result", "tool_use_id": "srv1", "content": []},
+                {"type": "text", "text": "answer"}
+            ],
+            "stop_reason": "end_turn",
+        });
+        let (resp, events) = convert_with_events(&upstream, "claude-3");
+        assert_eq!(resp["choices"][0]["message"]["content"], "answer");
+        let mut reasons: Vec<&str> = events.iter().filter_map(|e| e.reason.as_deref()).collect();
+        reasons.sort();
+        assert_eq!(
+            reasons,
+            vec![
+                "chat_completions_has_no_redacted_thinking",
+                "chat_completions_has_no_server_tool_use",
+                "chat_completions_has_no_web_search_tool_result",
+            ]
+        );
+        assert!(events.iter().all(|e| e.kind == "capability_degradation"));
+        assert!(events.iter().all(|e| e.count == Some(1)));
+        // 普通响应不产生事件
+        let (_, none) = convert_with_events(
+            &json!({"content": [{"type": "text", "text": "x"}], "stop_reason": "end_turn"}),
+            "claude-3",
+        );
+        assert!(none.is_empty());
     }
 
     #[test]

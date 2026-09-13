@@ -1,6 +1,7 @@
 pub mod atomcode;
 pub mod claude_code;
 pub mod claude_desktop;
+pub mod client_files;
 pub mod codex;
 pub mod codex_restart;
 pub mod config_verify;

@@ -12,6 +12,7 @@ interface Props {
   ToggleSwitch: React.ComponentType<{
     checked: boolean;
     onChange: (val: boolean) => void;
+    label: string;
   }>;
 }
 
@@ -25,7 +26,7 @@ export function PetTab({
   ToggleSwitch,
 }: Props) {
   return (
-    <section className="rounded-xl border border-border bg-card p-5">
+    <section className="surface-panel p-5">
       <h3 className="mb-1 flex items-center gap-2 text-sm font-semibold text-text-primary">
         <PawPrint className="h-4 w-4 text-accent" />
         {t("settings.pet.title")}
@@ -45,6 +46,7 @@ export function PetTab({
         <ToggleSwitch
           checked={petSettings.visible}
           onChange={handlePetVisibleChange}
+          label={t("settings.pet.visible")}
         />
       </div>
 
@@ -61,6 +63,7 @@ export function PetTab({
         <ToggleSwitch
           checked={petClickThrough}
           onChange={handlePetClickThroughChange}
+          label={t("settings.pet.click_through")}
         />
       </div>
 

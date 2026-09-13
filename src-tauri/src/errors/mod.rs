@@ -9,6 +9,19 @@ pub struct AppError {
     pub message: String,
     pub detail: Option<String>,
     pub suggestion: Option<String>,
+    /// 上游 HTTP 失败信息(网关内部 failover / 熔断判断用,不序列化给前端)。
+    /// Box 起来:AppError 是全项目的 Err 类型,内联会超过 clippy result_large_err 阈值。
+    #[serde(skip)]
+    #[specta(skip)]
+    pub upstream: Option<Box<UpstreamFailure>>,
+}
+
+/// 上游返回的非 2xx 响应。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpstreamFailure {
+    pub status: u16,
+    /// 上游原始响应体。设置后,最后一跳失败时原样回给客户端(保持透传语义)。
+    pub body: Option<String>,
 }
 
 impl AppError {
@@ -18,7 +31,27 @@ impl AppError {
             message: message.into(),
             detail: None,
             suggestion: None,
+            upstream: None,
         }
+    }
+
+    pub fn with_upstream_status(mut self, status: u16) -> Self {
+        self.upstream = Some(Box::new(UpstreamFailure { status, body: None }));
+        self
+    }
+
+    /// 带上上游状态码 + 原始 body:客户端最终拿到的是上游原样响应。
+    pub fn with_upstream_response(mut self, status: u16, body: impl Into<String>) -> Self {
+        self.upstream = Some(Box::new(UpstreamFailure {
+            status,
+            body: Some(body.into()),
+        }));
+        self
+    }
+
+    /// 上游 HTTP 状态码(若有)。
+    pub fn upstream_status(&self) -> Option<u16> {
+        self.upstream.as_ref().map(|u| u.status)
     }
 
     pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
@@ -112,6 +145,17 @@ mod tests {
         let err = AppError::internal("something broke");
         assert_eq!(err.code, "INTERNAL_ERROR");
         assert_eq!(err.message, "something broke");
+    }
+
+    #[test]
+    fn upstream_fields_are_not_serialized() {
+        let err = AppError::new("UPSTREAM_NON_STREAM_ERROR", "HTTP 429")
+            .with_upstream_response(429, "{\"error\":1}");
+        assert_eq!(err.upstream_status(), Some(429));
+        let v = serde_json::to_value(&err).unwrap();
+        assert!(v.get("upstream").is_none());
+        // AppError 是全项目 Err 类型,必须保持在 clippy result_large_err 阈值以下。
+        assert!(std::mem::size_of::<AppError>() < 128);
     }
 
     #[test]

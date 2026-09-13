@@ -57,26 +57,35 @@ pub struct SnapshotFile {
     /// 文件存不存在；不存在的话 content 为空字符串，restore 时要把对应文件
     /// 删掉而不是写入空内容（"配置不存在"和"配置为空"语义不同）。
     pub existed: bool,
-    /// UTF-8 文件内容。existed=false 时为空字符串。
+    /// UTF-8 文件内容(原文)。existed=false 时为空字符串。
     pub content: String,
+    /// 文件当时存在但读不出(权限 / 非 UTF-8)→ 内容未保存,该快照不能回滚此文件。
+    /// 不能记成 existed=false,否则回滚会把这个文件删掉。
+    #[serde(default)]
+    pub content_omitted: bool,
 }
 
 /// Build a snapshot by reading each `(display_name, absolute_path)` off
 /// disk. Missing files become `existed: false, content: ""` rows so the
 /// restore path knows to delete instead of write-empty.
+///
+/// 保存文件原文(不脱敏):回滚必须逐字节还原 apply 之前的状态,脱敏会让回滚写回
+/// 错误的 key、丢掉 OAuth token。provider key 本来就明文存在同一个 0600 数据库里。
 pub fn snapshot_files_at(paths: &[(&str, std::path::PathBuf)]) -> ClientSnapshot {
     let files = paths
         .iter()
         .map(|(name, path)| {
-            let (existed, content) = match std::fs::read_to_string(path) {
-                Ok(s) => (true, s),
-                Err(_) => (false, String::new()),
+            let (existed, content, content_omitted) = match std::fs::read_to_string(path) {
+                Ok(raw) => (true, raw, false),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => (false, String::new(), false),
+                Err(_) => (true, String::new(), true),
             };
             SnapshotFile {
                 name: (*name).to_string(),
                 absolute_path: path.to_string_lossy().to_string(),
                 existed,
                 content,
+                content_omitted,
             }
         })
         .collect();
@@ -87,25 +96,31 @@ pub fn snapshot_files_at(paths: &[(&str, std::path::PathBuf)]) -> ClientSnapshot
 /// exist at snapshot time, the current on-disk file is removed (if any).
 /// Parent dirs are created on demand. Errors short-circuit and report which
 /// file failed.
+///
+/// 写入是原子的(保留原文件权限)。任何文件在快照时读不出(`content_omitted`)
+/// 就整体拒绝,一个文件都不写。
 pub fn restore_files(snapshot: &ClientSnapshot) -> Result<(), AppError> {
+    // 整个读 → 改 → 写期间持有客户端配置锁,防止并发命令互相覆盖(见 fsutil)。
+    let _config_lock = crate::fsutil::lock_client_configs();
     use std::fs;
+    let restore_err = |msg: String| AppError::new(crate::errors::codes::CLIENT_RESTORE_FAILED, msg);
+
+    if let Some(file) = snapshot.files.iter().find(|f| f.content_omitted) {
+        return Err(restore_err(format!(
+            "{} 在快照时无法读取,内容未保存,不能回滚到该记录",
+            file.name
+        )));
+    }
     for file in &snapshot.files {
         let path = std::path::PathBuf::from(&file.absolute_path);
         if file.existed {
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).map_err(|e| {
-                    AppError::new(
-                        crate::errors::codes::CLIENT_RESTORE_FAILED,
-                        format!("Cannot create parent of {}: {e}", file.name),
-                    )
+                    restore_err(format!("Cannot create parent of {}: {e}", file.name))
                 })?;
             }
-            fs::write(&path, &file.content).map_err(|e| {
-                AppError::new(
-                    crate::errors::codes::CLIENT_RESTORE_FAILED,
-                    format!("Cannot write {}: {e}", file.name),
-                )
-            })?;
+            crate::fsutil::atomic_write(&path, file.content.as_bytes(), None)
+                .map_err(|e| restore_err(format!("Cannot write {}: {e}", file.name)))?;
         } else if path.exists() {
             fs::remove_file(&path).map_err(|e| {
                 AppError::new(
@@ -252,6 +267,68 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<HistoryEntry> {
 mod tests {
     use super::*;
 
+    /// 回归:快照脱敏后回滚会把 gateway token 当成原 key 写回、丢掉
+    /// ANTHROPIC_AUTH_TOKEN、把 Codex auth.json 的 tokens 删光(需重新登录)。
+    /// 回滚必须逐字节恢复 apply 之前的文件。
+    #[test]
+    fn rollback_after_key_replacing_apply_restores_original_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let cases: [(&'static str, &str, &str); 3] = [
+            (
+                "settings.json",
+                "{\n  \"env\": {\n    \"ANTHROPIC_BASE_URL\": \"https://corp.example\",\n    \"ANTHROPIC_AUTH_TOKEN\": \"corp-token\",\n    \"ANTHROPIC_API_KEY\": \"sk-ant-orig\"\n  }\n}\n",
+                "{\n  \"env\": {\n    \"ANTHROPIC_BASE_URL\": \"http://127.0.0.1:9090\",\n    \"ANTHROPIC_API_KEY\": \"ag_local_gw\"\n  }\n}\n",
+            ),
+            (
+                "auth.json",
+                r#"{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":"eyJ.id","access_token":"eyJ.at","refresh_token":"rt-orig","account_id":"acct-1"},"last_refresh":"2026-01-01T00:00:00Z"}"#,
+                r#"{"OPENAI_API_KEY":"ag_local_gw"}"#,
+            ),
+            (
+                "config.toml",
+                "model_provider = \"corp\"\n[model_providers.corp]\nbase_url = \"https://corp\"\nenv_key = \"CORP_API_KEY\"\n",
+                "model_provider = \"OpenAI\"\n[model_providers.OpenAI]\nexperimental_bearer_token = \"ag_local_gw\"\n",
+            ),
+        ];
+        for (name, original, applied) in cases {
+            let path = dir.path().join(name);
+            std::fs::write(&path, original).unwrap();
+            let snap = snapshot_files_at(&[(name, path.clone())]);
+            std::fs::write(&path, applied).unwrap();
+            restore_files(&snap).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                original,
+                "{name} must be restored byte-for-byte"
+            );
+        }
+    }
+
+    #[test]
+    fn rollback_removes_file_that_did_not_exist_at_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        let snap = snapshot_files_at(&[(".env", path.clone())]);
+        std::fs::write(&path, "GEMINI_API_KEY=ag_local_gw\n").unwrap();
+        restore_files(&snap).unwrap();
+        assert!(!path.exists());
+    }
+
+    /// 快照时文件存在但读不出(非 UTF-8 / 权限):不能记成「不存在」,否则回滚会删掉它。
+    #[test]
+    fn rollback_refuses_snapshot_of_unreadable_file_and_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad = dir.path().join("config.toml");
+        std::fs::write(&bad, b"a = 1 \xff").unwrap();
+        let ok = dir.path().join("auth.json");
+        std::fs::write(&ok, "{}").unwrap();
+        let snap = snapshot_files_at(&[("auth.json", ok.clone()), ("config.toml", bad.clone())]);
+        std::fs::write(&ok, "{\"changed\":1}").unwrap();
+        assert!(restore_files(&snap).is_err());
+        assert_eq!(std::fs::read(&bad).unwrap(), b"a = 1 \xff");
+        assert_eq!(std::fs::read_to_string(&ok).unwrap(), "{\"changed\":1}");
+    }
+
     fn setup() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         crate::storage::migrations::run_migrations(&conn).unwrap();
@@ -265,6 +342,7 @@ mod tests {
                 absolute_path: "/tmp/codex/config.toml".to_string(),
                 existed: true,
                 content: content.to_string(),
+                content_omitted: false,
             }],
         }
     }
@@ -365,12 +443,14 @@ mod tests {
                     absolute_path: "/x".into(),
                     existed: true,
                     content: "[k]\nv=1".into(),
+                    content_omitted: false,
                 },
                 SnapshotFile {
                     name: "auth.json".into(),
                     absolute_path: "/y".into(),
                     existed: false,
                     content: "".into(),
+                    content_omitted: false,
                 },
             ],
         };
@@ -378,7 +458,7 @@ mod tests {
         let entry = get(&conn, &id).unwrap();
         let restored: ClientSnapshot = serde_json::from_str(&entry.snapshot_json).unwrap();
         assert_eq!(restored.files.len(), 2);
-        assert!(restored.files[1].existed == false);
+        assert!(!restored.files[1].existed);
         assert_eq!(restored.files[0].content, "[k]\nv=1");
     }
 }

@@ -1,6 +1,8 @@
 use futures::StreamExt;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::protocol::chat_completions::ChatCompletionChunk;
@@ -9,6 +11,37 @@ use crate::transform::reasoning_store;
 use crate::transform::responses_to_chat::{CommentaryStripper, ThinkSplitter};
 
 const MAX_EVENTS_LOG_SIZE: usize = 1_000_000; // 1MB
+
+/// 流式转换任务因客户端断开而提前结束时返回的错误文本。路由据此把请求日志
+/// 记成 client disconnected,而不是上游失败。
+pub const CLIENT_DISCONNECTED: &str = "client disconnected";
+
+/// 单条 Responses 流的事件发送端:用本流自己的计数器给每个事件盖
+/// `sequence_number`(之前是进程级全局计数器,并发流会互相重置 / 交错),
+/// 并能判断客户端是否已断开。
+#[derive(Clone)]
+pub(crate) struct EventTx {
+    tx: mpsc::Sender<String>,
+    sequence: Arc<AtomicU64>,
+}
+
+impl EventTx {
+    pub(crate) fn new(tx: mpsc::Sender<String>, sequence: Arc<AtomicU64>) -> Self {
+        Self { tx, sequence }
+    }
+
+    /// 发送一个事件。客户端已断开时发送失败(返回 false),读循环通过
+    /// [`EventTx::is_closed`] 停止继续读上游。
+    pub(crate) async fn send(&self, event: &str) -> bool {
+        let seq = self.sequence.fetch_add(1, Ordering::Relaxed);
+        self.tx.send(ev::with_sequence(event, seq)).await.is_ok()
+    }
+
+    /// 客户端(接收端)是否已经断开。
+    pub(crate) fn is_closed(&self) -> bool {
+        self.tx.is_closed()
+    }
+}
 /// Accumulated tool call from streaming deltas.
 #[derive(Debug, Clone)]
 pub struct AccumulatedToolCall {
@@ -66,6 +99,8 @@ pub struct SseAccumulator {
     /// `response.completed` envelope.output 字段。
     pub output_items: Vec<Value>,
     pub tool_call_resolution: crate::transform::tool_calls::ToolCallResolutionMap,
+    /// 本流的事件序号(从 0 开始,每条流独立)。
+    pub(crate) sequence: Arc<AtomicU64>,
 }
 
 impl SseAccumulator {
@@ -93,16 +128,18 @@ impl SseAccumulator {
             commentary_stripper: CommentaryStripper::new(),
             output_items: Vec::new(),
             tool_call_resolution: Default::default(),
+            sequence: Arc::new(AtomicU64::new(0)),
         }
     }
 
     fn log_event(&mut self, event: &str) {
         let remaining = MAX_EVENTS_LOG_SIZE.saturating_sub(self.events_size);
         if remaining > 0 {
-            let to_add = event.len().min(remaining);
-            self.events_log.push_str(&event[..to_add]);
+            // 必须按字符边界截:上限切在中文中间时字节切片会 panic,转换任务直接死掉。
+            let slice = crate::gateway::stream_utf8::truncate_at_char_boundary(event, remaining);
+            self.events_log.push_str(slice);
             self.events_log.push('\n');
-            self.events_size += to_add + 1;
+            self.events_size += slice.len() + 1;
         }
     }
 
@@ -135,8 +172,8 @@ pub async fn process_upstream_stream_inner(
     emit_open: bool,
     emit_completed: bool,
 ) -> Result<(), String> {
+    let tx = EventTx::new(tx, acc.sequence.clone());
     if emit_open {
-        ev::reset_sequence();
         // 1. response.created + in_progress
         send(&tx, &ev::response_created(&acc.response_id, &acc.model)).await;
         send(&tx, &ev::response_in_progress(&acc.response_id, &acc.model)).await;
@@ -174,6 +211,11 @@ pub async fn process_upstream_stream_inner(
             }
         }
 
+        // 客户端已断开:停止读上游,不再继续烧 token。
+        if tx.is_closed() {
+            return Err(CLIENT_DISCONNECTED.to_string());
+        }
+
         // Then pull more from upstream.
         let chunk_bytes = match stream.next().await {
             Some(Ok(b)) => b,
@@ -209,7 +251,7 @@ enum LineOutcome {
 /// stream so a frame straddling the boundary is handled identically.
 async fn dispatch_line(
     line: &str,
-    tx: &mpsc::Sender<String>,
+    tx: &EventTx,
     acc: &mut SseAccumulator,
     has_text: &mut bool,
     has_tool_calls: &mut bool,
@@ -259,7 +301,7 @@ async fn dispatch_line(
 
 async fn process_choices(
     choices: &[crate::protocol::chat_completions::ChunkChoice],
-    tx: &mpsc::Sender<String>,
+    tx: &EventTx,
     acc: &mut SseAccumulator,
     has_text: &mut bool,
     has_tool_calls: &mut bool,
@@ -503,7 +545,7 @@ async fn process_choices(
 }
 
 async fn finalize(
-    tx: mpsc::Sender<String>,
+    tx: EventTx,
     acc: &mut SseAccumulator,
     has_text: bool,
     has_tool_calls: bool,
@@ -542,7 +584,7 @@ async fn finalize(
     // survives within the same process for the same conversation thread).
     if !acc.reasoning_content.is_empty() {
         let tc_ids: Vec<String> = acc.tool_calls.values().map(|tc| tc.id.clone()).collect();
-        reasoning_store::store(&acc.full_text, &acc.reasoning_content, &tc_ids);
+        reasoning_store::store(&acc.model, &acc.full_text, &acc.reasoning_content, &tc_ids);
     }
 
     // Pin reasoning into a dedicated `reasoning` output_item with
@@ -695,12 +737,13 @@ async fn finalize(
     Ok(())
 }
 
-async fn send(tx: &mpsc::Sender<String>, event: &str) {
-    let _ = tx.send(event.to_string()).await;
+async fn send(tx: &EventTx, event: &str) {
+    // 发送失败 = 客户端断开;这里不中断收尾逻辑,由读循环的 is_closed 检查停止读上游。
+    let _ = tx.send(event).await;
 }
 
 pub(crate) async fn send_tool_call_added(
-    tx: &mpsc::Sender<String>,
+    tx: &EventTx,
     resolution: &crate::transform::tool_calls::ToolCallResolutionMap,
     item_id: &str,
     output_index: usize,
@@ -736,7 +779,7 @@ pub(crate) async fn send_tool_call_added(
 }
 
 pub(crate) async fn send_tool_call_arguments_delta(
-    tx: &mpsc::Sender<String>,
+    tx: &EventTx,
     resolution: &crate::transform::tool_calls::ToolCallResolutionMap,
     item_id: &str,
     output_index: usize,
@@ -757,7 +800,7 @@ pub(crate) async fn send_tool_call_arguments_delta(
 }
 
 pub(crate) async fn send_tool_call_done(
-    tx: &mpsc::Sender<String>,
+    tx: &EventTx,
     resolution: &crate::transform::tool_calls::ToolCallResolutionMap,
     item_id: &str,
     output_index: usize,
@@ -877,7 +920,7 @@ pub(crate) async fn send_tool_call_done(
     }
 }
 
-async fn start_message_item(tx: &mpsc::Sender<String>, acc: &mut SseAccumulator) -> usize {
+async fn start_message_item(tx: &EventTx, acc: &mut SseAccumulator) -> usize {
     if let Some(oi) = acc.msg_output_index {
         return oi;
     }
@@ -897,7 +940,7 @@ async fn start_message_item(tx: &mpsc::Sender<String>, acc: &mut SseAccumulator)
 /// 占位事件先打出去（output_item.added），后续仅发 delta。output_index
 /// 在首次时从 `acc.next_output_index` 抢占——这样和 tool_calls 共用
 /// 同一个递增空间，不会冲突。
-async fn stream_reasoning_delta(tx: &mpsc::Sender<String>, acc: &mut SseAccumulator, delta: &str) {
+async fn stream_reasoning_delta(tx: &EventTx, acc: &mut SseAccumulator, delta: &str) {
     if delta.is_empty() {
         return;
     }
@@ -1075,6 +1118,7 @@ mod tests {
     async fn stream_reasoning_delta_first_chunk_emits_added_and_delta() {
         let mut acc = SseAccumulator::new("resp_xyz".to_string(), "deepseek".to_string());
         let (tx, mut rx) = mpsc::channel::<String>(8);
+        let tx = EventTx::new(tx, acc.sequence.clone());
         stream_reasoning_delta(&tx, &mut acc, "Hello").await;
         drop(tx);
 
@@ -1108,6 +1152,7 @@ mod tests {
     async fn stream_reasoning_delta_subsequent_chunks_emit_delta_only() {
         let mut acc = SseAccumulator::new("resp_xyz".to_string(), "deepseek".to_string());
         let (tx, mut rx) = mpsc::channel::<String>(8);
+        let tx = EventTx::new(tx, acc.sequence.clone());
         stream_reasoning_delta(&tx, &mut acc, "A").await;
         // Drain the first three events (added + summary part + delta).
         let _ = rx.recv().await;
@@ -1127,6 +1172,7 @@ mod tests {
     async fn stream_reasoning_delta_empty_is_noop() {
         let mut acc = SseAccumulator::new("resp_xyz".to_string(), "deepseek".to_string());
         let (tx, mut rx) = mpsc::channel::<String>(8);
+        let tx = EventTx::new(tx, acc.sequence.clone());
         stream_reasoning_delta(&tx, &mut acc, "").await;
         drop(tx);
 
@@ -1135,6 +1181,136 @@ mod tests {
             "empty delta must not emit events"
         );
         assert!(acc.reasoning_output_index.is_none());
+    }
+
+    /// 按 `n` 个上游 chunk 计数的上游流:每被读走一个 chunk 计数 +1。
+    fn counted_upstream(
+        n: usize,
+        frame: String,
+    ) -> (
+        crate::gateway::sse_bootstrap::Bootstrap,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        use futures::StreamExt as _;
+        let polled = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = polled.clone();
+        let stream = futures::stream::iter(0..n)
+            .map(move |_| {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok::<_, reqwest::Error>(bytes::Bytes::from(frame.clone()))
+            })
+            .boxed();
+        (
+            crate::gateway::sse_bootstrap::Bootstrap {
+                prefix: Vec::new(),
+                stream,
+            },
+            polled,
+        )
+    }
+
+    fn sequence_numbers(events: &[String]) -> Vec<u64> {
+        events
+            .iter()
+            .filter_map(|e| {
+                let data = e.lines().find_map(|l| l.strip_prefix("data: "))?;
+                serde_json::from_str::<Value>(data)
+                    .ok()?
+                    .get("sequence_number")?
+                    .as_u64()
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn client_disconnect_stops_reading_upstream() {
+        let frame = format!(
+            "data: {}\n\n",
+            json!({"choices":[{"index":0,"delta":{"content":"x"}}]})
+        );
+        let (boot, polled) = counted_upstream(200, frame);
+        let (tx, rx) = mpsc::channel::<String>(1024);
+        drop(rx); // 客户端已断开
+        let mut acc = SseAccumulator::new("resp_gone".to_string(), "m".to_string());
+
+        let result = process_upstream_stream(boot, tx, &mut acc).await;
+
+        assert!(
+            result.is_err(),
+            "client disconnect must end the stream as an error"
+        );
+        assert!(
+            polled.load(std::sync::atomic::Ordering::SeqCst) < 200,
+            "upstream must not be drained after the client is gone"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_streams_have_independent_sequence_numbers() {
+        use futures::StreamExt as _;
+        let frame = |t: &str| {
+            bytes::Bytes::from(format!(
+                "data: {}\n\n",
+                json!({"choices":[{"index":0,"delta":{"content":t}}]})
+            ))
+        };
+        let (up_a, rx_a) = mpsc::channel::<bytes::Bytes>(4);
+        let (up_b, rx_b) = mpsc::channel::<bytes::Bytes>(4);
+        let boot = |rx| crate::gateway::sse_bootstrap::Bootstrap {
+            prefix: Vec::new(),
+            stream: tokio_stream::wrappers::ReceiverStream::new(rx)
+                .map(Ok::<_, reqwest::Error>)
+                .boxed(),
+        };
+        let (tx_a, mut out_a) = mpsc::channel::<String>(256);
+        let (tx_b, mut out_b) = mpsc::channel::<String>(256);
+        let mut acc_a = SseAccumulator::new("resp_a".to_string(), "m".to_string());
+        let mut acc_b = SseAccumulator::new("resp_b".to_string(), "m".to_string());
+
+        let feeder = async move {
+            for _ in 0..5 {
+                up_a.send(frame("a")).await.unwrap();
+                tokio::task::yield_now().await;
+                up_b.send(frame("b")).await.unwrap();
+                tokio::task::yield_now().await;
+            }
+        };
+        let (ra, rb, ()) = tokio::join!(
+            process_upstream_stream(boot(rx_a), tx_a, &mut acc_a),
+            process_upstream_stream(boot(rx_b), tx_b, &mut acc_b),
+            feeder
+        );
+        ra.unwrap();
+        rb.unwrap();
+
+        for out in [&mut out_a, &mut out_b] {
+            let mut events = Vec::new();
+            while let Some(e) = out.recv().await {
+                events.push(e);
+            }
+            let seqs = sequence_numbers(&events);
+            assert!(
+                seqs.len() > 5,
+                "expected a full event stream, got {events:#?}"
+            );
+            assert_eq!(
+                seqs,
+                (0..seqs.len() as u64).collect::<Vec<_>>(),
+                "each stream must number its own events 0..n without gaps"
+            );
+        }
+    }
+
+    #[test]
+    fn log_event_truncates_multibyte_text_at_cap_without_panic() {
+        // 1MB 上限恰好切在中文字符中间:之前 `&event[..to_add]` 直接 panic,
+        // 转换任务死掉,客户端流收不到 response.completed。
+        let mut acc = SseAccumulator::new("resp_cap".to_string(), "m".to_string());
+        acc.events_size = MAX_EVENTS_LOG_SIZE - 4;
+        acc.log_event("你好世界");
+        assert!(acc.events_log.starts_with("你"));
+        assert!(!acc.events_log.contains("好"));
+        assert!(acc.events_size <= MAX_EVENTS_LOG_SIZE + 1);
     }
 
     fn bootstrap_from_prefix(prefix: &str) -> crate::gateway::sse_bootstrap::Bootstrap {

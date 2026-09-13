@@ -5,9 +5,7 @@ use serde_json::{json, Value};
 
 use crate::errors::AppError;
 
-use super::shared::{
-    get_active_provider, request_body_or_gateway_error, validate_auth, GatewayError,
-};
+use super::shared::{get_active_provider, request_body_or_gateway_error, GatewayError};
 use super::GatewayState;
 
 // ── GET /health ────────────────────────────────────────────────
@@ -23,11 +21,10 @@ pub async fn health() -> Json<Value> {
 
 // ── GET /v1/models ─────────────────────────────────────────────
 
+// 鉴权 + Host/Origin 边界校验由 server.rs 的中间件统一完成(含下面几个端点)。
 pub async fn list_models(
-    headers: HeaderMap,
     AxumState(state): AxumState<GatewayState>,
 ) -> Result<Json<Value>, GatewayError> {
-    validate_auth(&headers)?;
     let provider = get_active_provider(&state.db)?;
 
     let mut models = vec![json!({
@@ -67,12 +64,12 @@ pub async fn list_models(
 
 pub async fn handle_count_tokens(
     headers: HeaderMap,
-    AxumState(_state): AxumState<GatewayState>,
+    AxumState(state): AxumState<GatewayState>,
     body: Result<bytes::Bytes, axum::extract::rejection::BytesRejection>,
 ) -> Result<Json<Value>, GatewayError> {
     let body = request_body_or_gateway_error(body)?;
-    validate_auth(&headers)?;
-    let body = crate::gateway::body_decode::decode(&headers, body).map_err(GatewayError)?;
+    let body = crate::gateway::body_decode::decode(&headers, body, state.request_body_limit)
+        .map_err(GatewayError)?;
     let v: Value = serde_json::from_str(&body).map_err(|e| {
         GatewayError(AppError::new(
             crate::errors::codes::COUNT_TOKENS_PARSE_ERROR,
@@ -120,10 +117,8 @@ fn count_chars(v: &Value) -> usize {
 // ── GET /v1beta/models (Gemini 客户端拉 models 列表) ──────────
 
 pub async fn list_gemini_models(
-    headers: HeaderMap,
     AxumState(state): AxumState<GatewayState>,
 ) -> Result<Json<Value>, GatewayError> {
-    validate_auth(&headers)?;
     let provider = get_active_provider(&state.db)?;
 
     let mut models: Vec<Value> = Vec::new();

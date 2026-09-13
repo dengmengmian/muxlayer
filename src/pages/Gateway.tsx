@@ -139,14 +139,13 @@ export function Gateway() {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="desktop-page">
       {/* ── 1. Status strip first — primary ops (run/stop/restart). ── */}
       <div
-        className="relative overflow-hidden rounded-xl border border-accent/20 bg-card px-5 py-4"
+        className="desktop-page-header command-strip relative overflow-hidden border-accent/25"
         style={{
-          boxShadow: "0 10px 30px rgba(194, 112, 43, 0.10)",
           background:
-            "linear-gradient(135deg, var(--color-card) 0%, rgba(194,112,43,0.07) 100%)",
+            "linear-gradient(135deg, var(--color-card) 0%, var(--color-accent-soft) 100%)",
         }}
       >
         <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-accent/50 to-transparent" />
@@ -154,12 +153,12 @@ export function Gateway() {
           <div className="flex min-w-0 items-center gap-3">
             <div className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent-soft">
               <span
-                className={`absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full ${status.running ? "bg-success shadow-[0_0_12px_rgba(56,161,105,0.55)]" : "bg-text-muted/50"}`}
+                className={`absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full ${status.running ? "bg-info animate-pulse-dot" : "bg-text-muted/50"}`}
               />
               <Radio className="h-4 w-4 text-accent" />
             </div>
             <div className="min-w-0">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-accent">
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-accent">
                 {t("gateway.service_console")}
               </p>
               <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs">
@@ -220,7 +219,7 @@ export function Gateway() {
             ) : (
               <button
                 onClick={handleStart}
-                className="flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1 text-xs font-medium text-white transition-colors hover:bg-accent/90"
+                className="flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1 text-xs font-medium text-on-accent transition-colors hover:bg-accent/90"
               >
                 <Play className="h-3 w-3" />
                 {t("gateway.start")}
@@ -229,14 +228,14 @@ export function Gateway() {
           </div>
         </div>
         {dirty && (
-          <p className="mt-2 text-[11px] text-warning">
+          <p className="mt-2 text-xs text-warning">
             {t("gateway.settings_changed")}
           </p>
         )}
       </div>
 
       {/* Connection info below — copy endpoints after gateway is up. */}
-      <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+      <div className="surface-panel overflow-hidden">
         <div className="flex items-start gap-3 border-b border-border px-5 py-4">
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent-soft">
             <Link2 className="h-4 w-4 text-accent" />
@@ -281,7 +280,7 @@ export function Gateway() {
             >
               <div className="min-w-0 flex-1">
                 <p
-                  className={`text-[10px] font-medium uppercase tracking-wide ${
+                  className={`text-xs font-medium uppercase tracking-wide ${
                     row.primary ? "text-accent" : "text-text-muted"
                   }`}
                 >
@@ -297,7 +296,7 @@ export function Gateway() {
               <button
                 type="button"
                 onClick={() => copyText(row.value)}
-                className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-card-secondary px-2.5 py-1.5 text-[11px] font-medium text-text-secondary transition-colors hover:border-accent/40 hover:text-accent"
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-card-secondary px-2.5 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:border-accent/40 hover:text-accent"
                 title={t("common.copy")}
               >
                 <Copy className="h-3 w-3" />
@@ -317,10 +316,7 @@ export function Gateway() {
           settings.port !== status.port ||
           settings.input_protocol !== status.input_protocol ||
           settings.output_protocol !== status.output_protocol) && (
-          <div
-            className="rounded-xl border border-warning/30 bg-warning-soft px-4 py-3"
-            style={{ boxShadow: "var(--shadow-sm)" }}
-          >
+          <div className="rounded-lg border border-warning/30 bg-warning-soft px-4 py-3">
             <div className="flex items-center justify-between gap-3">
               <div className="flex items-start gap-2.5">
                 <AlertTriangle className="h-4 w-4 shrink-0 text-warning mt-0.5" />
@@ -328,10 +324,10 @@ export function Gateway() {
                   <p className="text-xs font-medium text-text-primary">
                     {t("gateway.restart_required_title")}
                   </p>
-                  <p className="mt-0.5 text-[11px] text-text-secondary">
+                  <p className="mt-0.5 text-xs text-text-secondary">
                     {t("gateway.restart_required_desc")}
                   </p>
-                  <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] font-mono">
+                  <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-mono">
                     {settings.host !== status.host && (
                       <span>
                         host:{" "}
@@ -371,7 +367,7 @@ export function Gateway() {
               </div>
               <button
                 onClick={handleRestart}
-                className="shrink-0 flex items-center gap-1.5 rounded-md bg-warning px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-warning/90"
+                className="shrink-0 flex items-center gap-1.5 rounded-md bg-warning-soft px-3 py-1.5 text-xs font-medium text-warning transition-colors hover:bg-warning/20"
               >
                 <RotateCcw className="h-3 w-3" />
                 {t("gateway.restart_now")}
@@ -381,10 +377,7 @@ export function Gateway() {
         )}
 
       {/* ── 2. Configuration — the editable settings ── */}
-      <div
-        className="rounded-xl border border-border bg-card p-5"
-        style={{ boxShadow: "0 12px 30px rgba(17, 24, 39, 0.05)" }}
-      >
+      <div className="surface-panel p-5">
         <div className="mb-4 flex items-center justify-between">
           <h3 className="flex items-center gap-2 text-sm font-semibold text-text-primary">
             <Settings className="h-4 w-4 text-text-muted" />
@@ -393,7 +386,7 @@ export function Gateway() {
           <button
             onClick={handleSave}
             disabled={!dirty}
-            className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-accent"
+            className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent transition-colors hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-accent"
           >
             <Save className="h-3.5 w-3.5" />
             {t("gateway.save")}
@@ -486,12 +479,9 @@ export function Gateway() {
       </div>
 
       {/* ── 3. Route reference — what the gateway exposes ── */}
-      <div
-        className="rounded-xl border border-border bg-card p-5"
-        style={{ boxShadow: "0 12px 30px rgba(17, 24, 39, 0.05)" }}
-      >
+      <div className="surface-panel p-5">
         <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-text-primary">
-          <span className="h-2 w-2 rounded-full bg-accent shadow-[0_0_10px_rgba(194,112,43,0.45)]" />
+          <span className="h-2 w-2 rounded-full bg-accent" />
           {t("gateway.route_matrix")}
         </h3>
         <div className="grid grid-cols-1 gap-1.5 lg:grid-cols-2">
@@ -501,7 +491,7 @@ export function Gateway() {
               className="flex items-center justify-between rounded-md border border-border/50 bg-card-secondary px-3 py-1.5 text-xs"
             >
               <div className="flex min-w-0 items-center gap-2">
-                <span className="w-10 shrink-0 rounded bg-bg px-1.5 py-0.5 text-center font-mono text-[10px] text-text-muted">
+                <span className="w-10 shrink-0 rounded bg-bg px-1.5 py-0.5 text-center font-mono text-xs text-text-muted">
                   {r.method}
                 </span>
                 <span className="truncate font-mono text-text-primary">
@@ -510,12 +500,12 @@ export function Gateway() {
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 {r.detail && (
-                  <span className="hidden text-[10px] text-text-muted lg:inline">
+                  <span className="hidden text-xs text-text-muted lg:inline">
                     {r.detail}
                   </span>
                 )}
                 <span
-                  className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                  className={`rounded-full px-2 py-0.5 text-xs font-medium ${
                     r.mode === "pass-through"
                       ? "bg-accent-soft text-accent"
                       : r.mode === "transform"

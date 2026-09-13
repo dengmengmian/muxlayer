@@ -28,6 +28,59 @@ pub fn redact_value(val: &str) -> String {
     format!("{prefix}••••••••{suffix}")
 }
 
+/// 精确脱敏的最短长度:过短的值精确替换会误伤普通文本。
+const MIN_EXACT_SECRET_LEN: usize = 8;
+
+/// 先把已知密钥(当前存储的 provider api_key、extra_headers 值等)按原值精确替换,
+/// 再跑前缀 / 字段名启发式。启发式只认 `sk-` / `ag_local_` / Bearer / 固定字段名,
+/// 没有前缀的 key(Google `AIza…`、Kimi、MiniMax、自定义鉴权 header)只能靠精确匹配。
+pub fn redact_text_with_secrets(text: &str, secrets: &[String]) -> String {
+    let mut exact: Vec<&str> = secrets
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| s.len() >= MIN_EXACT_SECRET_LEN)
+        .collect();
+    // 长的先替换,避免短密钥是长密钥子串时把长密钥切碎后漏脱敏。
+    exact.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    exact.dedup();
+    let mut result = text.to_string();
+    for secret in exact {
+        if result.contains(secret) {
+            result = result.replace(secret, &redact_value(secret));
+        }
+    }
+    redact_text(&result)
+}
+
+/// 收集需要精确脱敏的 provider 密钥:api_key(单个或 JSON 数组)+ extra_headers
+/// (JSON 对象)的所有字符串值。
+pub fn provider_secrets(providers: &[crate::models::provider::Provider]) -> Vec<String> {
+    let mut out = Vec::new();
+    for p in providers {
+        if let Some(raw) = p
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+        {
+            match serde_json::from_str::<Vec<String>>(raw) {
+                Ok(keys) if raw.starts_with('[') => out.extend(keys),
+                _ => out.push(raw.to_string()),
+            }
+        }
+        if let Some(headers) = p.extra_headers.as_deref().and_then(|h| {
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(h).ok()
+        }) {
+            out.extend(
+                headers
+                    .values()
+                    .filter_map(|v| v.as_str().map(str::to_string)),
+            );
+        }
+    }
+    out
+}
+
 /// Redact all sensitive patterns in a text block.
 pub fn redact_text(text: &str) -> String {
     let mut result = text.to_string();
@@ -168,6 +221,29 @@ fn redact_pattern(text: &str, prefix: &str) -> String {
     result
 }
 
+fn redact_bearer(text: &str) -> String {
+    let mut result = String::new();
+    let mut remaining = text;
+    let pattern = "Bearer ";
+
+    while let Some(start) = remaining.find(pattern) {
+        result.push_str(&remaining[..start]);
+        result.push_str("Bearer ");
+        let after = &remaining[start + pattern.len()..];
+        let end = after
+            .find(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+            .unwrap_or(after.len());
+        if end > 4 {
+            result.push_str(&redact_value(&after[..end]));
+        } else {
+            result.push_str(&after[..end]);
+        }
+        remaining = &after[end..];
+    }
+    result.push_str(remaining);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,31 +371,53 @@ mod tests {
     }
 
     #[test]
+    fn exact_secrets_are_redacted_even_without_known_prefix() {
+        let secrets = vec![
+            "AIzaSyNoPrefixKey0123456789".to_string(),
+            "short".to_string(),
+            "kimi9f8e7d6c5b4a".to_string(),
+        ];
+        let text = "401 for AIzaSyNoPrefixKey0123456789, kimi9f8e7d6c5b4a; short word stays";
+        assert!(
+            redact_text(text).contains("AIzaSyNoPrefixKey0123456789"),
+            "heuristics alone leak"
+        );
+        let out = redact_text_with_secrets(text, &secrets);
+        assert!(!out.contains("AIzaSyNoPrefixKey0123456789"), "{out}");
+        assert!(!out.contains("kimi9f8e7d6c5b4a"), "{out}");
+        assert!(
+            out.contains("short word stays"),
+            "short values are not exact-redacted"
+        );
+    }
+
+    #[test]
+    fn provider_secrets_collects_key_arrays_and_header_values() {
+        let mut p: crate::models::provider::Provider = serde_json::from_value(serde_json::json!({
+            "id": "p", "name": "p", "provider_type": "custom", "base_url": "http://x",
+            "api_key": "[\"k-one-12345678\",\"k-two-12345678\"]",
+            "default_model": "m", "reasoning_model": null, "supported_models": null,
+            "model_mapping": null, "extra_headers": "{\"X-Auth\":\"hdr-secret-12345\"}",
+            "anthropic_base_url": null, "responses_base_url": null,
+            "protocol": "openai_chat_completions", "timeout_seconds": 60, "status": "ok",
+            "supports_vision": null, "auto_cache_control": null, "supports_cache": null,
+            "model_capabilities": null, "provider_quirks": null, "body_filter_enabled": null,
+            "thinking_rectifier_enabled": null, "error_mapper_enabled": null,
+            "model_degradation_chain": null, "model_context_windows": null,
+            "enabled": true, "is_active": false, "created_at": "", "updated_at": ""
+        }))
+        .unwrap();
+        let secrets = provider_secrets(std::slice::from_ref(&p));
+        assert!(secrets.contains(&"k-one-12345678".to_string()));
+        assert!(secrets.contains(&"k-two-12345678".to_string()));
+        assert!(secrets.contains(&"hdr-secret-12345".to_string()));
+        p.api_key = Some("single-plain-key-123".to_string());
+        assert!(provider_secrets(&[p]).contains(&"single-plain-key-123".to_string()));
+    }
+
+    #[test]
     fn test_redact_access_token_field() {
         let t = redact_text(r#"{"access_token": "tok_1234567890abcdef"}"#);
         assert!(!t.contains("tok_1234567890abcdef"));
     }
-}
-
-fn redact_bearer(text: &str) -> String {
-    let mut result = String::new();
-    let mut remaining = text;
-    let pattern = "Bearer ";
-
-    while let Some(start) = remaining.find(pattern) {
-        result.push_str(&remaining[..start]);
-        result.push_str("Bearer ");
-        let after = &remaining[start + pattern.len()..];
-        let end = after
-            .find(|c: char| c.is_whitespace() || c == '"' || c == '\'')
-            .unwrap_or(after.len());
-        if end > 4 {
-            result.push_str(&redact_value(&after[..end]));
-        } else {
-            result.push_str(&after[..end]);
-        }
-        remaining = &after[end..];
-    }
-    result.push_str(remaining);
-    result
 }

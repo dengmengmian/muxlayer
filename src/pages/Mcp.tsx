@@ -317,16 +317,11 @@ export function Mcp() {
   }
 
   return (
-    <div className="space-y-4">
-      {/* overflow-hidden 会裁掉「更多」下拉，渐变单独加圆角裁剪即可 */}
-      <header className="relative z-10 rounded-xl border border-accent/20 bg-card p-5 shadow-sm">
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-24 overflow-hidden rounded-t-xl bg-gradient-to-b from-accent/10 to-transparent" />
-        <div className="relative flex flex-wrap items-start justify-between gap-4">
+    <div className="desktop-page">
+      <header className="desktop-page-header relative z-10">
+        <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <p className="text-xs font-medium uppercase tracking-[0.18em] text-accent">
-              {t("mcp.console")}
-            </p>
-            <h2 className="mt-2 flex items-center gap-2 text-lg font-semibold text-text-primary">
+            <h2 className="flex items-center gap-2 text-lg font-semibold text-text-primary">
               <Plug className="h-4 w-4" />
               {t("mcp.title")}
             </h2>
@@ -341,7 +336,7 @@ export function Mcp() {
           <div className="relative flex shrink-0 items-center gap-2">
             <button
               onClick={openCreate}
-              className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover"
+              className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent hover:bg-accent-hover"
             >
               <Plus className="h-3.5 w-3.5" />
               {t("mcp.add_server")}
@@ -364,7 +359,7 @@ export function Mcp() {
                   onClick={() => setMoreOpen(false)}
                 />
                 <div className="absolute right-0 top-full z-40 mt-1 w-52 rounded-lg border border-border bg-card p-2 shadow-lg">
-                  <label className="mb-1 flex items-center gap-2 rounded-md px-2 py-1.5 text-[11px] text-text-muted">
+                  <label className="mb-1 flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-text-muted">
                     <input
                       type="checkbox"
                       checked={includeSecrets}
@@ -401,65 +396,67 @@ export function Mcp() {
         </div>
       </header>
 
-      <section className="rounded-xl border border-border bg-card p-4 shadow-sm">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h3 className="text-sm font-semibold text-text-primary">
-              {t("mcp.server_matrix")}
-            </h3>
-            <p className="mt-0.5 text-xs text-text-muted">
-              {t("mcp.server_matrix_hint")}
-            </p>
+      {servers.length > 0 && (
+        <section className="surface-panel p-4">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold text-text-primary">
+                {t("mcp.server_matrix")}
+              </h3>
+              <p className="mt-0.5 text-xs text-text-muted">
+                {t("mcp.server_matrix_hint")}
+              </p>
+            </div>
+            <label className="flex min-w-[240px] items-center gap-2 rounded-md border border-border bg-card-secondary px-2.5 py-1.5 text-xs text-text-muted">
+              <Search className="h-3.5 w-3.5" />
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                className="w-full bg-transparent text-text-primary outline-none placeholder:text-text-muted"
+                placeholder={t("mcp.search_placeholder")}
+              />
+            </label>
           </div>
-          <label className="flex min-w-[240px] items-center gap-2 rounded-md border border-border bg-card-secondary px-2.5 py-1.5 text-xs text-text-muted">
-            <Search className="h-3.5 w-3.5" />
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              className="w-full bg-transparent text-text-primary outline-none placeholder:text-text-muted"
-              placeholder={t("mcp.search_placeholder")}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <FilterButton
+              active={filter === "all"}
+              label={t("mcp.filter_all")}
+              count={counts.all}
+              onClick={() => setFilter("all")}
             />
-          </label>
-        </div>
-        <div className="flex flex-wrap items-center gap-1.5">
-          <FilterButton
-            active={filter === "all"}
-            label={t("mcp.filter_all")}
-            count={counts.all}
-            onClick={() => setFilter("all")}
-          />
-          <FilterButton
-            active={filter === "issues"}
-            label={t("mcp.filter_issues")}
-            count={counts.issues}
-            onClick={() => setFilter("issues")}
-          />
-          <FilterButton
-            active={filter === "codex"}
-            label="Codex"
-            count={counts.codex}
-            onClick={() => setFilter("codex")}
-          />
-          <FilterButton
-            active={filter === "claude_code"}
-            label="Claude Code"
-            count={counts.claude_code}
-            onClick={() => setFilter("claude_code")}
-          />
-          <FilterButton
-            active={filter === "gemini"}
-            label="Gemini CLI"
-            count={counts.gemini}
-            onClick={() => setFilter("gemini")}
-          />
-          <FilterButton
-            active={filter === "opencode"}
-            label="OpenCode"
-            count={counts.opencode}
-            onClick={() => setFilter("opencode")}
-          />
-        </div>
-      </section>
+            <FilterButton
+              active={filter === "issues"}
+              label={t("mcp.filter_issues")}
+              count={counts.issues}
+              onClick={() => setFilter("issues")}
+            />
+            <FilterButton
+              active={filter === "codex"}
+              label="Codex"
+              count={counts.codex}
+              onClick={() => setFilter("codex")}
+            />
+            <FilterButton
+              active={filter === "claude_code"}
+              label="Claude Code"
+              count={counts.claude_code}
+              onClick={() => setFilter("claude_code")}
+            />
+            <FilterButton
+              active={filter === "gemini"}
+              label="Gemini CLI"
+              count={counts.gemini}
+              onClick={() => setFilter("gemini")}
+            />
+            <FilterButton
+              active={filter === "opencode"}
+              label="OpenCode"
+              count={counts.opencode}
+              onClick={() => setFilter("opencode")}
+            />
+          </div>
+        </section>
+      )}
 
       {transferMode && (
         <section className="rounded-lg border border-border bg-card p-4">
@@ -470,7 +467,7 @@ export function Mcp() {
                   ? t("mcp.export_config")
                   : t("mcp.import_config")}
               </div>
-              <div className="mt-0.5 text-[11px] text-text-muted">
+              <div className="mt-0.5 text-xs text-text-muted">
                 {transferMode === "export"
                   ? includeSecrets
                     ? t("mcp.export_hint_with_value")
@@ -494,7 +491,7 @@ export function Mcp() {
                   <button
                     onClick={handleImport}
                     disabled={transferring}
-                    className="flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1.5 text-xs font-medium text-white hover:bg-accent-hover disabled:opacity-60"
+                    className="flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1.5 text-xs font-medium text-on-accent hover:bg-accent-hover disabled:opacity-60"
                   >
                     {transferring ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -606,9 +603,9 @@ function ServerTable({
   }
 
   return (
-    <div className="overflow-x-auto rounded-lg border border-border bg-card">
+    <div className="surface-scroll rounded-md border border-border bg-card">
       <div className="min-w-[840px]">
-        <div className="grid grid-cols-[120px_minmax(160px,1.2fr)_120px_minmax(240px,2fr)_90px_104px] border-b border-border bg-card-secondary px-4 py-2 text-[11px] font-medium text-text-muted">
+        <div className="grid grid-cols-[120px_minmax(160px,1.2fr)_120px_minmax(240px,2fr)_90px_104px] border-b border-border bg-card-secondary px-4 py-2 text-xs font-medium text-text-muted">
           <div>{t("mcp.col_status")}</div>
           <div>{t("mcp.col_name")}</div>
           <div>{t("mcp.col_client")}</div>
@@ -639,14 +636,14 @@ function ServerTable({
                   {server.name}
                 </div>
                 {server.validation.issues.length > 0 && (
-                  <div className="mt-0.5 truncate text-[11px] text-text-muted">
+                  <div className="mt-0.5 truncate text-xs text-text-muted">
                     {server.validation.issues[0].message}
                   </div>
                 )}
               </div>
               <ClientBadges server={server} />
               <div
-                className="min-w-0 truncate font-mono text-[11px] text-text-muted"
+                className="min-w-0 truncate font-mono text-xs text-text-muted"
                 title={`${server.command} ${server.args.join(" ")}`}
               >
                 {server.command || t("mcp.no_command")} {server.args.join(" ")}
@@ -743,10 +740,10 @@ function ServerDetail({
                 key={env.key}
                 className="flex items-center justify-between gap-2 rounded-md bg-card-secondary px-2.5 py-1.5"
               >
-                <div className="min-w-0 truncate font-mono text-[11px] text-text-secondary">
+                <div className="min-w-0 truncate font-mono text-xs text-text-secondary">
                   {env.key}
                 </div>
-                <div className="flex shrink-0 items-center gap-1.5 text-[10px] text-text-muted">
+                <div className="flex shrink-0 items-center gap-1.5 text-xs text-text-muted">
                   {env.is_sensitive && <span>{t("mcp.sensitive")}</span>}
                   {!env.has_value && (
                     <span className="text-warning">missing</span>
@@ -767,10 +764,10 @@ function ServerDetail({
               key={`${source.client}:${source.config_path}`}
               className="rounded-md bg-card-secondary px-2.5 py-2"
             >
-              <div className="text-[11px] font-medium text-text-secondary">
+              <div className="text-xs font-medium text-text-secondary">
                 {clientLabel(source.client)}
               </div>
-              <div className="mt-1 break-all font-mono text-[11px] text-text-muted">
+              <div className="mt-1 break-all font-mono text-xs text-text-muted">
                 {source.config_path}
               </div>
             </div>
@@ -784,7 +781,7 @@ function ServerDetail({
             {server.validation.issues.map((issue) => (
               <div
                 key={`${issue.code}:${issue.field ?? ""}`}
-                className="rounded-md border border-warning/30 bg-warning/5 px-2.5 py-2 text-[11px] text-text-secondary"
+                className="rounded-md border border-warning/30 bg-warning/5 px-2.5 py-2 text-xs text-text-secondary"
               >
                 {issue.message}
               </div>
@@ -810,7 +807,7 @@ function DraftForm({
   const { t } = useI18n();
   return (
     <div className="space-y-4">
-      <label className="space-y-1 text-[11px] text-text-muted">
+      <label className="space-y-1 text-xs text-text-muted">
         client
         <select
           value={draft.client}
@@ -826,7 +823,7 @@ function DraftForm({
           <option value="opencode">OpenCode</option>
         </select>
       </label>
-      <label className="space-y-1 text-[11px] text-text-muted">
+      <label className="space-y-1 text-xs text-text-muted">
         name
         <input
           value={draft.name}
@@ -834,7 +831,7 @@ function DraftForm({
           className="w-full rounded-md border border-border bg-card-secondary px-2.5 py-2 font-mono text-xs text-text-primary outline-none focus:border-accent"
         />
       </label>
-      <label className="space-y-1 text-[11px] text-text-muted">
+      <label className="space-y-1 text-xs text-text-muted">
         command
         <input
           value={draft.command}
@@ -844,7 +841,7 @@ function DraftForm({
           className="w-full rounded-md border border-border bg-card-secondary px-2.5 py-2 font-mono text-xs text-text-primary outline-none focus:border-accent"
         />
       </label>
-      <label className="space-y-1 text-[11px] text-text-muted">
+      <label className="space-y-1 text-xs text-text-muted">
         {t("mcp.field_args")}
         <textarea
           value={draft.argsText}
@@ -855,7 +852,7 @@ function DraftForm({
           className="w-full resize-none rounded-md border border-border bg-card-secondary px-2.5 py-2 font-mono text-xs text-text-primary outline-none focus:border-accent"
         />
       </label>
-      <label className="space-y-1 text-[11px] text-text-muted">
+      <label className="space-y-1 text-xs text-text-muted">
         {t("mcp.field_env")}
         <textarea
           value={draft.envText}
@@ -869,7 +866,7 @@ function DraftForm({
       <button
         onClick={onSave}
         disabled={saving}
-        className="flex w-full items-center justify-center gap-1.5 rounded-md bg-accent px-3 py-2 text-xs font-medium text-white hover:bg-accent-hover disabled:opacity-60"
+        className="flex w-full items-center justify-center gap-1.5 rounded-md bg-accent px-3 py-2 text-xs font-medium text-on-accent hover:bg-accent-hover disabled:opacity-60"
       >
         {saving ? (
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -898,12 +895,14 @@ function FilterButton({
       onClick={onClick}
       className={`rounded-md px-2.5 py-1.5 text-xs ${
         active
-          ? "bg-accent text-white"
+          ? "bg-accent text-on-accent"
           : "text-text-secondary hover:bg-card-secondary"
       }`}
     >
       {label}
-      <span className={active ? "ml-1 text-white/80" : "ml-1 text-text-muted"}>
+      <span
+        className={active ? "ml-1 text-on-accent/80" : "ml-1 text-text-muted"}
+      >
         {count}
       </span>
     </button>
@@ -919,7 +918,7 @@ function StatusPill({ status }: { status: McpValidationStatus }) {
         : AlertTriangle;
   return (
     <span
-      className={`inline-flex w-fit items-center gap-1 rounded px-1.5 py-0.5 text-[10px] ${
+      className={`inline-flex w-fit items-center gap-1 rounded px-1.5 py-0.5 text-xs ${
         status === "valid"
           ? "bg-success/10 text-success"
           : status === "invalid"
@@ -939,7 +938,7 @@ function ClientBadges({ server }: { server: McpServer }) {
       {server.enabled_clients.map((client) => (
         <span
           key={client}
-          className="inline-flex items-center gap-1 rounded bg-card-secondary px-1.5 py-0.5 text-[10px] text-text-secondary"
+          className="inline-flex items-center gap-1 rounded bg-card-secondary px-1.5 py-0.5 text-xs text-text-secondary"
         >
           {clientIcon(client)}
           {clientLabel(client)}
@@ -953,7 +952,7 @@ function EnvSummary({ server }: { server: McpServer }) {
   const { t } = useI18n();
   const missing = server.env.filter((env) => !env.has_value).length;
   return (
-    <div className="flex items-center gap-1.5 text-[11px] text-text-muted">
+    <div className="flex items-center gap-1.5 text-xs text-text-muted">
       <KeyRound className="h-3 w-3" />
       <span>{server.env.length}</span>
       {missing > 0 && (
@@ -998,7 +997,7 @@ function DetailSection({
 }) {
   return (
     <section>
-      <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-text-muted">
+      <div className="mb-2 text-xs font-medium uppercase tracking-wide text-text-muted">
         {title}
       </div>
       {children}
@@ -1008,7 +1007,7 @@ function DetailSection({
 
 function CodeBlock({ value }: { value: string }) {
   return (
-    <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-all rounded-md bg-card-secondary px-3 py-2 font-mono text-[11px] text-text-secondary">
+    <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-all rounded-md bg-card-secondary px-3 py-2 font-mono text-xs text-text-secondary">
       {value}
     </pre>
   );

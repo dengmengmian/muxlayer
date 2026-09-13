@@ -175,6 +175,7 @@ pub(super) async fn handle_non_stream_response(
                                     .map(|tcs| tcs.iter().map(|tc| tc.id.clone()).collect())
                                     .unwrap_or_default();
                                 crate::transform::reasoning_store::store(
+                                    &model,
                                     &text_content,
                                     rc,
                                     &tc_ids,
@@ -330,6 +331,7 @@ pub(super) async fn handle_non_stream_response(
                     output: out_tok,
                     cache_write: cache_w,
                     cache_read: cache_r,
+                    input_semantics: crate::gateway::usage::InputCacheSemantics::IncludesCacheRead,
                 },
             );
 
@@ -584,12 +586,14 @@ pub(super) async fn handle_stream_response(
                                 output: out_tok,
                                 cache_write: cache_w,
                                 cache_read: cache_r,
+                                input_semantics:
+                                    crate::gateway::usage::InputCacheSemantics::IncludesCacheRead,
                             },
                         );
                     }
                     Err(err_msg) => {
-                        let err =
-                            AppError::new(crate::errors::codes::UPSTREAM_STREAM_ERROR, &err_msg);
+                        // 客户端断开记 499 + client disconnected,上游失败记 502。
+                        let err = stream_task_error(&err_msg);
                         log_request_error_full(
                             &db,
                             &client_type,
@@ -600,7 +604,7 @@ pub(super) async fn handle_stream_response(
                             &provider_name,
                             &model_clone,
                             &err,
-                            502,
+                            stream_error_status(&err),
                             latency,
                         );
                     }

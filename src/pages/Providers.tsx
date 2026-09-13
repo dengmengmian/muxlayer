@@ -225,8 +225,8 @@ export function Providers() {
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between gap-3">
+    <div className="desktop-page">
+      <div className="desktop-page-header flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-1 items-center gap-3">
           <p className="shrink-0 text-xs text-text-muted">
             {search
@@ -272,7 +272,7 @@ export function Providers() {
               setEditTarget(null);
               setFormOpen(true);
             }}
-            className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent/90"
+            className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-on-accent transition-colors hover:bg-accent/90"
           >
             <Plus className="h-3.5 w-3.5" />
             {t("providers.add")}

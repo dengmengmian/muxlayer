@@ -8,6 +8,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::errors::AppError;
+use crate::gateway::failover::Attempt;
 use crate::gateway::sse::SseAccumulator;
 use crate::gateway::sse_anthropic::AnthropicSseAccumulator;
 use crate::gateway::sse_gemini::GeminiSseAccumulator;
@@ -17,10 +18,11 @@ use crate::providers::adapter::{self, ProviderConfig};
 use crate::transform::{responses_to_anthropic, responses_to_chat, responses_to_gemini};
 
 use super::shared::{
-    detect_client_from_ua, lock_db, log_request_error, log_request_error_full, log_request_success,
-    native_model_override_for_images, refine_struct_body, refine_value_body,
-    request_body_or_gateway_error, request_contains_images, sanitize_body,
-    trace_with_degradation_events, truncate_str, validate_auth, GatewayError,
+    check_budget, detect_client_from_ua, log_request_error, log_request_error_full,
+    log_request_success, native_model_override_for_images, refine_struct_body, refine_value_body,
+    request_body_or_gateway_error, request_contains_images, sanitize_body, select_providers,
+    stream_error_status, stream_task_error, trace_with_degradation_events, truncate_str,
+    GatewayError,
 };
 use super::GatewayState;
 
@@ -108,10 +110,9 @@ pub async fn handle_responses(
     AxumState(state): AxumState<GatewayState>,
     body: Result<bytes::Bytes, axum::extract::rejection::BytesRejection>,
 ) -> Result<Response, GatewayError> {
+    // 鉴权 + Host/Origin 边界校验在 server.rs 的中间件里、读 body 之前完成。
     let body = request_body_or_gateway_error(body)?;
-    validate_auth(&headers)?;
-    let force_cheapest =
-        crate::gateway::budget::check_new_request(&state.db).map_err(GatewayError)?;
+    let force_cheapest = check_budget(&state.db).await?;
     let start = Instant::now();
     let request_id = format!(
         "req_{}",
@@ -121,19 +122,20 @@ pub async fn handle_responses(
 
     // Decompress if needed — Codex.app with `requires_openai_auth = true`
     // gzip-compresses the request body to match the production OpenAI flow.
-    let body = crate::gateway::body_decode::decode(&headers, body).map_err(|e| {
-        log_request_error(
-            &state.db,
-            &client_type,
-            "/v1/responses",
-            &request_id,
-            "",
-            None,
-            &e,
-            start.elapsed().as_millis() as i64,
-        );
-        GatewayError(e)
-    })?;
+    let body = crate::gateway::body_decode::decode(&headers, body, state.request_body_limit)
+        .map_err(|e| {
+            log_request_error(
+                &state.db,
+                &client_type,
+                "/v1/responses",
+                &request_id,
+                "",
+                None,
+                &e,
+                start.elapsed().as_millis() as i64,
+            );
+            GatewayError(e)
+        })?;
 
     // 1. Parse request
     let mut req: ResponsesRequest = serde_json::from_str(&body).map_err(|e| {
@@ -169,12 +171,14 @@ pub async fn handle_responses(
 
     // 2. Select provider via route profile (with failover candidates)
     let analysis = crate::gateway::provider_selector::analyze_request(&req);
-    let mut selection = crate::gateway::provider_selector::select_for_failover(
+    let selection = select_providers(
         &state.db,
-        "openai_responses",
-        req.model.as_deref(),
-        Some(&analysis),
+        &["openai_responses"],
+        req.model.clone(),
+        analysis.clone(),
+        force_cheapest,
     )
+    .await
     .map_err(|e| {
         log_request_error(
             &state.db,
@@ -188,12 +192,8 @@ pub async fn handle_responses(
         );
         GatewayError(e)
     })?;
-    if force_cheapest {
-        let _ = crate::gateway::budget::apply_force_cheapest(&state.db, &mut selection);
-    }
 
     let is_failover = selection.mode == "failover" && selection.candidates.len() > 1;
-    let candidates = selection.candidates.clone();
     let raw_body = sanitize_body(&body);
 
     // Derive a stable session-affinity key. Used at two points: candidate
@@ -212,332 +212,320 @@ pub async fn handle_responses(
 
     // 主 provider 优先 + failover 候选 + vision 过滤 + 会话亲和,统一由 failover 模块构建。
     let attempt_order = crate::gateway::failover::build_attempt_order(
-        &candidates,
+        &selection.candidates,
         &selection.provider.id,
         is_failover,
         request_has_images,
         affinity_sid,
     );
+    let providers = crate::gateway::failover::load_providers(&state.db, &attempt_order)
+        .await
+        .map_err(GatewayError)?;
 
-    let mut last_error: Option<AppError> = None;
-    let mut attempts_trace: Vec<serde_json::Value> = Vec::new();
-
-    for (attempt_idx, candidate) in attempt_order.iter().enumerate() {
-        let provider = {
-            let conn = state
-                .db
-                .get()
-                .map_err(|_| GatewayError(AppError::internal("DB lock")))?;
-            match crate::storage::providers::get_by_id(&conn, &candidate.provider_id) {
-                Ok(p) => p,
-                Err(_) => continue,
+    let ctx = ResponsesAttemptCtx {
+        state: &state,
+        headers: &headers,
+        req: &req,
+        body: &body,
+        raw_body: &raw_body,
+        request_has_images,
+        request_id: &request_id,
+        start,
+        client_type: &client_type,
+        session_id: session_id.as_deref(),
+    };
+    let providers = &providers;
+    crate::gateway::failover::run_attempts(
+        &state.db,
+        &attempt_order,
+        is_failover,
+        |_, candidate| async move {
+            match providers.get(&candidate.provider_id) {
+                Some(provider) => attempt_responses_provider(ctx, provider, &candidate).await,
+                None => Attempt::Skip(AppError::not_found("Provider", &candidate.provider_id)),
             }
-        };
+        },
+    )
+    .await
+    .map_err(GatewayError)
+}
 
-        let config = match ProviderConfig::from_provider(&provider) {
-            Ok(c) => c,
-            Err(e) => {
-                attempts_trace.push(json!({"provider": &candidate.provider_name, "error": e.message, "attempt": attempt_idx + 1}));
-                last_error = Some(e);
-                continue;
-            }
-        };
+/// 一次 /v1/responses 请求在所有候选间共享的只读上下文。
+#[derive(Clone, Copy)]
+struct ResponsesAttemptCtx<'a> {
+    state: &'a GatewayState,
+    headers: &'a HeaderMap,
+    req: &'a ResponsesRequest,
+    body: &'a str,
+    raw_body: &'a str,
+    request_has_images: bool,
+    request_id: &'a str,
+    start: Instant,
+    client_type: &'a str,
+    session_id: Option<&'a str>,
+}
 
-        let model = candidate.model.clone();
+/// Responses → 各上游协议的转换会按 `previous_response_id` 查 session_store
+/// (L2 是全局 Mutex + 同步 SQLite)。带 previous_response_id 时整个转换挪到
+/// blocking 线程池;不带时没有 IO,原地转换省一次请求体克隆。
+async fn convert_off_worker<T, F>(req: &ResponsesRequest, convert: F) -> Result<T, AppError>
+where
+    T: Send + 'static,
+    F: FnOnce(&ResponsesRequest) -> Result<T, AppError> + Send + 'static,
+{
+    if req.previous_response_id.is_none() {
+        return convert(req);
+    }
+    let owned = req.clone();
+    tokio::task::spawn_blocking(move || convert(&owned))
+        .await
+        .map_err(|e| AppError::internal(format!("request conversion task failed: {e}")))?
+}
 
-        let model_override = native_model_override_for_images(
-            &provider,
-            req.model.as_deref(),
-            Some(&model),
+/// 对单个候选发起一次 Responses 请求(直通 / Anthropic / Gemini / Chat 转换)。
+async fn attempt_responses_provider(
+    ctx: ResponsesAttemptCtx<'_>,
+    provider: &crate::models::provider::Provider,
+    candidate: &crate::gateway::provider_selector::ProviderCandidate,
+) -> Attempt<Response> {
+    let state = ctx.state;
+    let req = ctx.req;
+    let request_id = ctx.request_id.to_string();
+    let raw_body = ctx.raw_body.to_string();
+    let client_type = ctx.client_type.to_string();
+    let session_id = ctx.session_id.map(str::to_string);
+    let start = ctx.start;
+    let request_has_images = ctx.request_has_images;
+
+    let config = match ProviderConfig::from_provider(provider) {
+        Ok(c) => c,
+        Err(e) => return Attempt::Skip(e),
+    };
+
+    let model = candidate.model.clone();
+
+    let model_override = native_model_override_for_images(
+        provider,
+        req.model.as_deref(),
+        Some(&model),
+        request_has_images,
+    );
+    let native_model = native_pass_through_model(
+        model_override.as_deref(),
+        req.model.as_deref(),
+        &config.default_model,
+    );
+    let native_responses = config.has_responses_url()
+        && native_responses_allowed(
+            &provider.provider_type,
+            native_model,
             request_has_images,
+            req.tools.as_deref(),
         );
-        let native_model = native_pass_through_model(
-            model_override.as_deref(),
-            req.model.as_deref(),
-            &config.default_model,
-        );
-        let native_responses = config.has_responses_url()
-            && native_responses_allowed(
-                &provider.provider_type,
-                native_model,
-                request_has_images,
-                req.tools.as_deref(),
-            );
 
-        let result = if native_responses {
-            // Pass-through: provider has explicit Responses API endpoint
-            let target_url = config.responses_url();
-            crate::gateway::pass_through::handle(
-                &state.http_client,
-                &state.db,
-                &config,
-                &target_url,
-                "/v1/responses",
-                "openai_responses",
-                &body,
-                model_override.as_deref(),
-                &request_id,
+    let result = if native_responses {
+        // Pass-through: provider has explicit Responses API endpoint
+        let target_url = config.responses_url();
+        crate::gateway::pass_through::handle(
+            &state.http_client,
+            &state.db,
+            &config,
+            &target_url,
+            "/v1/responses",
+            "openai_responses",
+            ctx.body,
+            model_override.as_deref(),
+            &request_id,
+            start,
+            &client_type,
+            Some(ctx.headers),
+            ctx.session_id,
+            Some(candidate.provider_id.as_str()),
+        )
+        .await
+        .map_err(GatewayError)
+    } else if config.is_anthropic() {
+        // Claude Messages API conversion (only for Anthropic-type providers)
+        // auto_cache_control: default true unless provider explicitly set false
+        let auto_cache = provider.auto_cache_control.unwrap_or(true);
+        let convert_model = model.clone();
+        let mut anthropic_body = match convert_off_worker(req, move |r| {
+            responses_to_anthropic::convert(r, &convert_model, auto_cache)
+        })
+        .await
+        {
+            Ok(b) => b,
+            Err(e) => return Attempt::Abort(e),
+        };
+        let _refiner_log = refine_value_body(&state.db, provider, &mut anthropic_body);
+        let converted_json = serde_json::to_string(&anthropic_body).unwrap_or_default();
+        let is_stream = req.stream.unwrap_or(false);
+        if is_stream {
+            handle_anthropic_stream_response(
+                state.clone(),
+                config.clone(),
+                anthropic_body,
+                request_id.clone(),
+                raw_body.clone(),
+                converted_json,
+                model.clone(),
                 start,
-                &client_type,
-                Some(&headers),
-                session_id.as_deref(),
-                Some(candidate.provider_id.as_str()),
+                client_type.clone(),
+                session_id.clone(),
+                candidate.provider_id.clone(),
             )
             .await
-            .map_err(GatewayError)
-        } else if config.is_anthropic() {
-            // Claude Messages API conversion (only for Anthropic-type providers)
-            // auto_cache_control: default true unless provider explicitly set false
-            let auto_cache = provider.auto_cache_control.unwrap_or(true);
-            let mut anthropic_body = match responses_to_anthropic::convert(&req, &model, auto_cache)
-            {
-                Ok(b) => b,
-                Err(e) => {
-                    attempts_trace.push(json!({"provider": &candidate.provider_name, "error": e.message, "attempt": attempt_idx + 1}));
-                    last_error = Some(e);
-                    break;
-                }
-            };
-            let _refiner_log = refine_value_body(&state.db, &provider, &mut anthropic_body);
-            let converted_json = serde_json::to_string(&anthropic_body).unwrap_or_default();
-            let is_stream = req.stream.unwrap_or(false);
-            if is_stream {
-                handle_anthropic_stream_response(
-                    state.clone(),
-                    config.clone(),
-                    anthropic_body,
-                    request_id.clone(),
-                    raw_body.clone(),
-                    converted_json,
-                    model.clone(),
-                    start,
-                    client_type.clone(),
-                    session_id.clone(),
-                    candidate.provider_id.clone(),
-                )
-                .await
-            } else {
-                handle_anthropic_non_stream_response(
-                    state.clone(),
-                    config.clone(),
-                    anthropic_body,
-                    request_id.clone(),
-                    raw_body.clone(),
-                    converted_json,
-                    model.clone(),
-                    start,
-                    client_type.clone(),
-                    session_id.clone(),
-                    candidate.provider_id.clone(),
-                )
-                .await
-            }
-        } else if config.is_gemini() {
-            // Gemini API conversion
-            let mut gemini_body = match responses_to_gemini::convert(&req, &model) {
-                Ok(b) => b,
-                Err(e) => {
-                    attempts_trace.push(json!({"provider": &candidate.provider_name, "error": e.message, "attempt": attempt_idx + 1}));
-                    last_error = Some(e);
-                    break;
-                }
-            };
-            let _refiner_log = refine_value_body(&state.db, &provider, &mut gemini_body);
-            let converted_json = serde_json::to_string(&gemini_body).unwrap_or_default();
-            let is_stream = req.stream.unwrap_or(false);
-            if is_stream {
-                handle_gemini_stream_response(
-                    state.clone(),
-                    config.clone(),
-                    gemini_body,
-                    request_id.clone(),
-                    raw_body.clone(),
-                    converted_json,
-                    model.clone(),
-                    start,
-                    client_type.clone(),
-                    session_id.clone(),
-                    candidate.provider_id.clone(),
-                )
-                .await
-            } else {
-                handle_gemini_non_stream_response(
-                    state.clone(),
-                    config.clone(),
-                    gemini_body,
-                    request_id.clone(),
-                    raw_body.clone(),
-                    converted_json,
-                    model.clone(),
-                    start,
-                    client_type.clone(),
-                    session_id.clone(),
-                    candidate.provider_id.clone(),
-                )
-                .await
-            }
         } else {
-            // Chat Completions path (default: transform Responses → Chat Completions)
-            let provider_transform = crate::transform::providers::for_config(&config);
-            // Pull the per-model capability matrix from the underlying provider
-            // (re-fetch since ProviderConfig doesn't carry it). Empty map → fall back
-            // to legacy "always emit web_search for MiMo" behavior.
-            let matrix = {
-                let conn = state
-                    .db
-                    .get()
-                    .map_err(|_| GatewayError(AppError::internal("DB lock")))?;
-                crate::storage::providers::get_by_id(&conn, &candidate.provider_id)
-                    .ok()
-                    .and_then(|p| p.model_capabilities)
-                    .and_then(|s| {
-                        serde_json::from_str::<std::collections::HashMap<String, Vec<String>>>(&s)
-                            .ok()
-                    })
-                    .unwrap_or_default()
-            };
-            let mut chat_req = match responses_to_chat::convert_with_provider_matrix(
-                &req,
-                &model,
+            handle_anthropic_non_stream_response(
+                state.clone(),
+                config.clone(),
+                anthropic_body,
+                request_id.clone(),
+                raw_body.clone(),
+                converted_json,
+                model.clone(),
+                start,
+                client_type.clone(),
+                session_id.clone(),
+                candidate.provider_id.clone(),
+            )
+            .await
+        }
+    } else if config.is_gemini() {
+        // Gemini API conversion
+        let convert_model = model.clone();
+        let mut gemini_body = match convert_off_worker(req, move |r| {
+            responses_to_gemini::convert(r, &convert_model)
+        })
+        .await
+        {
+            Ok(b) => b,
+            Err(e) => return Attempt::Abort(e),
+        };
+        let _refiner_log = refine_value_body(&state.db, provider, &mut gemini_body);
+        let converted_json = serde_json::to_string(&gemini_body).unwrap_or_default();
+        let is_stream = req.stream.unwrap_or(false);
+        if is_stream {
+            handle_gemini_stream_response(
+                state.clone(),
+                config.clone(),
+                gemini_body,
+                request_id.clone(),
+                raw_body.clone(),
+                converted_json,
+                model.clone(),
+                start,
+                client_type.clone(),
+                session_id.clone(),
+                candidate.provider_id.clone(),
+            )
+            .await
+        } else {
+            handle_gemini_non_stream_response(
+                state.clone(),
+                config.clone(),
+                gemini_body,
+                request_id.clone(),
+                raw_body.clone(),
+                converted_json,
+                model.clone(),
+                start,
+                client_type.clone(),
+                session_id.clone(),
+                candidate.provider_id.clone(),
+            )
+            .await
+        }
+    } else {
+        // Chat Completions path (default: transform Responses → Chat Completions)
+        let provider_transform = crate::transform::providers::for_config(&config);
+        // Per-model capability matrix 直接取已加载的 provider(不再按 id 重查一次库)。
+        // Empty map → fall back to legacy "always emit web_search for MiMo" behavior.
+        let matrix = provider
+            .model_capabilities
+            .as_deref()
+            .and_then(|s| {
+                serde_json::from_str::<std::collections::HashMap<String, Vec<String>>>(s).ok()
+            })
+            .unwrap_or_default();
+        let convert_model = model.clone();
+        let mut chat_req = match convert_off_worker(req, move |r| {
+            responses_to_chat::convert_with_provider_matrix(
+                r,
+                &convert_model,
                 provider_transform.as_ref(),
                 &matrix,
-            ) {
-                Ok(r) => r,
-                Err(e) => {
-                    attempts_trace.push(json!({"provider": &candidate.provider_name, "error": e.message, "attempt": attempt_idx + 1}));
-                    last_error = Some(e);
-                    break;
-                }
-            };
-            // 长历史自压缩:超阈值时摘要中段历史,落回上游窗口内。默认开启,阈值按模型
-            // 上下文窗口 × usage% 自适应(详见 auto_compact),内部按需额外调一次上游。
-            let compact_policy = lock_db(&state.db)
-                .and_then(|conn| crate::storage::gateway_settings::get(&conn).ok())
-                .map(|s| {
-                    crate::gateway::auto_compact::CompactPolicy::from_settings(
-                        s.auto_compact_enabled,
-                        s.auto_compact_usage_percent,
-                    )
-                })
-                .unwrap_or_default();
-            crate::gateway::auto_compact::maybe_compact_with_policy(
-                &state.http_client,
-                &config,
-                &mut chat_req,
-                compact_policy,
             )
-            .await;
-            let _refiner_log = refine_struct_body(&state.db, &provider, &mut chat_req);
-            let converted_json = serde_json::to_string(&chat_req).unwrap_or_default();
-            let is_stream = chat_req.stream;
-            if is_stream {
-                handle_stream_response(
-                    state.clone(),
-                    config.clone(),
-                    chat_req,
-                    request_id.clone(),
-                    raw_body.clone(),
-                    converted_json,
-                    model.clone(),
-                    start,
-                    client_type.clone(),
-                    session_id.clone(),
-                    candidate.provider_id.clone(),
-                )
-                .await
-            } else {
-                handle_non_stream_response(
-                    state.clone(),
-                    config.clone(),
-                    chat_req,
-                    req.clone(),
-                    request_id.clone(),
-                    raw_body.clone(),
-                    converted_json,
-                    model.clone(),
-                    start,
-                    client_type.clone(),
-                    session_id.clone(),
-                    candidate.provider_id.clone(),
-                )
-                .await
+        })
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => return Attempt::Abort(e),
+        };
+        // 长历史自压缩:超阈值时摘要中段历史,落回上游窗口内。默认开启,阈值按模型
+        // 上下文窗口 × usage% 自适应(详见 auto_compact),内部按需额外调一次上游。
+        let compact_policy = match crate::runtime::db_blocking(&state.db, |conn| {
+            crate::storage::gateway_settings::get(conn)
+        })
+        .await
+        {
+            Ok(s) => crate::gateway::auto_compact::CompactPolicy::from_settings(
+                s.auto_compact_enabled,
+                s.auto_compact_usage_percent,
+            ),
+            Err(e) => {
+                tracing::warn!(error = %e, "read gateway settings for auto-compact failed; using default policy");
+                crate::gateway::auto_compact::CompactPolicy::default()
             }
         };
-
-        match result {
-            Ok(response) => {
-                // Success — mark provider healthy
-                if let Some(conn) = lock_db(&state.db) {
-                    let _ = crate::storage::provider_runtime_status::mark_success(
-                        &conn,
-                        &candidate.provider_id,
-                    );
-                }
-                return Ok(response);
-            }
-            Err(GatewayError(err)) => {
-                // 从 err.message 提取 "Provider returned HTTP {status}" 里的状态码。
-                // 之前是从 err.detail（上游 body）扫"HTTP "字串——但 detail 是上游
-                // 原始响应（可能是 HTML / SSE 帧 / JSON），不保证含 "HTTP "。adapter.rs
-                // 里 message 才是 canonical 的 "Provider returned HTTP 500 ..."，从这里
-                // 提取永远靠谱。修这个 bug 后，HTML 错误页等"detail 里没 HTTP 串"的
-                // 场景能正确识别状态码，进而触发 5xx failover。
-                let status_code = match err.code.as_str() {
-                    "UPSTREAM_NON_STREAM_ERROR" | "UPSTREAM_STREAM_ERROR" => {
-                        err.message.find("HTTP ").and_then(|i| {
-                            err.message[i + 5..]
-                                .split_whitespace()
-                                .next()?
-                                .parse::<u16>()
-                                .ok()
-                        })
-                    }
-                    "PROVIDER_REQUEST_FAILED" => Some(502),
-                    _ => None,
-                };
-
-                attempts_trace.push(json!({
-                    "provider": &candidate.provider_name, "attempt": attempt_idx + 1,
-                    "error": &err.message, "status": status_code,
-                }));
-
-                // Mark failure + cooldown
-                if let Some(conn) = lock_db(&state.db) {
-                    let _ = crate::storage::provider_runtime_status::mark_failure(
-                        &conn,
-                        &candidate.provider_id,
-                        &err.code,
-                        &err.message,
-                        candidate.cooldown_seconds,
-                    );
-                }
-
-                // Check if we should failover
-                if is_failover && attempt_idx < attempt_order.len() - 1 {
-                    let should = crate::gateway::provider_selector::should_failover(
-                        status_code,
-                        &err.message,
-                        candidate,
-                    );
-                    if should {
-                        last_error = Some(err);
-                        continue; // Try next provider
-                    }
-                }
-
-                // Not retryable or last attempt
-                return Err(GatewayError(err));
-            }
-        }
-    }
-
-    // All attempts exhausted
-    Err(GatewayError(last_error.unwrap_or_else(|| {
-        AppError::new(
-            crate::errors::codes::FAILOVER_EXHAUSTED,
-            "All providers failed",
+        crate::gateway::auto_compact::maybe_compact_with_policy(
+            &state.http_client,
+            &config,
+            &mut chat_req,
+            compact_policy,
         )
-    })))
+        .await;
+        let _refiner_log = refine_struct_body(&state.db, provider, &mut chat_req);
+        let converted_json = serde_json::to_string(&chat_req).unwrap_or_default();
+        let is_stream = chat_req.stream;
+        if is_stream {
+            handle_stream_response(
+                state.clone(),
+                config.clone(),
+                chat_req,
+                request_id.clone(),
+                raw_body.clone(),
+                converted_json,
+                model.clone(),
+                start,
+                client_type.clone(),
+                session_id.clone(),
+                candidate.provider_id.clone(),
+            )
+            .await
+        } else {
+            handle_non_stream_response(
+                state.clone(),
+                config.clone(),
+                chat_req,
+                req.clone(),
+                request_id.clone(),
+                raw_body.clone(),
+                converted_json,
+                model.clone(),
+                start,
+                client_type.clone(),
+                session_id.clone(),
+                candidate.provider_id.clone(),
+            )
+            .await
+        }
+    };
+
+    match result {
+        Ok(response) => Attempt::Success(response),
+        Err(GatewayError(err)) => crate::gateway::failover::classify_error(err),
+    }
 }
 
 #[cfg(test)]

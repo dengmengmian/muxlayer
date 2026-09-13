@@ -8,13 +8,17 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::errors::AppError;
+use crate::gateway::failover::Attempt;
+use crate::gateway::provider_selector::ProviderCandidate;
+use crate::models::provider::Provider;
 use crate::providers::adapter::{self, ProviderConfig};
 use crate::transform::gemini_to_chat;
 
 use super::shared::{
-    detect_client_from_ua, log_request_error, log_request_error_full, log_request_success,
-    native_model_override, refine_struct_body, request_body_or_gateway_error, sanitize_body,
-    trace_with_degradation_events, validate_auth, GatewayError,
+    check_budget, client_disconnected_error, detect_client_from_ua, log_request_error,
+    log_request_error_full, log_request_success, native_model_override, refine_struct_body,
+    request_body_or_gateway_error, sanitize_body, select_providers, stream_error_status,
+    trace_with_degradation_events, truncate_str, GatewayError, CLIENT_DISCONNECTED_STATUS,
 };
 use super::GatewayState;
 
@@ -26,13 +30,14 @@ pub async fn handle_gemini_generate(
     AxumState(state): AxumState<GatewayState>,
     body: Result<bytes::Bytes, axum::extract::rejection::BytesRejection>,
 ) -> Result<Response, GatewayError> {
+    // 鉴权 + Host/Origin 边界校验在 server.rs 的中间件里、读 body 之前完成。
     let body = request_body_or_gateway_error(body)?;
-    validate_auth(&headers)?;
 
     // Gemini 路径形如 "gemini-2.5-flash:generateContent" / ":streamGenerateContent"
     // / ":countTokens"。axum 无法在 router 层按 action 分发，handler 入口分流。
     if model_path.ends_with(":countTokens") {
-        let body = crate::gateway::body_decode::decode(&headers, body).map_err(GatewayError)?;
+        let body = crate::gateway::body_decode::decode(&headers, body, state.request_body_limit)
+            .map_err(GatewayError)?;
         let v: Value = serde_json::from_str(&body).map_err(|e| {
             GatewayError(AppError::new(
                 crate::errors::codes::COUNT_TOKENS_PARSE_ERROR,
@@ -62,19 +67,20 @@ pub async fn handle_gemini_generate(
     );
     let client_type = detect_client_from_ua(&headers, "Gemini CLI");
 
-    let body = crate::gateway::body_decode::decode(&headers, body).map_err(|e| {
-        log_request_error(
-            &state.db,
-            &client_type,
-            "/v1beta/generateContent",
-            &request_id,
-            "",
-            None,
-            &e,
-            start.elapsed().as_millis() as i64,
-        );
-        GatewayError(e)
-    })?;
+    let body = crate::gateway::body_decode::decode(&headers, body, state.request_body_limit)
+        .map_err(|e| {
+            log_request_error(
+                &state.db,
+                &client_type,
+                "/v1beta/generateContent",
+                &request_id,
+                "",
+                None,
+                &e,
+                start.elapsed().as_millis() as i64,
+            );
+            GatewayError(e)
+        })?;
 
     // Extract model name from path (e.g. "gemini-2.5-flash" from "gemini-2.5-flash:generateContent")
     let model_name = model_path
@@ -84,8 +90,7 @@ pub async fn handle_gemini_generate(
         .to_string();
     let is_stream = model_path.contains("streamGenerateContent");
 
-    let force_cheapest =
-        crate::gateway::budget::check_new_request(&state.db).map_err(GatewayError)?;
+    let force_cheapest = check_budget(&state.db).await?;
 
     let gemini_body: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
         let err = AppError::new(
@@ -108,20 +113,14 @@ pub async fn handle_gemini_generate(
     let analysis = crate::gateway::provider_selector::analyze_gemini_value(&gemini_body);
 
     // Select provider (use openai_responses route profile since Gemini CLI is a coding agent)
-    let mut selection = crate::gateway::provider_selector::select_for_failover(
+    let selection = select_providers(
         &state.db,
-        "openai_responses",
-        Some(&model_name),
-        Some(&analysis),
+        &["openai_responses", "openai_chat_completions"],
+        Some(model_name.clone()),
+        analysis.clone(),
+        force_cheapest,
     )
-    .or_else(|_| {
-        crate::gateway::provider_selector::select_for_failover(
-            &state.db,
-            "openai_chat_completions",
-            Some(&model_name),
-            Some(&analysis),
-        )
-    })
+    .await
     .map_err(|e| {
         log_request_error(
             &state.db,
@@ -135,88 +134,142 @@ pub async fn handle_gemini_generate(
         );
         GatewayError(e)
     })?;
-    if force_cheapest {
-        let _ = crate::gateway::budget::apply_force_cheapest(&state.db, &mut selection);
-    }
 
-    let config = ProviderConfig::from_provider(&selection.provider).map_err(|e| {
-        log_request_error(
+    // 与其它入口共用排序 + failover 驱动(Gemini 请求不带会话 id,不做亲和)。
+    let request_has_images = analysis.has_images;
+    let is_failover = selection.mode == "failover" && selection.candidates.len() > 1;
+    let attempt_order = crate::gateway::failover::build_attempt_order(
+        &selection.candidates,
+        &selection.provider.id,
+        is_failover,
+        request_has_images,
+        None,
+    );
+    let providers = crate::gateway::failover::load_providers(&state.db, &attempt_order)
+        .await
+        .map_err(GatewayError)?;
+
+    let raw_body = sanitize_body(&body);
+    let ctx = GeminiAttemptCtx {
+        state: &state,
+        gemini_body: &gemini_body,
+        raw_body: &raw_body,
+        model_name: &model_name,
+        is_stream,
+        request_id: &request_id,
+        start,
+        client_type: &client_type,
+    };
+    let providers = &providers;
+    crate::gateway::failover::run_attempts(
+        &state.db,
+        &attempt_order,
+        is_failover,
+        |_, candidate| async move {
+            match providers.get(&candidate.provider_id) {
+                Some(provider) => attempt_gemini_provider(ctx, provider, &candidate).await,
+                None => Attempt::Skip(AppError::not_found("Provider", &candidate.provider_id)),
+            }
+        },
+    )
+    .await
+    .map_err(GatewayError)
+}
+
+/// 一次 Gemini 请求在所有候选间共享的只读上下文。
+#[derive(Clone, Copy)]
+struct GeminiAttemptCtx<'a> {
+    state: &'a GatewayState,
+    gemini_body: &'a Value,
+    raw_body: &'a str,
+    model_name: &'a str,
+    is_stream: bool,
+    request_id: &'a str,
+    start: Instant,
+    client_type: &'a str,
+}
+
+/// 对单个候选发起一次 Gemini 请求:google_gemini 原生直通,否则转 Chat。
+async fn attempt_gemini_provider(
+    ctx: GeminiAttemptCtx<'_>,
+    provider: &Provider,
+    candidate: &ProviderCandidate,
+) -> Attempt<Response> {
+    let state = ctx.state;
+    let is_stream = ctx.is_stream;
+    let start = ctx.start;
+    let config = match ProviderConfig::from_provider(provider) {
+        Ok(c) => c,
+        Err(e) => {
+            // 配置错(如缺 API key)要在日志页可见,再跳到下一个候选。
+            log_request_error(
+                &state.db,
+                ctx.client_type,
+                "/v1beta/generateContent",
+                ctx.request_id,
+                ctx.raw_body,
+                None,
+                &e,
+                start.elapsed().as_millis() as i64,
+            );
+            return Attempt::Skip(e);
+        }
+    };
+    let resolved_model = candidate.model.clone();
+    let log_upstream_error = |converted: &str, model: &str, err: &AppError| {
+        log_request_error_full(
             &state.db,
-            &client_type,
+            ctx.client_type,
             "/v1beta/generateContent",
-            &request_id,
-            &sanitize_body(&body),
-            None,
-            &e,
+            ctx.request_id,
+            ctx.raw_body,
+            converted,
+            &config.name,
+            model,
+            err,
+            502,
             start.elapsed().as_millis() as i64,
         );
-        GatewayError(e)
-    })?;
-
-    let resolved_model = selection.model.clone();
-    let raw_body = sanitize_body(&body);
+    };
 
     // Gemini → Gemini passthrough：选中的 provider 是 google_gemini 原生上游，
     // 直接调上游 generateContent / streamGenerateContent，body 原样转发回 client。
     // 不绕 Chat 转换，避免丢 thinking / grounding / safetySettings 这些 Gemini-only 字段。
     if config.is_gemini() {
         // Override body 里的 model（如有 mapping）
-        let model_override = native_model_override(
-            &selection.provider,
-            Some(&model_name),
-            Some(&resolved_model),
-        );
+        let model_override =
+            native_model_override(provider, Some(ctx.model_name), Some(&resolved_model));
         let final_model = model_override.unwrap_or(resolved_model.clone());
 
         if is_stream {
-            let upstream_resp = adapter::send_gemini_stream(
+            let upstream_resp = match adapter::send_gemini_stream(
                 &state.http_client,
                 &config,
-                &gemini_body,
+                ctx.gemini_body,
                 &final_model,
             )
             .await
-            .map_err(|e| {
-                log_request_error_full(
-                    &state.db,
-                    &client_type,
-                    "/v1beta/generateContent",
-                    &request_id,
-                    &raw_body,
-                    "",
-                    &config.name,
-                    &final_model,
-                    &e,
-                    502,
-                    start.elapsed().as_millis() as i64,
-                );
-                GatewayError(e)
-            })?;
-            let boot = crate::gateway::sse_bootstrap::bootstrap_detect(upstream_resp)
-                .await
-                .map_err(|e| {
-                    log_request_error_full(
-                        &state.db,
-                        &client_type,
-                        "/v1beta/generateContent",
-                        &request_id,
-                        &raw_body,
-                        "",
-                        &config.name,
-                        &final_model,
-                        &e,
-                        502,
-                        start.elapsed().as_millis() as i64,
-                    );
-                    GatewayError(e)
-                })?;
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    log_upstream_error("", &final_model, &e);
+                    return Attempt::ProviderFailed(e);
+                }
+            };
+            let boot = match crate::gateway::sse_bootstrap::bootstrap_detect(upstream_resp).await {
+                Ok(b) => b,
+                Err(e) => {
+                    log_upstream_error("", &final_model, &e);
+                    return Attempt::ProviderFailed(e);
+                }
+            };
             let (tx, rx) = mpsc::channel::<String>(256);
             let db = state.db.clone();
             let provider_name = config.name.clone();
-            let req_id = request_id.clone();
-            let raw_req = raw_body.clone();
+            let req_id = ctx.request_id.to_string();
+            let raw_req = ctx.raw_body.to_string();
             let model_clone = final_model.clone();
-            let client_type_owned = client_type.clone();
+            let client_type_owned = ctx.client_type.to_string();
             tokio::spawn(async move {
                 use futures::StreamExt;
                 let mut utf8_pending: Vec<u8> = Vec::new();
@@ -226,14 +279,18 @@ pub async fn handle_gemini_generate(
                     &mut utf8_pending,
                     &boot.prefix,
                 );
-                if !prefix_text.is_empty() {
-                    let _ = tx.send(prefix_text).await;
+                // 区分两种提前结束：客户端断开(tx.send 失败)时立刻停读上游、不再烧 token,
+                // 日志记 client disconnected；上游流 Err 才是真失败，必须记成非 2xx，
+                // 否则日志层假成功、污染成本/健康统计。
+                let mut stream_err: Option<AppError> = None;
+                if !prefix_text.is_empty() && tx.send(prefix_text).await.is_err() {
+                    stream_err = Some(client_disconnected_error());
                 }
                 let mut stream = boot.stream;
-                // 区分两种提前结束：客户端断开(tx.send 失败)是正常的，请求其实成功了；
-                // 上游流 Err 才是真失败，必须记成非 2xx，否则日志层假成功、污染成本/健康统计。
-                let mut stream_err: Option<String> = None;
-                while let Some(chunk) = stream.next().await {
+                while stream_err.is_none() {
+                    let Some(chunk) = stream.next().await else {
+                        break;
+                    };
                     match chunk {
                         Ok(b) => {
                             let mut text = String::new();
@@ -243,12 +300,14 @@ pub async fn handle_gemini_generate(
                                 &b,
                             );
                             if tx.send(text).await.is_err() {
-                                break; // 客户端断开，正常结束
+                                stream_err = Some(client_disconnected_error());
                             }
                         }
                         Err(e) => {
-                            stream_err = Some(e.to_string());
-                            break;
+                            stream_err = Some(AppError::new(
+                                crate::errors::codes::UPSTREAM_STREAM_ERROR,
+                                format!("Gemini 上游流中断: {e}"),
+                            ));
                         }
                     }
                 }
@@ -256,19 +315,18 @@ pub async fn handle_gemini_generate(
                 let trace =
                     json!({"mode": "native_pass_through", "protocol": "gemini", "stream": true})
                         .to_string();
-                if let Some(msg) = stream_err {
-                    let err = AppError::new(
-                        crate::errors::codes::UPSTREAM_STREAM_ERROR,
-                        format!("Gemini 上游流中断: {msg}"),
-                    );
-                    log_request_error(
+                if let Some(err) = stream_err {
+                    log_request_error_full(
                         &db,
                         &client_type_owned,
                         "/v1beta/generateContent",
                         &req_id,
                         &raw_req,
-                        None,
+                        "",
+                        &provider_name,
+                        &model_clone,
                         &err,
+                        stream_error_status(&err),
                         latency,
                     );
                 } else {
@@ -295,17 +353,19 @@ pub async fn handle_gemini_generate(
             let body = Body::from_stream(tokio_stream::StreamExt::map(stream, |s| {
                 Ok::<_, std::convert::Infallible>(s)
             }));
-            return Ok(Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, "text/event-stream")
-                .header(header::CACHE_CONTROL, "no-cache")
-                .body(body)
-                .unwrap());
+            return Attempt::Success(
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header(header::CONTENT_TYPE, "text/event-stream")
+                    .header(header::CACHE_CONTROL, "no-cache")
+                    .body(body)
+                    .unwrap(),
+            );
         } else {
             let result = adapter::send_gemini_non_stream(
                 &state.http_client,
                 &config,
-                &gemini_body,
+                ctx.gemini_body,
                 &final_model,
             )
             .await;
@@ -316,10 +376,10 @@ pub async fn handle_gemini_generate(
                     let trace = json!({"mode": "native_pass_through", "protocol": "gemini", "stream": false}).to_string();
                     log_request_success(
                         &state.db,
-                        &client_type,
+                        ctx.client_type,
                         "/v1beta/generateContent",
-                        &request_id,
-                        &raw_body,
+                        ctx.request_id,
+                        ctx.raw_body,
                         "",
                         &serde_json::to_string(&upstream_json).unwrap_or_default(),
                         &serde_json::to_string(&upstream_json).unwrap_or_default(),
@@ -334,106 +394,76 @@ pub async fn handle_gemini_generate(
                             output: out_tok,
                             cache_write: None,
                             cache_read: None,
+                            input_semantics:
+                                crate::gateway::usage::InputCacheSemantics::IncludesCacheRead,
                         },
                     );
-                    return Ok(Json(upstream_json).into_response());
+                    return Attempt::Success(Json(upstream_json).into_response());
                 }
                 Err(err) => {
-                    let latency = start.elapsed().as_millis() as i64;
-                    log_request_error_full(
-                        &state.db,
-                        &client_type,
-                        "/v1beta/generateContent",
-                        &request_id,
-                        &raw_body,
-                        "",
-                        &config.name,
-                        &final_model,
-                        &err,
-                        502,
-                        latency,
-                    );
-                    return Err(GatewayError(err));
+                    log_upstream_error("", &final_model, &err);
+                    return Attempt::ProviderFailed(err);
                 }
             }
         }
     }
 
     // Convert Gemini → Chat Completions
-    let mut chat_req = gemini_to_chat::convert(&gemini_body, &resolved_model).map_err(|e| {
-        log_request_error(
-            &state.db,
-            &client_type,
-            "/v1beta/generateContent",
-            &request_id,
-            &raw_body,
-            None,
-            &e,
-            start.elapsed().as_millis() as i64,
-        );
-        GatewayError(e)
-    })?;
+    let mut chat_req = match gemini_to_chat::convert(ctx.gemini_body, &resolved_model) {
+        Ok(r) => r,
+        Err(e) => {
+            log_request_error(
+                &state.db,
+                ctx.client_type,
+                "/v1beta/generateContent",
+                ctx.request_id,
+                ctx.raw_body,
+                None,
+                &e,
+                start.elapsed().as_millis() as i64,
+            );
+            return Attempt::Abort(e);
+        }
+    };
     chat_req.stream = is_stream;
     if !is_stream {
         chat_req.stream_options = None;
     }
 
-    let _refiner_log = refine_struct_body(&state.db, &selection.provider, &mut chat_req);
+    let _refiner_log = refine_struct_body(&state.db, provider, &mut chat_req);
     let mut converted_json = serde_json::to_string(&chat_req).unwrap_or_default();
 
     if is_stream {
         // Stream: Chat Completions SSE → convert each chunk to Gemini SSE format
-        let upstream_resp = adapter::send_stream(&state.http_client, &config, &mut chat_req)
-            .await
-            .map_err(|e| {
-                let latency = start.elapsed().as_millis() as i64;
-                log_request_error_full(
-                    &state.db,
-                    &client_type,
-                    "/v1beta/generateContent",
-                    &request_id,
-                    &raw_body,
-                    &converted_json,
-                    &config.name,
-                    &resolved_model,
-                    &e,
-                    502,
-                    latency,
-                );
-                GatewayError(e)
-            })?;
+        let upstream_resp =
+            match adapter::send_stream(&state.http_client, &config, &mut chat_req).await {
+                Ok(r) => r,
+                Err(e) => {
+                    log_upstream_error(&converted_json, &resolved_model, &e);
+                    return Attempt::ProviderFailed(e);
+                }
+            };
         converted_json = serde_json::to_string(&chat_req).unwrap_or_default();
 
         // Bootstrap-validate the upstream Chat Completions stream before
         // committing to forwarding the converted Gemini SSE back to the client.
-        let boot = crate::gateway::sse_bootstrap::bootstrap_detect(upstream_resp)
-            .await
-            .map_err(|e| {
-                let latency = start.elapsed().as_millis() as i64;
-                log_request_error_full(
-                    &state.db,
-                    &client_type,
-                    "/v1beta/generateContent",
-                    &request_id,
-                    &raw_body,
-                    &converted_json,
-                    &config.name,
-                    &resolved_model,
-                    &e,
-                    502,
-                    latency,
-                );
-                GatewayError(e)
-            })?;
+        let boot = match crate::gateway::sse_bootstrap::bootstrap_detect(upstream_resp).await {
+            Ok(b) => b,
+            Err(e) => {
+                log_upstream_error(&converted_json, &resolved_model, &e);
+                return Attempt::ProviderFailed(e);
+            }
+        };
 
         let (tx, rx) = mpsc::channel::<String>(256);
         let db = state.db.clone();
         let provider_name = config.name.clone();
         let model_clone = resolved_model.clone();
-        let req_id = request_id.clone();
-        let raw_req = raw_body.clone();
+        let req_id = ctx.request_id.to_string();
+        let raw_req = ctx.raw_body.to_string();
         let conv_req = converted_json.clone();
         let diagnostic_events = chat_req.diagnostic_events.clone();
+        let client_type = ctx.client_type.to_string();
 
         tokio::spawn(async move {
             use futures::StreamExt;
@@ -448,8 +478,11 @@ pub async fn handle_gemini_generate(
             buffer = buffer.replace("\r\n", "\n");
             let mut full_text = String::new();
             let mut bootstrap_replayed = false;
+            let mut gemini_stream = gemini_to_chat::GeminiStreamState::default();
+            // 客户端断开时立刻停读上游(不再烧 token),日志记 client disconnected。
+            let mut client_gone = false;
 
-            loop {
+            'stream: loop {
                 if bootstrap_replayed {
                     let chunk = match stream.next().await {
                         Some(Ok(b)) => b,
@@ -481,7 +514,8 @@ pub async fn handle_gemini_generate(
                         continue;
                     };
                     if data == "[DONE]" {
-                        break;
+                        // 上游明确结束:跳出外层读循环,不再等上游关连接。
+                        break 'stream;
                     }
 
                     if let Ok(chunk_json) = serde_json::from_str::<Value>(data) {
@@ -497,14 +531,39 @@ pub async fn handle_gemini_generate(
                             }
                         }
 
-                        if let Some(gemini_sse) = gemini_to_chat::chunk_to_gemini(&chunk_json) {
-                            let _ = tx.send(gemini_sse).await;
+                        if let Some(gemini_sse) = gemini_stream.chunk_to_gemini(&chunk_json) {
+                            if tx.send(gemini_sse).await.is_err() {
+                                client_gone = true;
+                                break 'stream;
+                            }
                         }
                     }
                 }
             }
+            // 上游没发 finish_reason 就结束时，补发仍在缓冲中的 functionCall
+            if !client_gone {
+                if let Some(gemini_sse) = gemini_stream.finish() {
+                    let _ = tx.send(gemini_sse).await;
+                }
+            }
 
             let latency = start.elapsed().as_millis() as i64;
+            if client_gone {
+                log_request_error_full(
+                    &db,
+                    &client_type,
+                    "/v1beta/generateContent",
+                    &req_id,
+                    &raw_req,
+                    &conv_req,
+                    &provider_name,
+                    &model_clone,
+                    &client_disconnected_error(),
+                    CLIENT_DISCONNECTED_STATUS,
+                    latency,
+                );
+                return;
+            }
             let trace = trace_with_degradation_events(
                 json!({"response_id": &req_id, "stream": true, "protocol": "gemini_input"}),
                 &diagnostic_events,
@@ -517,7 +576,7 @@ pub async fn handle_gemini_generate(
                 &raw_req,
                 &conv_req,
                 "",
-                &full_text[..full_text.len().min(10000)],
+                &truncate_str(&full_text, 10000),
                 None,
                 &provider_name,
                 &model_clone,
@@ -533,12 +592,14 @@ pub async fn handle_gemini_generate(
             Ok::<_, std::convert::Infallible>(s)
         }));
 
-        Ok(Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, "text/event-stream")
-            .header(header::CACHE_CONTROL, "no-cache")
-            .body(body)
-            .unwrap())
+        Attempt::Success(
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "text/event-stream")
+                .header(header::CACHE_CONTROL, "no-cache")
+                .body(body)
+                .unwrap(),
+        )
     } else {
         // Non-stream
         chat_req.stream = false;
@@ -557,10 +618,10 @@ pub async fn handle_gemini_generate(
                 );
                 log_request_success(
                     &state.db,
-                    &client_type,
+                    ctx.client_type,
                     "/v1beta/generateContent",
-                    &request_id,
-                    &raw_body,
+                    ctx.request_id,
+                    ctx.raw_body,
                     &converted_json,
                     &serde_json::to_string(&upstream_json).unwrap_or_default(),
                     &serde_json::to_string(&gemini_resp).unwrap_or_default(),
@@ -575,26 +636,15 @@ pub async fn handle_gemini_generate(
                         output: out_tok,
                         cache_write: None,
                         cache_read: None,
+                        input_semantics:
+                            crate::gateway::usage::InputCacheSemantics::IncludesCacheRead,
                     },
                 );
-                Ok(Json(gemini_resp).into_response())
+                Attempt::Success(Json(gemini_resp).into_response())
             }
             Err(err) => {
-                let latency = start.elapsed().as_millis() as i64;
-                log_request_error_full(
-                    &state.db,
-                    &client_type,
-                    "/v1beta/generateContent",
-                    &request_id,
-                    &raw_body,
-                    &converted_json,
-                    &config.name,
-                    &resolved_model,
-                    &err,
-                    502,
-                    latency,
-                );
-                Err(GatewayError(err))
+                log_upstream_error(&converted_json, &resolved_model, &err);
+                Attempt::ProviderFailed(err)
             }
         }
     }
@@ -612,16 +662,13 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use crate::models::provider::Provider;
-    use crate::security::local_token;
     use crate::storage;
     use crate::storage::db::DbPool;
-    use crate::test_utils::{setup_temp_home, FS_LOCK};
 
-    fn auth_headers() -> axum::http::HeaderMap {
-        let token = local_token::ensure_token().unwrap();
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
-        headers
+    /// 鉴权已挪到 server.rs 的中间件(读 body 之前),handler 本身不再读 token
+    /// 文件——单测直接调 handler 不需要 token,也就不用抢 FS_LOCK / 改 HOME。
+    fn no_auth_headers() -> axum::http::HeaderMap {
+        axum::http::HeaderMap::new()
     }
 
     fn db_pool() -> DbPool {
@@ -644,22 +691,14 @@ mod tests {
             db,
             http_client: reqwest::Client::new(),
             active_requests: Arc::new(AtomicU64::new(0)),
+            request_body_limit: 32 * 1024 * 1024,
         }
     }
 
-    /// Prepares an isolated test environment: holds the FS_LOCK, points HOME at
-    /// a temp directory (so the local token is isolated), and returns a clean
-    /// in-memory GatewayState. The lock must outlive the test to prevent other
-    /// HOME-modifying tests from racing.
-    fn setup_test() -> (
-        std::sync::MutexGuard<'static, ()>,
-        std::path::PathBuf,
-        GatewayState,
-    ) {
-        let guard = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let temp = setup_temp_home();
-        let state = gateway_state(db_pool());
-        (guard, temp, state)
+    /// 干净的内存库 GatewayState。之前这里持有 FS_LOCK 的 std MutexGuard 跨
+    /// await(clippy await_holding_lock),handler 不再读 token 后已无需加锁。
+    fn setup_test() -> GatewayState {
+        gateway_state(db_pool())
     }
 
     fn create_provider(
@@ -745,7 +784,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn count_tokens_estimates_from_text_parts() {
-        let (_guard, _temp, state) = setup_test();
+        let state = setup_test();
         let body = json!({
             "contents": [
                 {"role": "user", "parts": [{"text": "hello"}, {"text": "世界"}]},
@@ -755,7 +794,7 @@ mod tests {
         .to_string();
 
         let resp = handle_gemini_generate(
-            auth_headers(),
+            no_auth_headers(),
             axum::extract::Path("gemini-2.5-flash:countTokens".to_string()),
             axum::extract::State(state),
             Ok(bytes::Bytes::from(body)),
@@ -772,11 +811,11 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn count_tokens_empty_contents_returns_zero() {
-        let (_guard, _temp, state) = setup_test();
+        let state = setup_test();
         let body = json!({"contents": []}).to_string();
 
         let resp = handle_gemini_generate(
-            auth_headers(),
+            no_auth_headers(),
             axum::extract::Path("gemini-2.5-flash:countTokens".to_string()),
             axum::extract::State(state),
             Ok(bytes::Bytes::from(body)),
@@ -792,10 +831,10 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn count_tokens_invalid_json_returns_parse_error() {
-        let (_guard, _temp, state) = setup_test();
+        let state = setup_test();
 
         let err = handle_gemini_generate(
-            auth_headers(),
+            no_auth_headers(),
             axum::extract::Path("gemini-2.5-flash:countTokens".to_string()),
             axum::extract::State(state),
             Ok(bytes::Bytes::from("not json")),
@@ -817,7 +856,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let (_guard, _temp, state) = setup_test();
+        let state = setup_test();
         let conn = state.db.get().unwrap();
         create_provider(
             &conn,
@@ -835,7 +874,7 @@ mod tests {
 
         let body = json!({"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}).to_string();
         let resp = handle_gemini_generate(
-            auth_headers(),
+            no_auth_headers(),
             axum::extract::Path("gemini-2.5-flash:generateContent".to_string()),
             axum::extract::State(state),
             Ok(bytes::Bytes::from(body)),
@@ -870,7 +909,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let (_guard, _temp, state) = setup_test();
+        let state = setup_test();
         let conn = state.db.get().unwrap();
         create_provider(
             &conn,
@@ -888,7 +927,7 @@ mod tests {
 
         let body = json!({"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}).to_string();
         let resp = handle_gemini_generate(
-            auth_headers(),
+            no_auth_headers(),
             axum::extract::Path("gemini-2.5-flash:streamGenerateContent".to_string()),
             axum::extract::State(state),
             Ok(bytes::Bytes::from(body)),
@@ -917,7 +956,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let (_guard, _temp, state) = setup_test();
+        let state = setup_test();
         let conn = state.db.get().unwrap();
         create_provider(
             &conn,
@@ -939,7 +978,7 @@ mod tests {
         })
         .to_string();
         let resp = handle_gemini_generate(
-            auth_headers(),
+            no_auth_headers(),
             axum::extract::Path("gemini-2.5-flash:generateContent".to_string()),
             axum::extract::State(state),
             Ok(bytes::Bytes::from(body)),
@@ -973,7 +1012,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let (_guard, _temp, state) = setup_test();
+        let state = setup_test();
         let conn = state.db.get().unwrap();
         create_provider(
             &conn,
@@ -991,7 +1030,7 @@ mod tests {
 
         let body = json!({"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}).to_string();
         let resp = handle_gemini_generate(
-            auth_headers(),
+            no_auth_headers(),
             axum::extract::Path("gemini-2.5-flash:generateContent".to_string()),
             axum::extract::State(state),
             Ok(bytes::Bytes::from(body)),
@@ -1029,7 +1068,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let (_guard, _temp, state) = setup_test();
+        let state = setup_test();
         let conn = state.db.get().unwrap();
         create_provider(
             &conn,
@@ -1047,7 +1086,7 @@ mod tests {
 
         let body = json!({"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}).to_string();
         let resp = handle_gemini_generate(
-            auth_headers(),
+            no_auth_headers(),
             axum::extract::Path("gemini-2.5-flash:streamGenerateContent".to_string()),
             axum::extract::State(state),
             Ok(bytes::Bytes::from(body)),
@@ -1084,7 +1123,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let (_guard, _temp, state) = setup_test();
+        let state = setup_test();
         let conn = state.db.get().unwrap();
         create_provider(
             &conn,
@@ -1103,7 +1142,7 @@ mod tests {
 
         let body = json!({"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}).to_string();
         let resp = handle_gemini_generate(
-            auth_headers(),
+            no_auth_headers(),
             axum::extract::Path("gemini-2.5-flash:generateContent".to_string()),
             axum::extract::State(state),
             Ok(bytes::Bytes::from(body)),
@@ -1131,7 +1170,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let (_guard, _temp, state) = setup_test();
+        let state = setup_test();
         let conn = state.db.get().unwrap();
         create_provider(
             &conn,
@@ -1149,7 +1188,7 @@ mod tests {
 
         let body = json!({"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}).to_string();
         let resp = handle_gemini_generate(
-            auth_headers(),
+            no_auth_headers(),
             axum::extract::Path("gemini-2.5-flash:generateContent".to_string()),
             axum::extract::State(state),
             Ok(bytes::Bytes::from(body)),
@@ -1172,10 +1211,10 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn generate_content_invalid_json_returns_gemini_parse_error() {
-        let (_guard, _temp, state) = setup_test();
+        let state = setup_test();
 
         let err = handle_gemini_generate(
-            auth_headers(),
+            no_auth_headers(),
             axum::extract::Path("gemini-2.5-flash:generateContent".to_string()),
             axum::extract::State(state),
             Ok(bytes::Bytes::from("not json")),
@@ -1191,11 +1230,11 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn generate_content_no_provider_returns_error() {
-        let (_guard, _temp, state) = setup_test();
+        let state = setup_test();
         let body = json!({"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}).to_string();
 
         let err = handle_gemini_generate(
-            auth_headers(),
+            no_auth_headers(),
             axum::extract::Path("gemini-2.5-flash:generateContent".to_string()),
             axum::extract::State(state),
             Ok(bytes::Bytes::from(body)),

@@ -6,12 +6,15 @@ import { WakeSettings } from "./WakeSettings";
 const ToggleSwitch = ({
   checked,
   onChange,
+  label,
 }: {
   checked: boolean;
   onChange: (value: boolean) => void;
+  label: string;
 }) => (
   <input
     type="checkbox"
+    aria-label={label}
     checked={checked}
     onChange={(event) => onChange(event.target.checked)}
   />

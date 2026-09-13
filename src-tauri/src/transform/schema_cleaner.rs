@@ -1,42 +1,70 @@
 use serde_json::Value;
 
 /// 递归剥除上游 JSON schema 里不被严格上游识别的字段：`strict`、
-/// `additionalProperties`（任意值）、null-valued properties。同时递归进
-/// `properties` / `items` / `anyOf` / `oneOf` / `allOf` / `$defs` / `definitions`
-/// 子树。
+/// `additionalProperties`（任意值，DeepSeek 不论布尔还是对象值都拒识别）、
+/// null-valued properties（并同步从 `required` 里摘掉）。同时递归进
+/// `properties` / `items` / `anyOf` / `oneOf` / `allOf` / `$defs` / `definitions` 子树。
 ///
-/// 用于以下场景：
-/// - **DeepSeek / 严格 OpenAI 兼容上游**：会拒识别 `strict:true` 等 OpenAI 字段
-/// - **Anthropic**：通常忽略未知字段，但少数情况会 400；过一遍 cleaner 更稳
-///
-/// 函数无 provider 特化逻辑，名字带 "deepseek" 是历史原因——调用方按场景
-/// 自行决定是否调用即可。
+/// 只用于 provider quirk 需要的路径：Responses→Chat 由
+/// `ProviderTransform::clean_schemas()` 门控（目前仅 DeepSeek），Anthropic→Chat
+/// 由调用方的 `clean_for_deepseek` 参数门控。Anthropic 路径只需
+/// [`prune_null_properties`]。
 pub fn clean_schema_for_deepseek(value: &mut Value) {
+    walk_schema(value, true);
+}
+
+/// 只删 null 值 property（并同步摘 `required`），保留 `additionalProperties` /
+/// `strict` 等其它字段。null property 对任何上游（含官方 Anthropic）都是非法 schema。
+pub fn prune_null_properties(value: &mut Value) {
+    walk_schema(value, false);
+}
+
+fn walk_schema(value: &mut Value, deepseek: bool) {
     match value {
         Value::Object(map) => {
-            map.remove("strict");
+            if deepseek {
+                map.remove("strict");
+                // DeepSeek 不支持 additionalProperties，不论值是什么都删掉
+                map.remove("additionalProperties");
+            } else if let Some(ap) = map.get_mut("additionalProperties") {
+                // 对象值 additionalProperties 是 map 的 value schema，里面也可能有 null property
+                walk_schema(ap, deepseek);
+            }
 
-            // Remove additionalProperties entirely (DeepSeek doesn't support it, regardless of value)
-            map.remove("additionalProperties");
-
-            // Clean null-valued properties
+            // Clean null-valued properties，并把它们从 required 里摘掉
+            let mut removed: Vec<String> = Vec::new();
             if let Some(Value::Object(props)) = map.get_mut("properties") {
-                props.retain(|_, v| !v.is_null());
+                props.retain(|k, v| {
+                    if v.is_null() {
+                        removed.push(k.clone());
+                        false
+                    } else {
+                        true
+                    }
+                });
                 for (_, v) in props.iter_mut() {
-                    clean_schema_for_deepseek(v);
+                    walk_schema(v, deepseek);
+                }
+            }
+            if !removed.is_empty() {
+                if let Some(Value::Array(required)) = map.get_mut("required") {
+                    required.retain(|r| {
+                        r.as_str()
+                            .is_none_or(|name| !removed.iter().any(|x| x == name))
+                    });
                 }
             }
 
             // Recurse into items
             if let Some(items) = map.get_mut("items") {
-                clean_schema_for_deepseek(items);
+                walk_schema(items, deepseek);
             }
 
             // Recurse into anyOf/oneOf/allOf
             for key in &["anyOf", "oneOf", "allOf"] {
                 if let Some(Value::Array(arr)) = map.get_mut(*key) {
                     for item in arr.iter_mut() {
-                        clean_schema_for_deepseek(item);
+                        walk_schema(item, deepseek);
                     }
                 }
             }
@@ -45,16 +73,14 @@ pub fn clean_schema_for_deepseek(value: &mut Value) {
             for key in &["$defs", "definitions"] {
                 if let Some(Value::Object(defs)) = map.get_mut(*key) {
                     for (_, v) in defs.iter_mut() {
-                        clean_schema_for_deepseek(v);
+                        walk_schema(v, deepseek);
                     }
                 }
             }
-
-            // additionalProperties is always removed above
         }
         Value::Array(arr) => {
             for item in arr.iter_mut() {
-                clean_schema_for_deepseek(item);
+                walk_schema(item, deepseek);
             }
         }
         _ => {}
@@ -90,10 +116,26 @@ mod tests {
 
     #[test]
     fn test_removes_additional_properties_object() {
+        // DeepSeek 拒识别 additionalProperties,不论值是布尔还是对象(原 quirk 结论,
+        // 对象值保留无法对真实 DeepSeek 验证),一律删掉。
         let mut schema =
             json!({"type": "object", "additionalProperties": {"type": "string", "strict": true}});
         clean_schema_for_deepseek(&mut schema);
-        assert!(schema.get("additionalProperties").is_none());
+        assert!(
+            schema.get("additionalProperties").is_none(),
+            "schema={schema}"
+        );
+    }
+
+    #[test]
+    fn test_prunes_required_for_removed_null_properties() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {"name": {"type": "string"}, "age": null},
+            "required": ["name", "age"]
+        });
+        clean_schema_for_deepseek(&mut schema);
+        assert_eq!(schema["required"], json!(["name"]));
     }
 
     #[test]

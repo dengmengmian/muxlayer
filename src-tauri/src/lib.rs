@@ -8,13 +8,12 @@
 
 #[cfg(feature = "desktop")]
 mod app;
-// tools / diagnostics 大部分入口是 Tauri 命令(desktop)。cli(headless)构建
-// 不编译命令层,这两个模块会报大片 dead_code——只在 cli 构建静默,desktop
-// 构建的告警保持有效,避免掩盖真死代码。
 pub mod compat;
-#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+// diagnostics 里 speedtest / test_failure 被网关和模型层使用(cli 也需要);
+// 自检 / 诊断包 / 后台探测只服务桌面命令,在 diagnostics/mod.rs 内按 desktop 门控。
 mod diagnostics;
 pub mod errors;
+pub(crate) mod fsutil;
 pub mod gateway;
 pub mod models;
 pub mod protocol;
@@ -23,7 +22,8 @@ pub mod runtime;
 pub mod security;
 pub mod session_sync;
 pub mod storage;
-#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+// 客户端接入(写 ~/.codex 等配置)只由桌面命令调用,headless cli 不编译。
+#[cfg(feature = "desktop")]
 mod tools;
 pub mod transform;
 pub mod wake;
@@ -114,10 +114,9 @@ fn move_pet_to_visible_area(app: &tauri::AppHandle, pet_win: &tauri::WebviewWind
 /// 共享的 specta builder:一份 events + commands 清单同时给:
 /// 1. dev 时 export TS bindings 到 src/lib/bindings.ts
 /// 2. run() 启动时 mount_events,让 Event::emit 时能找到 EventRegistry
+/// 3. run() 的 `invoke_handler`(`Builder::invoke_handler()`),命令清单只此一份
 ///
-/// 全部 140 个 #[tauri::command] 都已加 #[specta::specta],invoke_handler 仍走
-/// generate_handler!,这里只是把同一份命令清单喂给 specta 用来生成 TS 类型 +
-/// 注册事件。
+/// 全部 #[tauri::command] 都已加 #[specta::specta]。
 #[cfg(feature = "desktop")]
 fn build_specta() -> tauri_specta::Builder<tauri::Wry> {
     use app::events::*;
@@ -241,6 +240,7 @@ fn build_specta() -> tauri_specta::Builder<tauri::Wry> {
             commands::detect_client_running,
             commands::kill_client_process,
             commands::restart_codex_desktop,
+            commands::codex_desktop_available,
             // Client apply history
             commands::list_client_apply_history,
             commands::clients_with_apply_history,
@@ -340,6 +340,11 @@ fn export_ts_bindings(builder: &tauri_specta::Builder<tauri::Wry>) {
         .header("// @ts-nocheck\n")
         .bigint(specta_typescript::BigIntExportBehavior::Number);
     if let Err(e) = builder.export(exporter, "../src/lib/bindings.ts") {
+        // 测试里导出失败必须让测试挂掉:CI 靠「跑完测试后 bindings.ts 无 diff」判断
+        // 类型没漂移,静默失败会读到旧文件而假绿。
+        if cfg!(test) {
+            panic!("[specta] failed to export TS bindings: {e}");
+        }
         eprintln!("[specta] failed to export TS bindings: {e}");
     }
 }
@@ -407,6 +412,7 @@ pub fn run() {
     let specta_builder = build_specta();
     #[cfg(debug_assertions)]
     export_ts_bindings(&specta_builder);
+    let invoke_handler = specta_builder.invoke_handler();
 
     tauri::Builder::default()
         // 宠物原生右键菜单(show_pet_context_menu)的事件走全局 handler。
@@ -470,7 +476,16 @@ pub fn run() {
                     // 读当前态取反,写 CC Notification hook。完全不碰 env。
                     let new_value = !crate::tools::claude_code::cc_hook_enabled();
                     if let Err(e) = crate::tools::claude_code::set_cc_hook(new_value) {
-                        eprintln!("[cc-notify] set_cc_hook({new_value}) failed: {e:?}");
+                        eprintln!("[cc-notify] set_cc_hook({new_value}) failed: {e}");
+                        // 用户是点菜单触发的,失败必须让用户看到:宠物气泡提示。
+                        let bubble = app::events::PetBubble {
+                            text: format!("Claude Code status hook failed: {e}"),
+                            text_zh: Some(format!("Claude Code 状态提醒设置失败:{e}")),
+                            r#type: "error".into(),
+                        };
+                        if let Err(emit_err) = bubble.emit_to(app, "pet") {
+                            eprintln!("[cc-notify] emit failure bubble failed: {emit_err}");
+                        }
                     }
                 }
                 "pet_open_settings" => {
@@ -538,13 +553,21 @@ pub fn run() {
             // CC Notification hook 的本地接收端,收到后同步桌宠并按状态发系统通知。
             crate::app::cc_notify::spawn(app.handle().clone());
 
-            let app_data_dir = app
-                .path()
-                .app_data_dir()
-                .expect("Failed to get app data directory");
+            // 数据目录 / 数据库打不开(被锁、损坏、无权限)时不 panic:写启动错误日志、
+            // 输出 stderr、macOS 弹原生提示,然后以非零码退出。
+            let app_data_dir = match app.path().app_data_dir() {
+                Ok(dir) => dir,
+                Err(e) => fatal_startup_error(app, "resolve app data directory", &e.to_string()),
+            };
 
-            let pool = storage::db::init_database(&app_data_dir)
-                .expect("Failed to initialize database");
+            let pool = match storage::db::init_database(&app_data_dir) {
+                Ok(pool) => pool,
+                Err(e) => fatal_startup_error(
+                    app,
+                    "open database",
+                    &format!("{} ({})", e.message, app_data_dir.display()),
+                ),
+            };
 
             let wake = crate::wake::WakeManager::new();
             if let Ok(conn) = pool.get() {
@@ -584,15 +607,47 @@ pub fn run() {
             {
                 let db = cleanup_db;
                 tauri::async_runtime::spawn(async move {
+                    // 启动后第一轮(清理之后)顺带回填历史 NULL cost:大库全表扫描不能放在
+                    // setup 里挡启动。回填幂等,每次启动都会重试直到没有可补的行。
+                    let mut backfill_pending = true;
                     loop {
-                        if let Ok(conn) = db.get() {
+                        // DELETE(以及偶发的 VACUUM)是阻塞 IO,放到阻塞线程池,不占 async worker。
+                        let task_db = db.clone();
+                        let outcome = tauri::async_runtime::spawn_blocking(move || {
+                            let conn = task_db
+                                .get()
+                                .map_err(|e| format!("db get failed: {e}"))?;
                             let days = storage::gateway_settings::get(&conn)
                                 .map(|s| s.log_retention_days)
                                 .unwrap_or(14);
-                            if let Ok(n) = storage::request_logs::cleanup_older_than(&conn, days) {
-                                if n > 0 {
-                                    eprintln!("[log-cleanup] Cleaned up {n} old request logs (retention: {days} days)");
-                                }
+                            storage::request_logs::cleanup_older_than(&conn, days)
+                                .map(|n| (n, days))
+                                .map_err(|e| format!("{} {}", e.message, e.detail.unwrap_or_default()))
+                        })
+                        .await;
+                        match outcome {
+                            Ok(Ok((n, days))) if n > 0 => {
+                                eprintln!("[log-cleanup] Cleaned up {n} old request logs (retention: {days} days)");
+                            }
+                            Ok(Ok(_)) => {}
+                            Ok(Err(e)) => eprintln!("[log-cleanup] cleanup failed: {e}"),
+                            Err(e) => eprintln!("[log-cleanup] cleanup task failed: {e}"),
+                        }
+                        if std::mem::take(&mut backfill_pending) {
+                            let task_db = db.clone();
+                            let outcome = tauri::async_runtime::spawn_blocking(move || {
+                                let conn = task_db
+                                    .get()
+                                    .map_err(|e| format!("db get failed: {e}"))?;
+                                storage::pricing::backfill_costs(&conn)
+                                    .map_err(|e| format!("{} {}", e.message, e.detail.unwrap_or_default()))
+                            })
+                            .await;
+                            match outcome {
+                                Ok(Ok(n)) if n > 0 => eprintln!("[cost-backfill] Filled cost for {n} request logs"),
+                                Ok(Ok(_)) => {}
+                                Ok(Err(e)) => eprintln!("[cost-backfill] backfill failed: {e}"),
+                                Err(e) => eprintln!("[cost-backfill] backfill task failed: {e}"),
                             }
                         }
                         tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
@@ -695,13 +750,15 @@ pub fn run() {
             }
 
             // ── Close-to-tray: hide window on close ──
-            let window = app.get_webview_window("main").unwrap();
-            window.on_window_event(move |event| {
-                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                    api.prevent_close();
-                    let _ = event;
-                }
-            });
+            // 主窗口缺失不是致命错误(全局 on_window_event 也会拦截关闭),只告警。
+            match app.get_webview_window("main") {
+                Some(window) => window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                    }
+                }),
+                None => eprintln!("[setup] main window not found; close-to-tray handler not installed"),
+            }
 
             Ok(())
         })
@@ -712,194 +769,9 @@ pub fn run() {
                 let _ = window.hide();
             }
         })
-        .invoke_handler(tauri::generate_handler![
-            // Providers
-            commands::list_providers,
-            commands::get_provider,
-            commands::get_provider_keys,
-            commands::create_provider,
-            commands::update_provider,
-            commands::delete_provider,
-            commands::set_active_provider,
-            commands::fetch_provider_models,
-            commands::test_provider,
-            commands::provider_speedtest,
-            commands::provider_speedtest_all,
-            commands::detect_provider_vision,
-            commands::seed_model_capabilities,
-            commands::autofill_provider_capabilities,
-            // Gateway
-            commands::get_gateway_status,
-            commands::get_gateway_settings,
-            commands::update_gateway_settings,
-            commands::get_wake_status,
-            commands::start_gateway,
-            commands::stop_gateway,
-            commands::restart_gateway,
-            // Logs
-            commands::list_request_logs,
-            commands::list_log_models,
-            commands::get_session_conversation,
-            commands::delete_session,
-            commands::count_request_logs,
-            commands::get_request_log_detail,
-            commands::clear_request_logs,
-            commands::aggregate_request_logs_by_session,
-            commands::aggregate_cost_by_model,
-            commands::aggregate_cost_by_client,
-            commands::aggregate_provider_detail_stats,
-            commands::aggregate_route_profile_stats,
-            commands::sync_claude_sessions,
-            commands::sync_codex_sessions,
-            commands::sync_gemini_sessions,
-            // Tools
-            commands::list_tools,
-            commands::generate_codex_config,
-            // Gateway Auth
-            commands::get_gateway_auth_settings,
-            commands::regenerate_local_access_token,
-            commands::ensure_local_access_token,
-            commands::get_local_access_token,
-            commands::open_token_folder,
-            // Codex Config
-            commands::detect_codex_config,
-            commands::apply_codex_config,
-            commands::disable_codex_agentgate,
-            commands::toggle_codex_provider,
-            commands::open_codex_config,
-            // Claude Code
-            commands::detect_claude_desktop,
-            commands::preview_claude_desktop_profile,
-            commands::apply_claude_desktop_config,
-            commands::detect_claude_code_env,
-            commands::apply_claude_code_config,
-            commands::toggle_claude_code_provider,
-            commands::open_claude_code_config,
-            commands::generate_claude_code_env,
-            // OpenCode
-            commands::detect_opencode_config,
-            commands::apply_opencode_config,
-            commands::generate_opencode_config,
-            commands::open_opencode_config,
-            // Gemini CLI
-            commands::detect_gemini_config,
-            commands::apply_gemini_config,
-            commands::generate_gemini_config,
-            commands::toggle_gemini_provider,
-            commands::open_gemini_config,
-            commands::detect_provider_cache,
-            commands::get_provider_health,
-            commands::update_route_provider_conditions,
-            // Pricing
-            commands::list_model_pricing,
-            commands::upsert_model_pricing,
-            commands::delete_model_pricing,
-            // AtomCode
-            commands::detect_atomcode_config,
-            commands::apply_atomcode_config,
-            commands::generate_atomcode_config,
-            commands::toggle_atomcode_provider,
-            commands::open_atomcode_config,
-            // Kimi CLI / Grok Build / DeepSeek Harness
-            commands::detect_kimi_config,
-            commands::apply_kimi_config,
-            commands::generate_kimi_config,
-            commands::open_kimi_config,
-            commands::detect_grok_config,
-            commands::apply_grok_config,
-            commands::generate_grok_config,
-            commands::open_grok_config,
-            commands::detect_dsh_config,
-            commands::apply_dsh_config,
-            commands::generate_dsh_config,
-            commands::open_dsh_config,
-            // Post-apply process detection
-            commands::detect_client_running,
-            commands::kill_client_process,
-            commands::restart_codex_desktop,
-            // Client apply history
-            commands::list_client_apply_history,
-            commands::clients_with_apply_history,
-            commands::list_mcp_servers,
-            commands::upsert_mcp_server,
-            commands::delete_mcp_server,
-            commands::sync_mcp_server,
-            commands::export_mcp_servers,
-            commands::import_mcp_servers,
-            commands::rollback_client_apply,
-            commands::delete_client_apply_history,
-            // Route Profiles
-            commands::list_route_profiles,
-            commands::get_route_profile,
-            commands::create_route_profile,
-            commands::update_route_profile,
-            commands::delete_route_profile,
-            commands::set_default_route_profile,
-            commands::set_route_profile_mode,
-            commands::set_route_active_provider,
-            commands::add_provider_to_route,
-            commands::remove_provider_from_route,
-            commands::reorder_route_providers,
-            commands::preview_route_template,
-            commands::apply_route_template,
-            commands::rollback_route_template,
-            commands::has_route_template_rollback,
-            // Runtime Status
-            commands::list_provider_runtime_status,
-            commands::reset_provider_runtime_status,
-            commands::reset_all_provider_runtime_status,
-            // Stats
-            commands::get_request_stats,
-            commands::get_request_stats_range,
-            commands::get_runtime_kpis,
-            // Diagnostics
-            commands::run_health_check,
-            commands::run_database_check,
-            commands::run_gateway_auth_check,
-            commands::run_provider_check,
-            commands::run_codex_config_check,
-            commands::run_claude_code_config_check,
-            commands::run_route_profile_check,
-            commands::run_full_self_test,
-            commands::export_diagnostic_bundle,
-            commands::open_app_data_dir,
-            // Tool Connection Test
-            commands::test_tool_connection,
-            commands::discover_local_endpoints,
-            commands::get_refiner_hint,
-            // Pet
-            commands::get_pet_settings,
-            commands::update_pet_settings,
-            commands::set_pet_visible,
-            commands::get_pet_gateway_state,
-            commands::get_pet_gateway_state_lite,
-            commands::get_pet_memory,
-            commands::save_pet_memory,
-            commands::get_pet_chat_history,
-            commands::save_pet_chat_history,
-            commands::pet_chat,
-            commands::pet_open_settings,
-            commands::get_pet_click_through,
-            commands::set_pet_click_through,
-            commands::show_pet_context_menu,
-            // Config Import / Export
-            commands::export_config_json,
-            commands::import_config_json,
-            // Global instructions (CLAUDE.md / AGENTS.md)
-            commands::list_instructions_templates,
-            commands::read_global_instructions,
-            commands::write_global_instructions,
-            commands::apply_instructions_template,
-            commands::export_instructions,
-            commands::import_instructions,
-            // Local skills (~/.claude/skills)
-            commands::list_skills,
-            commands::set_skill_enabled,
-            commands::delete_skill,
-            commands::import_skill_from_zip,
-            commands::export_skills,
-            commands::import_skills,
-        ])
+        // 命令清单只维护一份(build_specta 的 collect_commands!),同时驱动
+        // TS bindings 导出和运行时 invoke 分发,不会再出现两份清单不同步。
+        .invoke_handler(invoke_handler)
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app, _event| {
@@ -912,6 +784,88 @@ pub fn run() {
                 }
             }
         });
+}
+
+/// 启动期致命错误的日志文本(纯函数,便于测试)。
+#[cfg(feature = "desktop")]
+fn startup_failure_message(stage: &str, detail: &str) -> String {
+    format!(
+        "[{}] MuxLayer failed to start: cannot {stage}: {detail}\n",
+        chrono::Utc::now().to_rfc3339()
+    )
+}
+
+/// 把启动错误追加写到 `dir/startup-error.log`,返回日志路径。
+#[cfg(feature = "desktop")]
+fn write_startup_error_log(
+    dir: &std::path::Path,
+    message: &str,
+) -> std::io::Result<std::path::PathBuf> {
+    use std::io::Write;
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join("startup-error.log");
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
+    file.write_all(message.as_bytes())?;
+    Ok(path)
+}
+
+/// 启动期致命错误:不 panic。依次写日志(应用日志目录,不可用时退到临时目录)、
+/// 输出 stderr、macOS 上用 osascript 弹原生提示(Tauri 核心没有消息框 API,
+/// 不为此新增 dialog 插件 / rfd 依赖),最后以退出码 1 退出。
+#[cfg(feature = "desktop")]
+fn fatal_startup_error(app: &tauri::App, stage: &str, detail: &str) -> ! {
+    let message = startup_failure_message(stage, detail);
+    eprint!("{message}");
+    let log_dir = app
+        .path()
+        .app_log_dir()
+        .unwrap_or_else(|_| std::env::temp_dir().join("MuxLayer"));
+    let log_note = match write_startup_error_log(&log_dir, &message) {
+        Ok(path) => format!("Details were written to {}", path.display()),
+        Err(e) => {
+            eprintln!("[setup] cannot write startup error log: {e}");
+            String::new()
+        }
+    };
+    #[cfg(target_os = "macos")]
+    {
+        let text = format!("MuxLayer failed to start: cannot {stage}.\n\n{detail}\n\n{log_note}");
+        let script = format!(
+            "display alert \"MuxLayer\" message {} as critical",
+            apple_script_string(&text)
+        );
+        if let Err(e) = std::process::Command::new("osascript")
+            .arg("-e")
+            .arg(script)
+            .status()
+        {
+            eprintln!("[setup] cannot show startup error dialog: {e}");
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = &log_note;
+    }
+    std::process::exit(1)
+}
+
+/// AppleScript 字符串字面量转义。
+#[cfg(all(feature = "desktop", any(target_os = "macos", test)))]
+fn apple_script_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
 }
 
 #[cfg(feature = "desktop")]
@@ -981,7 +935,11 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
 
     let _tray = TrayIconBuilder::with_id(app::tray::TRAY_ID)
-        .icon(app.default_window_icon().unwrap().clone())
+        .icon(
+            app.default_window_icon()
+                .ok_or("default window icon missing from bundle")?
+                .clone(),
+        )
         .tooltip("MuxLayer")
         .menu(&placeholder_menu)
         .on_menu_event(move |app, event| {
@@ -1028,7 +986,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                         if is_visible {
                             let _ = pet_win.hide();
                         } else {
-                            move_pet_to_visible_area(&app, &pet_win);
+                            move_pet_to_visible_area(app, &pet_win);
                             let _ = pet_win.show();
                             let _ = pet_win.set_focus();
                         }
@@ -1057,7 +1015,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     // 也顺手把宠物窗口拉出来,否则 webview 不跑没法应用 setIgnoreCursorEvents。
                     if let Some(pet_win) = app.get_webview_window("pet") {
                         if !pet_win.is_visible().unwrap_or(false) {
-                            move_pet_to_visible_area(&app, &pet_win);
+                            move_pet_to_visible_area(app, &pet_win);
                             let _ = pet_win.show();
                         }
                     }
@@ -1089,7 +1047,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
     // Paint the dynamic menu (active provider, today count, switch submenu)
     // immediately, then kick off the 30 s periodic refresh.
-    app::tray::refresh_tray(&app.handle());
+    app::tray::refresh_tray(app.handle());
     app::tray::start_periodic_refresh(app.handle().clone());
 
     Ok(())
@@ -1153,6 +1111,24 @@ pub(crate) mod test_utils {
 #[cfg(all(test, feature = "desktop"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_error_log_is_written_and_appended() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_dir = dir.path().join("logs");
+        let msg = startup_failure_message("open database", "database is locked");
+        assert!(msg.contains("cannot open database: database is locked"));
+        let path = write_startup_error_log(&log_dir, &msg).unwrap();
+        write_startup_error_log(&log_dir, "second\n").unwrap();
+        let content = std::fs::read_to_string(path).unwrap();
+        assert!(content.contains("database is locked"));
+        assert!(content.ends_with("second\n"));
+    }
+
+    #[test]
+    fn apple_script_string_escapes_quotes_and_backslashes() {
+        assert_eq!(apple_script_string(r#"a"b\c"#), r#""a\"b\\c""#);
+    }
 
     #[test]
     fn locale_value_is_chinese_zh_cn() {

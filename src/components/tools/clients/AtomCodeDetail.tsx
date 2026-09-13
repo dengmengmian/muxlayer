@@ -33,7 +33,7 @@ export function AtomCodeDetail({
   );
 
   return (
-    <div className="rounded-xl border border-border bg-card p-5">
+    <div className="surface-panel p-5">
       <DetailHeader
         clientId="atomcode"
         name={t("tools.atomcode")}
