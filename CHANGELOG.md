@@ -1,5 +1,11 @@
 # Changelog / 更新日志
 
+## [2.0.7] - 2026-09-16
+
+### Changed / 变更
+
+- **DeepSeek models are now `deepseek-flash` and `deepseek-v4-pro` / DeepSeek 只剩 `deepseek-flash` 和 `deepseek-v4-pro`** —— `deepseek-flash` is the default model and reads images directly, so images are no longer removed before they reach it. `deepseek-v4-pro` is still text-only. Setups that still use `deepseek-v4-flash` or `deepseek-v4-flash-vision-exp` switch to `deepseek-flash` automatically on startup. `deepseek-flash` 是默认模型，能直接看图，图片不再被去掉。`deepseek-v4-pro` 仍然只收文字。还在用 `deepseek-v4-flash` 或 `deepseek-v4-flash-vision-exp` 的配置，启动时自动换成 `deepseek-flash`。
+
 ## [2.0.6] - 2026-09-14
 
 ### Fixed / 修复
