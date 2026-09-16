@@ -23,7 +23,7 @@ function makeProvider(overrides: Partial<ProviderView> = {}): ProviderView {
     base_url: "https://api.deepseek.com",
     api_key: "sk-***",
     masked_api_key: "sk-***",
-    default_model: "deepseek-v4-flash",
+    default_model: "deepseek-flash",
     reasoning_model: null,
     supported_models: null,
     model_capabilities: null,

@@ -1150,7 +1150,7 @@ mod tests {
     fn provider_with_mapping() -> Provider {
         Provider {
             model_mapping: Some(r#"{"gpt-5.5":"deepseek-v4-pro"}"#.to_string()),
-            default_model: "deepseek-v4-flash".to_string(),
+            default_model: "deepseek-flash".to_string(),
             ..test_provider()
         }
     }
@@ -1454,11 +1454,11 @@ mod tests {
         let provider = provider_with_mapping();
         assert_eq!(
             native_model_override(&provider, Some("muxlayer"), None),
-            Some("deepseek-v4-flash".to_string())
+            Some("deepseek-flash".to_string())
         );
         assert_eq!(
             native_model_override(&provider, Some("openai/muxlayer"), None),
-            Some("deepseek-v4-flash".to_string())
+            Some("deepseek-flash".to_string())
         );
         assert_eq!(
             native_model_override(&provider, Some("muxlayer"), Some("deepseek-v4-pro")),
@@ -1471,11 +1471,11 @@ mod tests {
         let provider = provider_with_mapping();
         assert_eq!(
             native_model_override(&provider, Some("agentgate"), None),
-            Some("deepseek-v4-flash".to_string())
+            Some("deepseek-flash".to_string())
         );
         assert_eq!(
             native_model_override(&provider, Some("openai/agentgate"), None),
-            Some("deepseek-v4-flash".to_string())
+            Some("deepseek-flash".to_string())
         );
         assert_eq!(
             native_model_override(&provider, Some("agentgate"), Some("deepseek-v4-pro")),
@@ -1487,11 +1487,11 @@ mod tests {
     fn native_model_override_explicit_mapping_wins_and_unmapped_returns_none() {
         let provider = provider_with_mapping();
         assert_eq!(
-            native_model_override(&provider, Some("gpt-5.5"), Some("deepseek-v4-flash")),
+            native_model_override(&provider, Some("gpt-5.5"), Some("deepseek-flash")),
             Some("deepseek-v4-pro".to_string())
         );
         assert_eq!(
-            native_model_override(&provider, Some("mimo-v2.5"), Some("deepseek-v4-flash")),
+            native_model_override(&provider, Some("mimo-v2.5"), Some("deepseek-flash")),
             None
         );
         assert_eq!(native_model_override(&provider, Some(""), None), None);
@@ -1501,14 +1501,11 @@ mod tests {
     #[test]
     fn image_request_prefers_promoted_vision_model_over_text_mapping() {
         let mut provider = provider_with_mapping();
-        provider.supported_models = Some(
-            r#"["deepseek-v4-pro","deepseek-v4-flash","deepseek-v4-flash-vision-exp"]"#.to_string(),
-        );
+        provider.supported_models = Some(r#"["deepseek-v4-pro","deepseek-flash"]"#.to_string());
         provider.model_capabilities = Some(
             r#"{
                 "deepseek-v4-pro":["text","reasoning","tools"],
-                "deepseek-v4-flash":["text","tools"],
-                "deepseek-v4-flash-vision-exp":["text","vision"]
+                "deepseek-flash":["text","reasoning","tools","vision"]
             }"#
             .to_string(),
         );
@@ -1517,10 +1514,10 @@ mod tests {
             native_model_override_for_images(
                 &provider,
                 Some("gpt-5.5"),
-                Some("deepseek-v4-flash-vision-exp"),
+                Some("deepseek-flash"),
                 true,
             ),
-            Some("deepseek-v4-flash-vision-exp".to_string())
+            Some("deepseek-flash".to_string())
         );
     }
 
@@ -1531,7 +1528,7 @@ mod tests {
             native_model_override_for_images(
                 &provider,
                 Some("gpt-5.5"),
-                Some("deepseek-v4-flash-vision-exp"),
+                Some("deepseek-flash"),
                 false,
             ),
             Some("deepseek-v4-pro".to_string())

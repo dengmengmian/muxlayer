@@ -86,7 +86,7 @@ describe("MiMo provider endpoints", () => {
   it("enables Claude Code native protocol for DeepSeek", () => {
     const preset = resolveProviderPresetForKey("deepseek", "deepseek-xxxxx");
     expect(preset?.protocols).toContain("anthropic_messages");
-    expect(preset?.defaultModel).toBe("deepseek-v4-flash");
+    expect(preset?.defaultModel).toBe("deepseek-flash");
     expect(preset?.reasoningModel).toBe("deepseek-v4-pro");
     expect(preset?.anthropicBaseUrl).toBe("https://api.deepseek.com/anthropic");
   });

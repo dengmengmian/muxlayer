@@ -13,7 +13,7 @@ function makeRequest(
     timestamp: new Date().toISOString(),
     client: "codex",
     provider: "DeepSeek",
-    model: "deepseek-v4-flash",
+    model: "deepseek-flash",
     status_code: 200,
     latency_ms: 345,
     ...overrides,

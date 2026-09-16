@@ -540,7 +540,7 @@ mod tests {
     fn native_responses_allowed_for_whitelisted_model() {
         assert!(native_responses_allowed(
             "deepseek",
-            "deepseek-v4-flash",
+            "deepseek-flash",
             false,
             None
         ));
@@ -559,20 +559,10 @@ mod tests {
     }
 
     #[test]
-    fn native_responses_blocked_for_image_request_of_restricted_provider() {
-        assert!(!native_responses_allowed(
-            "deepseek",
-            "deepseek-v4-flash",
-            true,
-            None
-        ));
-    }
-
-    #[test]
-    fn native_responses_allows_images_for_deepseek_vision_model() {
+    fn native_responses_allows_images_for_deepseek_flash() {
         assert!(native_responses_allowed(
             "deepseek",
-            "deepseek-v4-flash-vision-exp",
+            "deepseek-flash",
             true,
             None
         ));
@@ -588,7 +578,7 @@ mod tests {
         ];
         assert!(!native_responses_allowed(
             "deepseek",
-            "deepseek-v4-flash",
+            "deepseek-flash",
             false,
             Some(&tools)
         ));
@@ -609,7 +599,7 @@ mod tests {
         })];
         assert!(!native_responses_allowed(
             "deepseek",
-            "deepseek-v4-flash",
+            "deepseek-flash",
             false,
             Some(&tools)
         ));
@@ -623,7 +613,7 @@ mod tests {
         ];
         assert!(native_responses_allowed(
             "deepseek",
-            "deepseek-v4-flash",
+            "deepseek-flash",
             false,
             Some(&tools)
         ));

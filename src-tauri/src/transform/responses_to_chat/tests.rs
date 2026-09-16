@@ -417,7 +417,7 @@ fn test_convert_deepseek_image_only_becomes_notice_text() {
         }]),
         ..Default::default()
     };
-    let result = convert_with_provider(&req, "deepseek-v4-flash", &DeepSeekProvider).unwrap();
+    let result = convert_with_provider(&req, "deepseek-v4-pro", &DeepSeekProvider).unwrap();
     let parts = result.messages[0]
         .content
         .as_ref()

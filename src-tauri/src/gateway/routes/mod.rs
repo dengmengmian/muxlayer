@@ -380,9 +380,9 @@ mod tests {
             provider_type: "deepseek".to_string(),
             base_url: "https://api.deepseek.com/v1".to_string(),
             api_key: Some("sk-test".to_string()),
-            default_model: "deepseek-v4-flash".to_string(),
+            default_model: "deepseek-flash".to_string(),
             reasoning_model: Some("deepseek-v4-pro".to_string()),
-            supported_models: Some(r#"["deepseek-v4-pro","deepseek-v4-flash"]"#.to_string()),
+            supported_models: Some(r#"["deepseek-v4-pro","deepseek-flash"]"#.to_string()),
             model_mapping: Some(r#"{"gpt-5.5":"deepseek-v4-pro"}"#.to_string()),
             extra_headers: None,
             anthropic_base_url: None,
@@ -412,7 +412,7 @@ mod tests {
         let provider = provider_for_native_model_tests();
         assert_eq!(
             native_model_override(&provider, Some("agentgate"), None),
-            Some("deepseek-v4-flash".to_string())
+            Some("deepseek-flash".to_string())
         );
     }
 
@@ -421,7 +421,7 @@ mod tests {
         let provider = provider_for_native_model_tests();
         assert_eq!(
             native_model_override(&provider, Some("openai/agentgate"), None),
-            Some("deepseek-v4-flash".to_string())
+            Some("deepseek-flash".to_string())
         );
     }
 
@@ -438,7 +438,7 @@ mod tests {
     fn native_model_override_still_prefers_explicit_mapping() {
         let provider = provider_for_native_model_tests();
         assert_eq!(
-            native_model_override(&provider, Some("gpt-5.5"), Some("deepseek-v4-flash")),
+            native_model_override(&provider, Some("gpt-5.5"), Some("deepseek-flash")),
             Some("deepseek-v4-pro".to_string())
         );
     }
@@ -447,7 +447,7 @@ mod tests {
     fn native_model_override_preserves_unmapped_real_model() {
         let provider = provider_for_native_model_tests();
         assert_eq!(
-            native_model_override(&provider, Some("mimo-v2.5"), Some("deepseek-v4-flash")),
+            native_model_override(&provider, Some("mimo-v2.5"), Some("deepseek-flash")),
             None
         );
     }

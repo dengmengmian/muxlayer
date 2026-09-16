@@ -270,10 +270,7 @@ fn seed_config_if_empty(db: &DbPool, path: &str) {
 /// Provider type presets: (base_url, default_model)
 fn provider_presets() -> std::collections::HashMap<&'static str, (&'static str, &'static str)> {
     [
-        (
-            "deepseek",
-            ("https://api.deepseek.com", "deepseek-v4-flash"),
-        ),
+        ("deepseek", ("https://api.deepseek.com", "deepseek-flash")),
         ("openai", ("https://api.openai.com", "gpt-5.5")),
         (
             "anthropic",

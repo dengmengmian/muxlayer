@@ -58,7 +58,7 @@ describe("buildStreamFailureTimeline", () => {
       timestamp: "2026-08-12T00:00:00Z",
       client: "Codex",
       provider: "DeepSeek",
-      model: "deepseek-v4-flash",
+      model: "deepseek-flash",
       route: "/v1/chat/completions",
       status_code: 503,
       latency_ms: 1200,
@@ -71,7 +71,7 @@ describe("buildStreamFailureTimeline", () => {
           profile_name: "Chat Completions Default",
           mode: "manual",
           selected_provider_name: "DeepSeek",
-          selected_model: "deepseek-v4-flash",
+          selected_model: "deepseek-flash",
           fallback_chain: [
             {
               step: 1,

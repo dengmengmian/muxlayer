@@ -9,14 +9,11 @@ pub struct DeepSeekProvider;
 const MIXED_MODE_REASONING_PLACEHOLDER: &str = "(this turn ran without thinking mode)";
 
 fn is_deepseek_v4_family(model: &str) -> bool {
-    matches!(
-        strip_qualifier(model),
-        "deepseek-v4-pro" | "deepseek-v4-flash"
-    )
+    matches!(strip_qualifier(model), "deepseek-v4-pro" | "deepseek-flash")
 }
 
 fn is_deepseek_vision_model(model: &str) -> bool {
-    strip_qualifier(model) == "deepseek-v4-flash-vision-exp"
+    strip_qualifier(model) == "deepseek-flash"
 }
 
 fn is_thinking_enabled(req: &ChatCompletionsRequest) -> bool {
@@ -60,10 +57,9 @@ impl super::ProviderTransform for DeepSeekProvider {
         let model = strip_qualifier(&req.model).to_string();
         let model = model.as_str();
 
-        // DeepSeek's vision experiment accepts the standard Chat Completions
-        // image_url block. Keep the old degradation guard for every other
-        // DeepSeek model, including historic image turns replayed to a
-        // text-only model.
+        // DeepSeek Flash accepts the standard Chat Completions image_url
+        // block. Keep the degradation guard for every other DeepSeek model,
+        // including historic image turns replayed to a text-only model.
         if !is_deepseek_vision_model(model) {
             req.diagnostic_events
                 .extend(degradation::strip_image_parts_with_notice(
@@ -210,7 +206,7 @@ mod tests {
     #[test]
     fn deepseek_v4_defaults_high_reasoning_effort() {
         let mut r = req();
-        r.model = "deepseek-v4-flash".into();
+        r.model = "deepseek-flash".into();
         DeepSeekProvider.finalize_request(&mut r, &None);
         assert_eq!(r.reasoning_effort.as_deref(), Some("high"));
     }
@@ -261,7 +257,7 @@ mod tests {
     #[test]
     fn deepseek_v4_backfills_reasoning_for_tool_call_assistant_in_thinking_mode() {
         let mut r = req();
-        r.model = "deepseek-v4-flash".into();
+        r.model = "deepseek-flash".into();
         r.messages = vec![ChatMessage {
             role: "assistant".into(),
             content: Some(json!("text")),
@@ -415,7 +411,7 @@ mod tests {
     #[test]
     fn deepseek_finalize_request_image_only_becomes_notice_text() {
         let mut r = req();
-        r.model = "deepseek-v4-flash".into();
+        r.model = "deepseek-v4-pro".into();
         r.messages = vec![ChatMessage {
             role: "user".into(),
             content: Some(json!([
@@ -434,9 +430,9 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_vision_model_preserves_image_url() {
+    fn deepseek_flash_preserves_image_url() {
         let mut r = req();
-        r.model = "deepseek-v4-flash-vision-exp".into();
+        r.model = "deepseek-flash".into();
         r.messages = vec![ChatMessage {
             role: "user".into(),
             content: Some(json!([

@@ -83,8 +83,8 @@ export function pickModelsForProvider(
   if (!isDeepSeekProvider(providerType)) return pickModels(models);
 
   const normalized = normalizeModelsForProvider(providerType, models);
-  const defaultModel = normalized.includes("deepseek-v4-flash")
-    ? "deepseek-v4-flash"
+  const defaultModel = normalized.includes("deepseek-flash")
+    ? "deepseek-flash"
     : (normalized[0] ?? "");
   const reasoningModel = normalized.includes("deepseek-v4-pro")
     ? "deepseek-v4-pro"

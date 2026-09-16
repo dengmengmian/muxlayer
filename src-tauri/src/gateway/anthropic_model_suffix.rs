@@ -86,10 +86,10 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_v4_flash_passes_through() {
+    fn deepseek_flash_passes_through() {
         assert_eq!(
-            for_anthropic("deepseek", "deepseek-v4-flash"),
-            "deepseek-v4-flash"
+            for_anthropic("deepseek", "deepseek-flash"),
+            "deepseek-flash"
         );
     }
 

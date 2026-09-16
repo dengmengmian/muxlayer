@@ -1,7 +1,7 @@
 //! L3 capability-layer tests for DeepSeek.
 //!
-//! DeepSeek's distinctive L3 behaviors: V4 family is text-only so images
-//! get stripped (with a notice), reasoning_content roundtrips end-to-end
+//! DeepSeek's distinctive L3 behaviors: Flash keeps images while V4 Pro is
+//! text-only so images get stripped (with a notice), reasoning_content roundtrips end-to-end
 //! without being dropped, and the legacy `[1m]` Claude-Code suffix is
 //! removed before the request hits the upstream Anthropic endpoint.
 
@@ -13,7 +13,7 @@ use serde_json::json;
 
 #[tokio::test]
 async fn deepseek_strips_image_with_notice() {
-    // V4 is text-only. The gateway must strip image_url parts from the
+    // V4 Pro is text-only. The gateway must strip image_url parts from the
     // Chat request and append a recovery notice so the model isn't left
     // wondering what "this image" referred to.
     let spec = ProviderSpec::chat_only("deepseek", "deepseek-v4-pro");
@@ -68,6 +68,58 @@ async fn deepseek_strips_image_with_notice() {
     assert!(
         text_blob.contains("image stripped") && text_blob.contains("DeepSeek"),
         "stripped-image notice should mention DeepSeek: {text_blob:?}"
+    );
+
+    harness.shutdown().await;
+}
+
+#[tokio::test]
+async fn deepseek_flash_keeps_image() {
+    // Flash accepts Chat Completions image_url parts natively.
+    let spec = ProviderSpec::chat_only("deepseek", "deepseek-flash");
+
+    let mock = MockUpstream::start().await;
+    mock.stub_chat_completions_ok("deepseek-flash", "ok").await;
+
+    let harness = GatewayHarness::start(spec, &mock).await;
+    let client = harness.client();
+
+    let res = client
+        .post(harness.url("/v1/responses"))
+        .bearer_auth(&harness.token)
+        .json(&json!({
+            "model": "deepseek-flash",
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [
+                    { "type": "input_text", "text": "what's this?" },
+                    { "type": "input_image", "image_url": "data:image/png;base64,iVBORw0KGgo=" }
+                ]
+            }],
+            "stream": false,
+            "max_output_tokens": 16,
+        }))
+        .send()
+        .await
+        .expect("send /v1/responses");
+    assert!(
+        res.status().is_success(),
+        "gateway returned {}",
+        res.status()
+    );
+
+    let received = mock.received().await;
+    assert_eq!(received.len(), 1);
+    assert_eq!(received[0].body["model"], "deepseek-flash");
+    let parts = received[0].body["messages"][0]["content"]
+        .as_array()
+        .expect("content array");
+    assert!(
+        parts
+            .iter()
+            .any(|p| p.get("type").and_then(|t| t.as_str()) == Some("image_url")),
+        "image_url part should reach DeepSeek Flash: {parts:?}"
     );
 
     harness.shutdown().await;

@@ -122,7 +122,7 @@
 <tr>
 <td>Codex model names</td>
 <td>Model Mapping or <code>muxlayer</code> virtual model (<code>agentgate</code> still works)</td>
-<td>DeepSeek model IDs such as <code>deepseek-v4-flash</code>, <code>deepseek-v4-pro</code>, or <code>deepseek-v4-flash-vision-exp</code></td>
+<td>DeepSeek model IDs such as <code>deepseek-flash</code> or <code>deepseek-v4-pro</code></td>
 </tr>
 <tr>
 <td>Codex tools and streaming</td>
@@ -137,7 +137,7 @@
 </code></pre>
 <p>你不需要长期手改 Codex 配置文件，也不需要在 DeepSeek、MiMo、OpenAI 等 Provider 之间来回改模型名。MuxLayer 会通过 Provider、Route Profile、Model Mapping 和 <code>muxlayer</code> 虚拟模型（仍兼容 <code>agentgate</code>）处理这些差异。</p>
 <h2>Why MuxLayer does not pass through to DeepSeek&#39;s Responses API</h2>
-<p><code>deepseek-v4-flash</code> officially supports the Responses API, and <code>deepseek-v4-flash-vision-exp</code> also accepts image input through Responses. In practice direct pass-through still produces worse agent behavior for the regular coding models, so MuxLayer keeps the default route on protocol conversion and only allows native pass-through for explicitly supported model/tool combinations.</p>
+<p><code>deepseek-flash</code> officially supports the Responses API, including image input. In practice direct pass-through still produces worse agent behavior for the regular coding models, so MuxLayer keeps the default route on protocol conversion and only allows native pass-through for explicitly supported model/tool combinations.</p>
 <p>Four reasons, all reproducible:</p>
 <p><strong>1. Every tool is dropped, and the model starts fabricating tool calls.</strong>
 Codex gpt-5.6+ puts tool definitions in an <code>additional_tools</code> item inside the <code>input</code> array rather than in top-level <code>tools</code>. DeepSeek only reads top-level <code>tools</code>, so on a direct connection it sees no tools at all. The model knows it is supposed to call one, has no usable definition, and emits raw DSML markup into its answer instead:</p>
@@ -154,11 +154,11 @@ DeepSeek&#39;s Responses API accepts exactly one custom tool, <code>apply_patch<
 <p><strong>3. Reasoning continuity breaks silently across turns.</strong>
 Codex sends <code>include: [&quot;reasoning.encrypted_content&quot;]</code> on every turn to carry the previous reasoning chain forward. DeepSeek does not support <code>include</code> or <code>encrypted_content</code> and <strong>ignores them silently</strong> — no error, every turn simply starts from scratch. The conversion path compensates with DeepSeek V4 thinking-history backfill; pass-through has no such compensation.</p>
 <p><strong>4. Pass-through skips all DeepSeek-specific handling.</strong>
-For text-only DeepSeek models, image stripping with an explicit notice, schema cleaning, message reordering, and V4 thinking-history reasoning backfill all live on the conversion path. The <code>deepseek-v4-flash-vision-exp</code> model preserves image input; native pass-through skips the conversion-layer fixes.</p>
+For the text-only <code>deepseek-v4-pro</code>, images are stripped with an explicit notice; schema cleaning, message reordering, and V4 thinking-history reasoning backfill all live on the conversion path. <code>deepseek-flash</code> preserves image input; native pass-through skips the conversion-layer fixes.</p>
 <h3>If you still want to pass through</h3>
 <p>Fill in a Responses endpoint on the provider and the gateway will try. To keep the problems above from wasting requests, two gates are built in — hitting either one falls back to protocol conversion:</p>
 <ul>
-<li>The target model is not on the upstream Responses API&#39;s supported list (DeepSeek: <code>deepseek-v4-flash</code> and <code>deepseek-v4-flash-vision-exp</code>).</li>
+<li>The target model is not on the upstream Responses API&#39;s supported list (DeepSeek: <code>deepseek-flash</code> only).</li>
 <li>The request carries a custom tool the upstream does not accept (DeepSeek: <code>apply_patch</code> only).</li>
 </ul>
 <p>In other words, Codex falls back to conversion even with a pass-through endpoint configured. That is deliberate and no further handling is planned.</p>

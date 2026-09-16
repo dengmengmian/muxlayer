@@ -200,7 +200,7 @@ mod tests {
     #[test]
     fn hoist_in_body_moves_tools_to_top_level_and_keeps_unmodeled_fields() {
         let mut body = json!({
-            "model": "deepseek-v4-flash",
+            "model": "deepseek-flash",
             "client_metadata": {"session_id": "s1"},
             "include": ["reasoning.encrypted_content"],
             "input": [

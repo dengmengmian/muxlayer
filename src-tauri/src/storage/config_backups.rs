@@ -248,7 +248,7 @@ mod tests {
                 provider_type: "deepseek".into(),
                 base_url: "https://api.deepseek.com".into(),
                 api_key: Some(api_key.into()),
-                default_model: "deepseek-v4-flash".into(),
+                default_model: "deepseek-flash".into(),
                 reasoning_model: None,
                 supported_models: None,
                 model_mapping: None,

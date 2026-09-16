@@ -14,7 +14,7 @@ function makeRequest(
     client: "codex",
     source: "gateway",
     provider: "DeepSeek",
-    model: "deepseek-v4-flash",
+    model: "deepseek-flash",
     status_code: 200,
     latency_ms: 234,
     ...overrides,
@@ -32,7 +32,7 @@ describe("RequestLogTable", () => {
 
     expect(screen.getByText("DeepSeek")).toBeInTheDocument();
     expect(screen.getByText("codex")).toBeInTheDocument();
-    expect(screen.getByText("deepseek-v4-flash")).toBeInTheDocument();
+    expect(screen.getByText("deepseek-flash")).toBeInTheDocument();
 
     act(() => {
       fireEvent.click(screen.getByText("/v1/chat/completions"));

@@ -122,7 +122,7 @@
 <tr>
 <td>Codex 模型名</td>
 <td>Model Mapping 或 <code>muxlayer</code> 虚拟模型（仍兼容 <code>agentgate</code>）</td>
-<td>DeepSeek 模型 ID，如 <code>deepseek-v4-flash</code>、<code>deepseek-v4-pro</code> 或 <code>deepseek-v4-flash-vision-exp</code></td>
+<td>DeepSeek 模型 ID，如 <code>deepseek-flash</code> 或 <code>deepseek-v4-pro</code></td>
 </tr>
 <tr>
 <td>Codex 的工具和流式输出</td>
@@ -137,7 +137,7 @@
 </code></pre>
 <p>你不需要长期手改 Codex 配置文件，也不需要在 DeepSeek、MiMo、OpenAI 等 Provider 之间来回改模型名。MuxLayer 会通过 Provider、Route Profile、Model Mapping 和 <code>muxlayer</code> 虚拟模型（仍兼容 <code>agentgate</code>）处理这些差异。</p>
 <h2>为什么默认不直连 DeepSeek 的 Responses API</h2>
-<p><code>deepseek-v4-flash</code> 已经正式支持 Responses API，<code>deepseek-v4-flash-vision-exp</code> 还支持通过 Responses 传入图片。但对普通 Coding 模型来说，直连的 Agent 实际效果仍然更差，因此 MuxLayer 默认继续走协议转换，只对明确支持的模型和工具组合开放原生直连。</p>
+<p><code>deepseek-flash</code> 已经正式支持 Responses API，也支持通过 Responses 传入图片。但对普通 Coding 模型来说，直连的 Agent 实际效果仍然更差，因此 MuxLayer 默认继续走协议转换，只对明确支持的模型和工具组合开放原生直连。</p>
 <p>原因有四条，都可复现：</p>
 <p><strong>1. 工具会整批丢失，模型转而&quot;编造&quot;工具调用。</strong>
 Codex gpt-5.6+ 把工具定义放在请求 <code>input</code> 数组的 <code>additional_tools</code> 项里，而不是顶层 <code>tools</code>。DeepSeek 只读顶层 <code>tools</code>，直连时它一个工具都看不到。模型知道自己应该调用工具，却拿不到可用的工具定义，于是在正文里输出裸的 DSML 标记当作调用：</p>
@@ -154,11 +154,11 @@ DeepSeek 的 Responses API 只接受一个自定义工具 <code>apply_patch</cod
 <p><strong>3. 跨轮思维链断掉，而且不报错。</strong>
 Codex 每轮都会带 <code>include: [&quot;reasoning.encrypted_content&quot;]</code>，用于把上一轮的推理链带回下一轮。DeepSeek 明确不支持 <code>include</code> 与 <code>encrypted_content</code>，且是<strong>静默忽略</strong>——不报错，只是每轮推理都从零开始。转换路径里 MuxLayer 会做 DeepSeek V4 thinking 历史回填来补偿，直连没有这层补偿。</p>
 <p><strong>4. 直连绕过全部 DeepSeek 专属处理。</strong>
-对纯文本 DeepSeek 模型，图片剥离并注入可解释提示、schema 清洗、消息重排、V4 thinking 历史 reasoning 回填都发生在转换路径上。<code>deepseek-v4-flash-vision-exp</code> 会保留图片输入；原生直连则会跳过转换层修复。</p>
+对纯文本的 <code>deepseek-v4-pro</code>，图片剥离并注入可解释提示；schema 清洗、消息重排、V4 thinking 历史 reasoning 回填都发生在转换路径上。<code>deepseek-flash</code> 会保留图片输入；原生直连则会跳过转换层修复。</p>
 <h3>如果你仍然想直连</h3>
 <p>在 Provider 里手动填 Responses 端点即可，网关会尝试直连。为避免上述问题把请求打废，网关内置两道判定，命中任意一条就自动回落到协议转换：</p>
 <ul>
-<li>目标模型不在上游 Responses API 的支持列表内（DeepSeek 支持 <code>deepseek-v4-flash</code> 和 <code>deepseek-v4-flash-vision-exp</code>）。</li>
+<li>目标模型不在上游 Responses API 的支持列表内（DeepSeek 只支持 <code>deepseek-flash</code>）。</li>
 <li>请求里带了上游不接受的自定义工具（DeepSeek 仅接受 <code>apply_patch</code>）。</li>
 </ul>
 <p>也就是说，Codex 即使配了直连端点，实际仍会走转换路径。这是有意为之，不做进一步处理。</p>

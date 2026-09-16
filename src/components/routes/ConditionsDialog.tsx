@@ -322,7 +322,7 @@ export function ConditionsDialog({
               <input
                 value={modelOverride}
                 onChange={(e) => setModelOverride(e.target.value)}
-                placeholder="e.g. deepseek-v4-flash"
+                placeholder="e.g. deepseek-flash"
                 className="form-input w-full"
               />
               <p className="mt-0.5 text-[10px] text-text-muted">

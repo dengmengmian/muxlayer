@@ -1382,11 +1382,11 @@ mod tests {
     fn promote_no_swap_when_no_vision_model_exists() {
         let mut p = mimo_provider_with_matrix("deepseek-v4-pro");
         p.provider_type = "deepseek".into();
-        p.supported_models = Some(r#"["deepseek-v4-pro","deepseek-v4-flash"]"#.into());
+        p.supported_models = Some(r#"["deepseek-v4-pro","deepseek-flash"]"#.into());
         p.model_capabilities = Some(
             r#"{
             "deepseek-v4-pro":["text","reasoning","tools","web_search"],
-            "deepseek-v4-flash":["text","tools"]
+            "deepseek-flash":["text","tools"]
         }"#
             .into(),
         );

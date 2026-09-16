@@ -10,22 +10,22 @@ describe("DeepSeek model heuristics", () => {
     expect(
       normalizeModelsForProvider("deepseek", [
         "deepseek-chat",
-        "deepseek-v4-flash",
+        "deepseek-flash",
         "deepseek-reasoner",
         "deepseek-v4-pro",
       ])
-    ).toEqual(["deepseek-v4-flash", "deepseek-v4-pro"]);
+    ).toEqual(["deepseek-flash", "deepseek-v4-pro"]);
   });
 
   it("defaults deepseek to flash and reasoning to pro", () => {
     expect(
       pickModelsForProvider("deepseek", [
         "deepseek-chat",
-        "deepseek-v4-flash",
+        "deepseek-flash",
         "deepseek-reasoner",
         "deepseek-v4-pro",
       ])
-    ).toEqual({ default: "deepseek-v4-flash", reasoning: "deepseek-v4-pro" });
+    ).toEqual({ default: "deepseek-flash", reasoning: "deepseek-v4-pro" });
   });
 });
 

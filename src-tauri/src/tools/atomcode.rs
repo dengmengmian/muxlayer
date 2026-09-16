@@ -400,7 +400,7 @@ api_key = "sk-kimi-key"
             r#"[providers.deepseek]
 type = "openai"
 api_key = "sk-real"
-model = "deepseek-v4-flash"
+model = "deepseek-flash"
 "#,
         )
         .unwrap();

@@ -29,7 +29,7 @@ MuxLayer keeps the official Codex configuration restorable, so you can switch ba
 | Codex side | MuxLayer side | DeepSeek side |
 |---|---|---|
 | OpenAI Responses API | `/v1/responses` local gateway route | DeepSeek Chat Completions or Anthropic-compatible endpoint |
-| Codex model names | Model Mapping or `muxlayer` virtual model (`agentgate` still works) | DeepSeek model IDs such as `deepseek-v4-flash`, `deepseek-v4-pro`, or `deepseek-v4-flash-vision-exp` |
+| Codex model names | Model Mapping or `muxlayer` virtual model (`agentgate` still works) | DeepSeek model IDs such as `deepseek-flash` or `deepseek-v4-pro` |
 | Codex tools and streaming | Protocol conversion and request tracing | Provider-specific DeepSeek handling |
 
 ## Chinese Notes / 中文说明
@@ -46,7 +46,7 @@ Codex -> http://127.0.0.1:9090/v1/responses -> MuxLayer -> DeepSeek
 
 ## Why MuxLayer does not pass through to DeepSeek's Responses API
 
-`deepseek-v4-flash` officially supports the Responses API, and `deepseek-v4-flash-vision-exp` also accepts image input through Responses. In practice direct pass-through still produces worse agent behavior for the regular coding models, so MuxLayer keeps the default route on protocol conversion and only allows native pass-through for explicitly supported model/tool combinations.
+`deepseek-flash` officially supports the Responses API, including image input. In practice direct pass-through still produces worse agent behavior for the regular coding models, so MuxLayer keeps the default route on protocol conversion and only allows native pass-through for explicitly supported model/tool combinations.
 
 Four reasons, all reproducible:
 
@@ -74,13 +74,13 @@ Codex always sends `exec`, so even with the tools intact a direct connection fai
 Codex sends `include: ["reasoning.encrypted_content"]` on every turn to carry the previous reasoning chain forward. DeepSeek does not support `include` or `encrypted_content` and **ignores them silently** — no error, every turn simply starts from scratch. The conversion path compensates with DeepSeek V4 thinking-history backfill; pass-through has no such compensation.
 
 **4. Pass-through skips all DeepSeek-specific handling.**
-For text-only DeepSeek models, image stripping with an explicit notice, schema cleaning, message reordering, and V4 thinking-history reasoning backfill all live on the conversion path. The `deepseek-v4-flash-vision-exp` model preserves image input; native pass-through skips the conversion-layer fixes.
+For the text-only `deepseek-v4-pro`, images are stripped with an explicit notice; schema cleaning, message reordering, and V4 thinking-history reasoning backfill all live on the conversion path. `deepseek-flash` preserves image input; native pass-through skips the conversion-layer fixes.
 
 ### If you still want to pass through
 
 Fill in a Responses endpoint on the provider and the gateway will try. To keep the problems above from wasting requests, two gates are built in — hitting either one falls back to protocol conversion:
 
-- The target model is not on the upstream Responses API's supported list (DeepSeek: `deepseek-v4-flash` and `deepseek-v4-flash-vision-exp`).
+- The target model is not on the upstream Responses API's supported list (DeepSeek: `deepseek-flash` only).
 - The request carries a custom tool the upstream does not accept (DeepSeek: `apply_patch` only), including Codex 0.152+ `exec` nested inside a `functions` namespace.
 
 In other words, Codex falls back to conversion even with a pass-through endpoint configured. That is deliberate and no further handling is planned.

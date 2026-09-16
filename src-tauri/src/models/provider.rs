@@ -614,7 +614,7 @@ mod tests {
             provider_type: "deepseek".to_string(),
             base_url: "https://api.deepseek.com".to_string(),
             api_key: None,
-            default_model: "deepseek-v4-flash".to_string(),
+            default_model: "deepseek-flash".to_string(),
             reasoning_model: None,
             supported_models: None,
             model_mapping: None,

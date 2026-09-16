@@ -80,7 +80,7 @@ See the [full provider compatibility matrix](./docs/full-reference.md#supported-
 | Provider | Type | Native Protocols | Provider-Specific Handling |
 |---|---|---|---|
 | Xiaomi MiMo | `mimo` | Chat + Anthropic | Multi-turn `reasoning_content` round-trip, region-aware `tp-*` host auto-routing, temperature strip in thinking mode, tool_choice non-auto strip, omni web_search strip, web_search builtin gated by matrix, Web Search Plugin auto-degrade / retry |
-| DeepSeek | `deepseek` | Chat + Anthropic | Vision model preserves image inputs; text-only models strip images with an explicit notice; DeepSeek V4 thinking history reasoning backfill, schema cleaning, message reordering |
+| DeepSeek | `deepseek` | Chat + Anthropic | deepseek-flash preserves image inputs; deepseek-v4-pro strips images with an explicit notice; DeepSeek V4 thinking history reasoning backfill, schema cleaning, message reordering |
 | Anthropic (Claude) | `anthropic` | Anthropic | `tool_use`/`tool_result`, `input_schema`, thinking budget, native cache_control |
 | GitHub Copilot | `copilot` | Chat + Anthropic | GitHub token → Copilot bearer exchange, `x-initiator` billing classification, Claude model dash→dot normalization |
 | OpenAI | `openai` | Chat + Responses | None (Responses passthrough or Chat conversion) |

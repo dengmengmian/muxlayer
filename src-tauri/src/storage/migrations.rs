@@ -55,6 +55,7 @@ pub fn run_migrations(conn: &Connection) -> Result<(), AppError> {
     // 历史 NULL cost 的回填不在这里做:大库全表扫描会拖慢启动,改由启动后的后台任务
     // 调 `pricing::backfill_costs`(此时所有列已就绪,每次启动重试直到补完)。
     crate::storage::pricing::ensure_defaults(&tx)?;
+    rename_retired_deepseek_models(&tx)?;
     tx.commit()?;
 
     // 防御性自检:跑完所有迁移后,user_version 必须等于 CURRENT_SCHEMA_VERSION。
@@ -111,6 +112,143 @@ fn ensure_additive_columns(conn: &Connection) -> Result<(), AppError> {
     // 2.0.5 读 model_pricing 用显式列名,多出这两列不影响降级后打开。
     add_column_if_missing(conn, "model_pricing", "cache_read_price", "REAL")?;
     add_column_if_missing(conn, "model_pricing", "cache_write_price", "REAL")?;
+    Ok(())
+}
+
+/// DeepSeek 已下线的模型 ID。`deepseek-v4-flash` 改名为 `deepseek-flash`,
+/// `deepseek-v4-flash-vision-exp` 的视觉并入 `deepseek-flash`。
+const DEEPSEEK_RETIRED_FLASH: [&str; 2] = ["deepseek-v4-flash", "deepseek-v4-flash-vision-exp"];
+const DEEPSEEK_FLASH: &str = "deepseek-flash";
+
+fn to_json(v: &impl serde::Serialize) -> Result<String, AppError> {
+    serde_json::to_string(v).map_err(|e| AppError::internal(e.to_string()))
+}
+
+/// 把存量 DeepSeek provider 里对旧 flash ID 的引用改成 `deepseek-flash`,并给它补 vision 能力。
+/// 只处理仍引用旧 ID 的 provider,处理完引用即消失,之后启动不会再改用户手动编辑。
+/// 不 bump 版本:纯数据修正,降级后旧版也能读。
+fn rename_retired_deepseek_models(conn: &Connection) -> Result<(), AppError> {
+    type Row = (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
+    let rows: Vec<Row> = conn
+        .prepare(
+            "SELECT id, default_model, reasoning_model, supported_models, model_capabilities, model_mapping
+             FROM providers WHERE provider_type = 'deepseek'",
+        )?
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+        })?
+        .collect::<Result<_, _>>()?;
+
+    let is_retired = |m: &str| DEEPSEEK_RETIRED_FLASH.contains(&m);
+
+    for (id, default_model, reasoning_model, supported, caps, mapping) in rows {
+        // 两个旧 ID 都以 deepseek-v4-flash 开头,子串命中即可能引用。
+        let mentions = |v: &Option<String>| {
+            v.as_deref()
+                .is_some_and(|s| s.contains(DEEPSEEK_RETIRED_FLASH[0]))
+        };
+        let route_overrides: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM route_profile_providers
+             WHERE provider_id = ?1 AND model_override IN (?2, ?3)",
+            rusqlite::params![&id, DEEPSEEK_RETIRED_FLASH[0], DEEPSEEK_RETIRED_FLASH[1]],
+            |r| r.get(0),
+        )?;
+        if !is_retired(&default_model)
+            && ![&reasoning_model, &supported, &caps, &mapping]
+                .into_iter()
+                .any(mentions)
+            && route_overrides == 0
+        {
+            continue;
+        }
+
+        let swap = |m: String| {
+            if is_retired(&m) {
+                DEEPSEEK_FLASH.to_string()
+            } else {
+                m
+            }
+        };
+        let default_model = swap(default_model);
+        let reasoning_model = reasoning_model.map(swap);
+
+        let supported = match supported
+            .as_deref()
+            .map(serde_json::from_str::<Vec<String>>)
+        {
+            Some(Ok(list)) => {
+                let mut out: Vec<String> = Vec::new();
+                for m in list.into_iter().map(swap) {
+                    if !out.contains(&m) {
+                        out.push(m);
+                    }
+                }
+                Some(to_json(&out)?)
+            }
+            _ => supported,
+        };
+
+        let caps = match caps
+            .as_deref()
+            .map(serde_json::from_str::<std::collections::BTreeMap<String, Vec<String>>>)
+        {
+            Some(Ok(mut map)) => {
+                let retired: Vec<Vec<String>> = DEEPSEEK_RETIRED_FLASH
+                    .iter()
+                    .filter_map(|m| map.remove(*m))
+                    .collect();
+                if !retired.is_empty() {
+                    let flash = map.entry(DEEPSEEK_FLASH.to_string()).or_default();
+                    let vision = crate::providers::capabilities::CAP_VISION.to_string();
+                    for cap in retired.into_iter().flatten().chain([vision]) {
+                        if !flash.contains(&cap) {
+                            flash.push(cap);
+                        }
+                    }
+                }
+                Some(to_json(&map)?)
+            }
+            _ => caps,
+        };
+
+        let mapping = match mapping
+            .as_deref()
+            .map(serde_json::from_str::<serde_json::Map<String, serde_json::Value>>)
+        {
+            Some(Ok(mut map)) => {
+                for v in map.values_mut() {
+                    if v.as_str().is_some_and(is_retired) {
+                        *v = DEEPSEEK_FLASH.into();
+                    }
+                }
+                Some(to_json(&map)?)
+            }
+            _ => mapping,
+        };
+
+        conn.execute(
+            "UPDATE providers SET default_model = ?1, reasoning_model = ?2, supported_models = ?3,
+                model_capabilities = ?4, model_mapping = ?5 WHERE id = ?6",
+            rusqlite::params![default_model, reasoning_model, supported, caps, mapping, id],
+        )?;
+        conn.execute(
+            "UPDATE route_profile_providers SET model_override = ?1
+             WHERE provider_id = ?2 AND model_override IN (?3, ?4)",
+            rusqlite::params![
+                DEEPSEEK_FLASH,
+                &id,
+                DEEPSEEK_RETIRED_FLASH[0],
+                DEEPSEEK_RETIRED_FLASH[1]
+            ],
+        )?;
+    }
     Ok(())
 }
 
@@ -791,9 +929,9 @@ fn seed_default_providers(conn: &Connection) -> Result<(), AppError> {
             "DeepSeek",
             "deepseek",
             "https://api.deepseek.com",
-            "deepseek-v4-flash",
+            "deepseek-flash",
             "deepseek-v4-pro",
-            r#"["deepseek-v4-flash","deepseek-v4-pro"]"#,
+            r#"["deepseek-flash","deepseek-v4-pro"]"#,
             "https://api.deepseek.com/anthropic",
             r#"["openai_chat_completions","anthropic_messages"]"#,
             120,
@@ -1194,14 +1332,110 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
             .unwrap();
-        assert_eq!(default_model, "deepseek-v4-flash");
+        assert_eq!(default_model, "deepseek-flash");
         assert_eq!(reasoning_model, "deepseek-v4-pro");
-        assert_eq!(
-            supported_models,
-            r#"["deepseek-v4-flash","deepseek-v4-pro"]"#
-        );
+        assert_eq!(supported_models, r#"["deepseek-flash","deepseek-v4-pro"]"#);
         assert_eq!(anthropic_base_url, "https://api.deepseek.com/anthropic");
         assert!(protocol.contains("anthropic_messages"));
+    }
+
+    #[test]
+    fn startup_renames_retired_deepseek_models_to_deepseek_flash() {
+        // ≤2.0.6 的存量库：deepseek-v4-flash / vision-exp 在默认模型、模型列表、
+        // 能力矩阵、映射、路由覆盖里。上游只剩 deepseek-flash(原生视觉)和 deepseek-v4-pro。
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        let id: String = conn
+            .query_row(
+                "SELECT id FROM providers WHERE provider_type='deepseek'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "UPDATE providers SET default_model = 'deepseek-v4-flash',
+                reasoning_model = 'deepseek-v4-flash-vision-exp',
+                supported_models = ?1, model_capabilities = ?2, model_mapping = ?3 WHERE id = ?4",
+            rusqlite::params![
+                r#"["deepseek-v4-flash","deepseek-v4-pro","deepseek-v4-flash-vision-exp"]"#,
+                r#"{"deepseek-v4-flash":["text","reasoning","tools"],"deepseek-v4-pro":["text","reasoning","tools"],"deepseek-v4-flash-vision-exp":["text","vision"]}"#,
+                r#"{"gpt-5.5":"deepseek-v4-pro","gpt-5.4-mini":"deepseek-v4-flash","gpt-image":"deepseek-v4-flash-vision-exp"}"#,
+                &id,
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE route_profile_providers SET model_override = 'deepseek-v4-flash' WHERE provider_id = ?1",
+            [&id],
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let (default_model, reasoning, supported, caps, mapping): (
+            String,
+            String,
+            String,
+            String,
+            String,
+        ) = conn
+            .query_row(
+                "SELECT default_model, reasoning_model, supported_models, model_capabilities, model_mapping FROM providers WHERE id = ?1",
+                [&id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(default_model, "deepseek-flash");
+        assert_eq!(reasoning, "deepseek-flash");
+        assert_eq!(supported, r#"["deepseek-flash","deepseek-v4-pro"]"#);
+        let caps: serde_json::Value = serde_json::from_str(&caps).unwrap();
+        assert!(caps.get("deepseek-v4-flash").is_none());
+        assert!(caps.get("deepseek-v4-flash-vision-exp").is_none());
+        assert_eq!(
+            caps["deepseek-flash"],
+            serde_json::json!(["text", "reasoning", "tools", "vision"])
+        );
+        assert_eq!(
+            caps["deepseek-v4-pro"],
+            serde_json::json!(["text", "reasoning", "tools"])
+        );
+        let mapping: serde_json::Value = serde_json::from_str(&mapping).unwrap();
+        assert_eq!(mapping["gpt-5.5"], "deepseek-v4-pro");
+        assert_eq!(mapping["gpt-5.4-mini"], "deepseek-flash");
+        assert_eq!(mapping["gpt-image"], "deepseek-flash");
+        let overrides: Vec<Option<String>> = conn
+            .prepare("SELECT model_override FROM route_profile_providers WHERE provider_id = ?1")
+            .unwrap()
+            .query_map([&id], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(!overrides.is_empty());
+        assert!(overrides
+            .iter()
+            .all(|o| o.as_deref() == Some("deepseek-flash")));
+    }
+
+    #[test]
+    fn startup_leaves_current_deepseek_flash_caps_alone() {
+        // 已经是新模型名的库不动：用户手动去掉 deepseek-flash 的 vision 要被尊重。
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        let caps = r#"{"deepseek-flash":["text","tools"]}"#;
+        conn.execute(
+            "UPDATE providers SET model_capabilities = ?1 WHERE provider_type='deepseek'",
+            [caps],
+        )
+        .unwrap();
+        run_migrations(&conn).unwrap();
+        let after: String = conn
+            .query_row(
+                "SELECT model_capabilities FROM providers WHERE provider_type='deepseek'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(after, caps);
     }
 
     #[test]

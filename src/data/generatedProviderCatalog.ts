@@ -157,9 +157,9 @@ export const GENERATED_PROVIDER_CATALOG = {
       baseUrl: "https://api.deepseek.com",
       anthropicBaseUrl: "https://api.deepseek.com/anthropic",
     },
-    responsesModels: ["deepseek-v4-flash", "deepseek-v4-flash-vision-exp"],
+    responsesModels: ["deepseek-flash"],
     responsesCustomTools: ["apply_patch"],
-    defaultModel: "deepseek-v4-flash",
+    defaultModel: "deepseek-flash",
     reasoningModel: "deepseek-v4-pro",
     recommendedMapping: {
       codexPrimaryTarget: "reasoning",
@@ -168,16 +168,17 @@ export const GENERATED_PROVIDER_CATALOG = {
       claudeSmallTarget: "default",
       repairLegacy1m: true,
     },
-    supportedModels: [
+    supportedModels: ["deepseek-flash", "deepseek-v4-pro"],
+    deprecatedModels: [
+      "deepseek-chat",
+      "deepseek-reasoner",
       "deepseek-v4-flash",
-      "deepseek-v4-pro",
       "deepseek-v4-flash-vision-exp",
     ],
-    deprecatedModels: ["deepseek-chat", "deepseek-reasoner"],
     models: [
       {
-        id: "deepseek-v4-flash",
-        capabilities: ["text", "reasoning", "tools"],
+        id: "deepseek-flash",
+        capabilities: ["text", "vision", "reasoning", "tools"],
         pricing: {
           inputPerMillion: 0.5,
           outputPerMillion: 2,
@@ -193,16 +194,12 @@ export const GENERATED_PROVIDER_CATALOG = {
         },
         contextWindow: 128000,
       },
-      {
-        id: "deepseek-v4-flash-vision-exp",
-        capabilities: ["text", "vision"],
-      },
     ],
     docs: {
       handlingEn:
-        "Vision model preserves image inputs; text-only models strip images with an explicit notice; DeepSeek V4 thinking history reasoning backfill, schema cleaning, message reordering",
+        "deepseek-flash preserves image inputs; deepseek-v4-pro strips images with an explicit notice; DeepSeek V4 thinking history reasoning backfill, schema cleaning, message reordering",
       handlingZh:
-        "视觉模型保留图片输入；纯文本模型剥离图片并注入可解释提示；DeepSeek V4 thinking 历史 reasoning 回填、schema 清洗、消息重排",
+        "deepseek-flash 保留图片输入；deepseek-v4-pro 剥离图片并注入可解释提示；DeepSeek V4 thinking 历史 reasoning 回填、schema 清洗、消息重排",
     },
     sync: {
       envVar: "DEEPSEEK_API_KEY",
@@ -1266,7 +1263,7 @@ export const GENERATED_PROVIDER_PRESETS = {
   deepseek: {
     baseUrl: "https://api.deepseek.com",
     protocols: ["openai_chat_completions", "anthropic_messages"],
-    defaultModel: "deepseek-v4-flash",
+    defaultModel: "deepseek-flash",
     reasoningModel: "deepseek-v4-pro",
     anthropicBaseUrl: "https://api.deepseek.com/anthropic",
   },
@@ -1432,7 +1429,6 @@ export const GENERATED_MIMO_ENDPOINTS = {
 } as const;
 
 export const GENERATED_DEEPSEEK_SUPPORTED_MODELS = [
-  "deepseek-v4-flash",
+  "deepseek-flash",
   "deepseek-v4-pro",
-  "deepseek-v4-flash-vision-exp",
 ] as const;

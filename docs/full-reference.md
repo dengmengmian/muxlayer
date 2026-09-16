@@ -424,10 +424,10 @@ Launch MuxLayer → **Providers** → **Add Provider**
 | Name | `DeepSeek` |
 | Type | `deepseek` |
 | Base URL | `https://api.deepseek.com` |
-| Default Model | `deepseek-v4-flash` |
+| Default Model | `deepseek-flash` |
 | Reasoning Model | `deepseek-v4-pro` |
-| Vision Model | `deepseek-v4-flash-vision-exp` |
-| Model Mapping | `gpt-5.5` → `deepseek-v4-flash`, `o3` → `deepseek-v4-pro` |
+| Vision Model | `deepseek-flash` (the default model accepts images natively) |
+| Model Mapping | `gpt-5.5` → `deepseek-flash`, `o3` → `deepseek-v4-pro` |
 | Anthropic Endpoint | `https://api.deepseek.com/anthropic` (supports Claude Code pass-through) |
 
 </details>
@@ -600,7 +600,7 @@ The token format is `ag_local_*`. It is only used for local gateway auth and is 
 curl -X POST http://127.0.0.1:9090/v1/chat/completions \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"Hello"}]}'
+  -d '{"model":"deepseek-flash","messages":[{"role":"user","content":"Hello"}]}'
 ```
 
 **Responses API (Codex Protocol)**
@@ -707,7 +707,7 @@ Providers marked **Provider-specific handling** have dedicated transform code in
 | Provider | Type | Native Protocols | Provider-Specific Handling |
 |---|---|---|---|
 | Xiaomi MiMo | `mimo` | Chat + Anthropic | Multi-turn `reasoning_content` round-trip, region-aware `tp-*` host auto-routing, temperature strip in thinking mode, tool_choice non-auto strip, omni web_search strip, web_search builtin gated by matrix, Web Search Plugin auto-degrade / retry |
-| DeepSeek | `deepseek` | Chat + Anthropic | `deepseek-v4-flash-vision-exp` preserves image inputs; `deepseek-v4-flash` and `deepseek-v4-pro` strip images with an explicit notice; DeepSeek V4 thinking history reasoning backfill, schema cleaning, message reordering |
+| DeepSeek | `deepseek` | Chat + Anthropic | `deepseek-flash` preserves image inputs; `deepseek-v4-pro` strips images with an explicit notice; DeepSeek V4 thinking history reasoning backfill, schema cleaning, message reordering |
 | Anthropic (Claude) | `anthropic` | Anthropic | `tool_use`/`tool_result`, `input_schema`, thinking budget, native cache_control |
 | GitHub Copilot | `copilot` | Chat + Anthropic | GitHub token → Copilot bearer exchange, `x-initiator` billing classification, Claude model dash→dot normalization |
 | OpenAI | `openai` | Chat + Responses | None (Responses passthrough or Chat conversion) |
@@ -789,7 +789,7 @@ When the client protocol differs from the downstream provider, MuxLayer converts
 │     No images  → select by priority as normal                           │
 │                         ▼                                               │
 │  ⑤ Provider-Specific Transform                                          │
-│     DeepSeek   → vision model keeps images; text models strip them      │
+│     DeepSeek   → flash keeps images; pro strips them                    │
 │                   + reasoning_content + schema fix                      │
 │     KimiCoding → web_search conversion + thinking control               │
 │     Anthropic  → convert to Claude Messages (image→source.base64)       │
@@ -859,7 +859,7 @@ Codex sends input_image
   → ① Auth passes
   → ② Matches Codex Default Route Profile
   → ③ Protocol conversion: input_image → image_url (image preserved)
-  → ④ Vision routing: image detected → skip DeepSeek text-only models; use `deepseek-v4-flash-vision-exp` when configured, otherwise select KimiCoding (Vision)
+  → ④ Vision routing: image detected → skip DeepSeek text-only models; switch to `deepseek-flash` when configured, otherwise select KimiCoding (Vision)
   → ⑤ KimiCoding transform: no image stripping, send directly
   → ⑥ KimiCoding returns success → mark healthy
   → ⑦ Log request

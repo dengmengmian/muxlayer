@@ -27,16 +27,12 @@ pub const MIMO_TOKEN_PLAN_ENDPOINTS: &[(&str, &str, &str)] = &[
 pub const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
 pub const DEEPSEEK_ANTHROPIC_URL: &str = "https://api.deepseek.com/anthropic";
 pub const DEEPSEEK_REASONING_MODEL: &str = "deepseek-v4-pro";
-pub const DEEPSEEK_SUPPORTED_MODELS_JSON: &str =
-    "[\"deepseek-v4-flash\",\"deepseek-v4-pro\",\"deepseek-v4-flash-vision-exp\"]";
+pub const DEEPSEEK_SUPPORTED_MODELS_JSON: &str = "[\"deepseek-flash\",\"deepseek-v4-pro\"]";
 
 /// Models that can be passed through natively to the provider's Responses API.
 /// A provider listed here is restricted to these models; providers absent from
 /// this table have no restriction.
-pub const RESPONSES_NATIVE_MODELS: &[(&str, &[&str])] = &[(
-    "deepseek",
-    &["deepseek-v4-flash", "deepseek-v4-flash-vision-exp"],
-)];
+pub const RESPONSES_NATIVE_MODELS: &[(&str, &[&str])] = &[("deepseek", &["deepseek-flash"])];
 
 /// Custom tools (`{"type":"custom"}`) the provider's Responses API accepts.
 /// A request carrying any other custom tool is rejected upstream, so it must
@@ -84,18 +80,13 @@ pub const MODEL_CAPABILITIES: &[(&str, &str, &[&str])] = &[
     ("mimo", "mimo-v2-tts", &["tts"]),
     (
         "deepseek",
-        "deepseek-v4-flash",
-        &["text", "reasoning", "tools"],
+        "deepseek-flash",
+        &["text", "vision", "reasoning", "tools"],
     ),
     (
         "deepseek",
         "deepseek-v4-pro",
         &["text", "reasoning", "tools"],
-    ),
-    (
-        "deepseek",
-        "deepseek-v4-flash-vision-exp",
-        &["text", "vision"],
     ),
     (
         "kimi",
@@ -184,7 +175,7 @@ pub const MODEL_PRICING_DEFAULTS: &[(&str, &str, f64, f64)] = &[
     ("mimo", "mimo-v2.5-tts-voiceclone", 0.0, 0.0),
     ("mimo", "mimo-v2.5-tts-voicedesign", 0.0, 0.0),
     ("mimo", "mimo-v2-tts", 0.0, 0.0),
-    ("deepseek", "deepseek-v4-flash", 0.5, 2.0),
+    ("deepseek", "deepseek-flash", 0.5, 2.0),
     ("deepseek", "deepseek-v4-pro", 2.0, 8.0),
     ("anthropic", "claude-sonnet-4-6", 3.0, 15.0),
     ("anthropic", "claude-sonnet-4-7", 3.0, 15.0),
@@ -238,7 +229,7 @@ pub const MODEL_CONTEXT_WINDOW: &[(&str, &str, u32)] = &[
     ("mimo", "mimo-v2.5", 128000),
     ("mimo", "mimo-v2-omni", 128000),
     ("mimo", "mimo-v2-flash", 128000),
-    ("deepseek", "deepseek-v4-flash", 128000),
+    ("deepseek", "deepseek-flash", 128000),
     ("deepseek", "deepseek-v4-pro", 128000),
     ("kimi", "kimi-k3", 1048576),
     ("kimi", "k3", 1048576),
@@ -253,6 +244,8 @@ pub const MODEL_CONTEXT_WINDOW: &[(&str, &str, u32)] = &[
 pub const DEPRECATED_MODELS: &[(&str, &str)] = &[
     ("deepseek", "deepseek-chat"),
     ("deepseek", "deepseek-reasoner"),
+    ("deepseek", "deepseek-v4-flash"),
+    ("deepseek", "deepseek-v4-flash-vision-exp"),
     ("kimi", "kimi-k2"),
 ];
 

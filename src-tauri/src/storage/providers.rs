@@ -471,7 +471,7 @@ mod tests {
                 provider_type: "deepseek".to_string(),
                 base_url: "https://api.deepseek.com".to_string(),
                 api_key: Some("sk-test".to_string()),
-                default_model: "deepseek-v4-flash".to_string(),
+                default_model: "deepseek-flash".to_string(),
                 reasoning_model: None,
                 supported_models: None,
                 model_mapping: None,
@@ -495,7 +495,7 @@ mod tests {
         assert_eq!(p.reasoning_model.as_deref(), Some("deepseek-v4-pro"));
         assert_eq!(
             p.supported_models.as_deref(),
-            Some(r#"["deepseek-v4-flash","deepseek-v4-pro","deepseek-v4-flash-vision-exp"]"#)
+            Some(r#"["deepseek-flash","deepseek-v4-pro"]"#)
         );
         assert_eq!(
             p.anthropic_base_url.as_deref(),
@@ -504,7 +504,7 @@ mod tests {
         let mapping: serde_json::Value =
             serde_json::from_str(p.model_mapping.as_deref().unwrap()).unwrap();
         assert_eq!(mapping["gpt-5.5"], "deepseek-v4-pro");
-        assert_eq!(mapping["gpt-5.4-mini"], "deepseek-v4-flash");
+        assert_eq!(mapping["gpt-5.4-mini"], "deepseek-flash");
     }
 
     #[test]

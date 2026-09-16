@@ -276,16 +276,16 @@ mod tests {
         let mapping = merge_mapping(
             None,
             "deepseek",
-            "deepseek-v4-flash",
+            "deepseek-flash",
             Some("deepseek-v4-pro"),
             MappingProfile::All,
         );
         assert_eq!(mapping.get("gpt-5.5").unwrap(), "deepseek-v4-pro");
-        assert_eq!(mapping.get("gpt-5.4-mini").unwrap(), "deepseek-v4-flash");
+        assert_eq!(mapping.get("gpt-5.4-mini").unwrap(), "deepseek-flash");
         assert_eq!(mapping.get("claude-opus-4-6").unwrap(), "deepseek-v4-pro");
         assert_eq!(
             mapping.get("claude-haiku-4-5-20251001").unwrap(),
-            "deepseek-v4-flash"
+            "deepseek-flash"
         );
     }
 
@@ -294,14 +294,14 @@ mod tests {
         let mapping = merge_mapping(
             None,
             "deepseek",
-            "deepseek-v4-flash",
+            "deepseek-flash",
             Some("deepseek-v4-pro"),
             MappingProfile::Codex,
         );
         assert_eq!(mapping.get("gpt-5.6").unwrap(), "deepseek-v4-pro");
         assert_eq!(mapping.get("gpt-5.6-sol").unwrap(), "deepseek-v4-pro");
         assert_eq!(mapping.get("gpt-5.6-terra").unwrap(), "deepseek-v4-pro");
-        assert_eq!(mapping.get("gpt-5.6-luna").unwrap(), "deepseek-v4-flash");
+        assert_eq!(mapping.get("gpt-5.6-luna").unwrap(), "deepseek-flash");
     }
 
     #[test]
@@ -310,7 +310,7 @@ mod tests {
         let mapping = merge_mapping(
             existing.into(),
             "deepseek",
-            "deepseek-v4-flash",
+            "deepseek-flash",
             Some("deepseek-v4-pro"),
             MappingProfile::Codex,
         );

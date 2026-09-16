@@ -374,11 +374,12 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_v4_flash_has_reasoning_no_web_search() {
-        let c = caps_for("deepseek", "deepseek-v4-flash");
+    fn deepseek_flash_has_vision_reasoning_no_web_search() {
+        let c = caps_for("deepseek", "deepseek-flash");
         assert!(contains(&c, CAP_TEXT));
         assert!(contains(&c, CAP_TOOLS));
         assert!(contains(&c, CAP_REASONING));
+        assert!(contains(&c, CAP_VISION));
         assert!(
             !contains(&c, CAP_WEB_SEARCH),
             "DeepSeek has no native web_search builtin"
@@ -397,6 +398,8 @@ mod tests {
     fn deepseek_deprecated_aliases_are_not_seeded() {
         assert!(caps_for("deepseek", "deepseek-chat").is_empty());
         assert!(caps_for("deepseek", "deepseek-reasoner").is_empty());
+        assert!(caps_for("deepseek", "deepseek-v4-flash").is_empty());
+        assert!(caps_for("deepseek", "deepseek-v4-flash-vision-exp").is_empty());
     }
 
     // ── Kimi / Moonshot ──
@@ -459,12 +462,6 @@ mod tests {
     fn moonshot_vision_models_have_vision() {
         let c = caps_for("moonshot", "moonshot-v1-8k-vision-preview");
         assert!(contains(&c, CAP_VISION));
-    }
-
-    #[test]
-    fn deepseek_vision_model_has_vision_capability() {
-        let c = caps_for("deepseek", "deepseek-v4-flash-vision-exp");
-        assert_eq!(c, vec![CAP_TEXT, CAP_VISION]);
     }
 
     #[test]
