@@ -218,18 +218,23 @@ mod tests {
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
-        std::fs::create_dir_all(&temp).unwrap();
+        std::fs::create_dir_all(&temp).expect("create temp dir for health_probe lock test");
         let db_path = temp.join("test.db");
         let manager = SqliteConnectionManager::file(&db_path);
+        // Use a small but CI-safe timeout for pool *build* and acquisition.
+        // 1ms is too tight under load: Pool::build itself can exceed it before
+        // we even hold the sole connection (classic flake on main CI).
         let pool = Pool::builder()
             .max_size(1)
-            .connection_timeout(Duration::from_millis(1))
+            .connection_timeout(Duration::from_millis(100))
             .build(manager)
-            .unwrap();
+            .expect("build max_size=1 pool for health_probe lock test");
         // Hold the only connection so run_once cannot acquire one.
-        let _conn = pool.get().unwrap();
+        let _conn = pool
+            .get()
+            .expect("acquire sole connection to exhaust pool");
 
-        // Should not panic and should return immediately.
+        // Should not panic and should return immediately when pool is exhausted.
         run_once(&pool).await;
         let _ = std::fs::remove_dir_all(&temp);
     }
