@@ -224,7 +224,7 @@ jobs:
       # 这一步 env 里有签名私钥 / Apple 证书密码 / 公证 key,action 必须钉死 commit SHA。
       # 传 releaseId 后 tauri-action 只往这个草稿上传,不再自己建 release。
       - name: Build Tauri
-        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
