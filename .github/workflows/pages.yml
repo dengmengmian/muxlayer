@@ -29,7 +29,9 @@ jobs:
         with:
           # site 独立 lockfile 暂留 pnpm 10:pnpm 11 装 site 依赖会因 @parcel/watcher 的
           # build script 未审批报 ERR_PNPM_IGNORED_BUILDS,需先给 site 配 allowBuilds 再升级。
+          # package_json_file 指向 site,避免读到根 packageManager(pnpm@11) 与 version: 10 冲突。
           version: 10
+          package_json_file: site/package.json
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
