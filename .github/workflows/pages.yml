@@ -22,6 +22,11 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # 根目录 packageManager=pnpm@11; site 仍钉 pnpm 10。禁止因祖先字段自动下载/切换到 11
+    # (pnpm 10 用 managePackageManagerVersions; pnpm 11+ 用 pmOnFail)。
+    env:
+      npm_config_manage_package_manager_versions: "false"
+      pnpm_config_pm_on_fail: ignore
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
@@ -57,7 +62,9 @@ jobs:
 
       - name: Build Tailwind
         working-directory: site
-        run: pnpm build
+        # 与 Install 一样忽略根 workspace,否则 pnpm run 会沿 pnpm-workspace.yaml
+        # 读到根 packageManager 并切到 11,再因 @parcel/watcher 未 allowBuilds 失败。
+        run: pnpm --ignore-workspace build
 
       - name: Stage deployable files
         # 把可发布的静态文件复制到 _site/,排除 node_modules / 源文件 / 配置。

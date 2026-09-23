@@ -6,7 +6,7 @@
   "scripts": {
     "build:css": "tailwindcss -i ./input.css -o ./assets/tailwind.css --minify",
     "dev:css": "tailwindcss -i ./input.css -o ./assets/tailwind.css --watch",
-    "build": "node scripts/build-seo-pages.mjs && pnpm build:css"
+    "build": "node scripts/build-seo-pages.mjs && npm run build:css"
   },
   "devDependencies": {
     "@tailwindcss/cli": "^4.3.0",
