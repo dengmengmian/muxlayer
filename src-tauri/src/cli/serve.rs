@@ -203,7 +203,11 @@ fn open_db(cli: &Cli) -> DbPool {
     match agentgate_lib::storage::db::init_database(&db_dir) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Failed to initialize database: {}", e.message);
+            if let Some(detail) = e.detail.as_deref() {
+                eprintln!("Failed to initialize database: {} ({})", e.message, detail);
+            } else {
+                eprintln!("Failed to initialize database: {}", e.message);
+            }
             std::process::exit(1);
         }
     }

@@ -236,12 +236,37 @@ if (!useReal && content !== "AgentGate quickstart smoke passed.") {
 }
 NODE
 
+echo "==> Stopping gateway before reading logs"
+# CLI `logs` opens the DB and re-runs init_database (write txn / migrations).
+# Doing that while the live gateway still holds writers races under CI load.
+if [[ -n "$gateway_pid" ]]; then
+  kill "$gateway_pid" >/dev/null 2>&1 || true
+  wait "$gateway_pid" >/dev/null 2>&1 || true
+  gateway_pid=""
+fi
+
 echo "==> Verifying the request was logged"
-logs="$(
-  AGENTGATE_DB_PATH="$db_dir" AGENTGATE_TOKEN="$TOKEN" "$BIN" logs \
+logs=""
+for attempt in $(seq 1 5); do
+  stdout_file="$tmp_dir/logs.out"
+  stderr_file="$tmp_dir/logs.err"
+  : >"$stdout_file"
+  : >"$stderr_file"
+  if AGENTGATE_DB_PATH="$db_dir" AGENTGATE_TOKEN="$TOKEN" "$BIN" logs \
     --limit 5 \
-    --provider "$SMOKE_PROVIDER_NAME"
-)"
+    --provider "$SMOKE_PROVIDER_NAME" >"$stdout_file" 2>"$stderr_file"; then
+    logs="$(cat "$stdout_file")"
+    break
+  fi
+  if [[ "$attempt" -lt 5 ]]; then
+    sleep 0.2
+  else
+    echo "Failed to read logs after ${attempt} attempts:" >&2
+    cat "$stdout_file" >&2 || true
+    cat "$stderr_file" >&2 || true
+    exit 1
+  fi
+done
 printf '%s\n' "$logs"
 
 if grep -q "(no logs match)" <<<"$logs"; then
