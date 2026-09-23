@@ -230,9 +230,7 @@ mod tests {
             .build(manager)
             .expect("build max_size=1 pool for health_probe lock test");
         // Hold the only connection so run_once cannot acquire one.
-        let _conn = pool
-            .get()
-            .expect("acquire sole connection to exhaust pool");
+        let _conn = pool.get().expect("acquire sole connection to exhaust pool");
 
         // Should not panic and should return immediately when pool is exhausted.
         run_once(&pool).await;
