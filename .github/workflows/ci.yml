@@ -13,7 +13,7 @@ jobs:
     name: Frontend lint + format + test
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # 版本号漂移(package.json / Cargo.toml / tauri.conf.json / Cargo.lock / 官网 HTML)
       # 在 PR 阶段就挡住,别等到打 tag 才在 release preflight 里炸。
@@ -80,7 +80,7 @@ jobs:
     name: Quickstart core smoke
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install pnpm
         uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
@@ -114,7 +114,7 @@ jobs:
     name: Offline capability + protocol fixture tests
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # `tauri` is in the dependency graph of the test binaries even though
       # the tests never spin up a window, so the linker still needs gdk /
@@ -173,7 +173,7 @@ jobs:
     name: Desktop clippy + lib tests + bindings drift
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # desktop feature 编译产物和 fixture-tests 的 cli 产物叠在同一 runner 上会逼近
       # ubuntu-22.04 的磁盘上限(No space left on device),拆成独立 job、独立缓存。
@@ -217,7 +217,7 @@ jobs:
     name: Rust dependency audit
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # 预编译二进制,秒级安装,不用每次 cargo install 编译。
       - name: Install cargo-audit
