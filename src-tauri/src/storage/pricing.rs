@@ -470,13 +470,13 @@ mod tests {
     fn model_only_strips_vendor_prefix() {
         let conn = setup_db();
         ensure_defaults(&conn).unwrap();
-        // OpenRouter 风格 "vendor/model" id（如 "z-ai/glm-5"）应去掉前缀后匹配到 glm-5。
-        let p = get_price(&conn, "some_proxy", "z-ai/glm-5");
-        assert!(p.is_some(), "应去 vendor 前缀后命中 glm-5");
-        // 不硬编码具体价格(catalog 调价会让断言变脆),改为对齐直接查 glm-5 的结果,
+        // OpenRouter 风格 "vendor/model" id（如 "z-ai/glm-5.3"）应去掉前缀后匹配到目录里的 glm-5.3。
+        let p = get_price(&conn, "some_proxy", "z-ai/glm-5.3");
+        assert!(p.is_some(), "应去 vendor 前缀后命中 glm-5.3");
+        // 不硬编码具体价格(catalog 调价会让断言变脆),改为对齐直接查 glm-5.3 的结果,
         // 验证"前缀被剥离后命中同一条目"这一真实意图。
-        let direct = get_price(&conn, "some_proxy", "glm-5");
-        assert_eq!(p, direct, "去前缀后应命中与 glm-5 相同的价格条目");
+        let direct = get_price(&conn, "some_proxy", "glm-5.3");
+        assert_eq!(p, direct, "去前缀后应命中与 glm-5.3 相同的价格条目");
     }
 
     #[test]

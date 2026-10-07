@@ -535,7 +535,7 @@ mod tests {
             message_id: id.to_string(),
             session_id: "s1".to_string(),
             timestamp: ts.to_string(),
-            model: "claude-sonnet-4-6".to_string(),
+            model: "claude-sonnet-5-5".to_string(),
             input_tokens: 1000,
             output_tokens: 500,
             cache_read_tokens: 10_000,
@@ -566,8 +566,9 @@ mod tests {
             .unwrap();
         assert_eq!(ts, "2026-06-01T12:00:00+00:00");
         assert_eq!((cr, cw), (10_000, 2000));
-        // (1000×3 + 500×15 + 10000×0.3 + 2000×3.75) / 1e6
-        assert!((cost - 0.021).abs() < 1e-12, "cost={cost}");
+        // sonnet-5-5：$2 / $10。缓存读 = input×0.1，写 = input×1.25。
+        // (1000×2 + 500×10 + 10000×0.2 + 2000×2.5) / 1e6
+        assert!((cost - 0.014).abs() < 1e-12, "cost={cost}");
 
         // 幂等:再次导入全部跳过。
         let mut again = SyncResult::default();
