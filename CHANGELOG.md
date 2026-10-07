@@ -1,5 +1,15 @@
 # Changelog / 更新日志
 
+## [2.0.8] - 2026-10-07
+
+### Added / 新增
+
+- **CodeLeveler / 接入 CodeLeveler** —— Apply from the Clients page. MuxLayer writes `~/.leveler/config.toml` (or `$LEVELER_HOME/config.toml`) as an OpenAI Chat provider and sets `default_model` to `muxlayer/muxlayer`. Existing providers, models, and MCP servers stay. 在客户端页一键接入。MuxLayer 写入 `~/.leveler/config.toml`（设了 `LEVELER_HOME` 就写到那个目录），协议是 OpenAI Chat，默认模型是 `muxlayer/muxlayer`。已有供应商、模型和 MCP 保留。
+
+### Changed / 变更
+
+- **Current built-in models / 内置模型只留当前这一档** —— OpenAI keeps gpt-6.1-sol, gpt-6-sol, gpt-6-luna, and gpt-6-astra. Claude keeps opus-5-5, sonnet-5-5, fable-5-1, and haiku-4-5. Gemini keeps gemini-3.8-flash. Grok keeps grok-4.7. GLM keeps glm-5.3 and glm-5.3-flash. MiniMax keeps MiniMax-M3 and MiniMax-M2.7. Older names already saved on a provider stay. Codex and Claude names those clients still send keep their mappings. OpenAI 留 gpt-6.1-sol、gpt-6-sol、gpt-6-luna、gpt-6-astra。Claude 留 opus-5-5、sonnet-5-5、fable-5-1、haiku-4-5。Gemini 留 gemini-3.8-flash。Grok 留 grok-4.7。GLM 留 glm-5.3 和 glm-5.3-flash。MiniMax 留 MiniMax-M3 和 MiniMax-M2.7。已经保存的供应商模型不动。Codex 和 Claude 仍会发来的旧名字继续映射。
+
 ## [2.0.7] - 2026-09-16
 
 ### Changed / 变更
