@@ -21,6 +21,7 @@ import { AtomCodeDetail } from "@/components/tools/clients/AtomCodeDetail";
 import { KimiCliDetail } from "@/components/tools/clients/KimiCliDetail";
 import { GrokBuildDetail } from "@/components/tools/clients/GrokBuildDetail";
 import { DeepSeekHarnessDetail } from "@/components/tools/clients/DeepSeekHarnessDetail";
+import { CodelevelerDetail } from "@/components/tools/clients/CodelevelerDetail";
 import { toast } from "@/components/common/Toast";
 import { useI18n } from "@/lib/i18n";
 import { usePolling } from "@/lib/usePolling";
@@ -35,6 +36,7 @@ import type {
   KimiCliConfigStatus,
   GrokBuildConfigStatus,
   DeepSeekHarnessConfigStatus,
+  CodelevelerConfigStatus,
 } from "@/types/config";
 import { useGatewayStatus } from "@/store/global";
 
@@ -117,6 +119,13 @@ const APPLY_FLOWS = {
     messageKey: "tools.apply_dsh_msg",
     apply: () => api.applyDshConfig(),
   },
+  codeleveler: {
+    clientId: "codeleveler",
+    clientName: "CodeLeveler",
+    titleKey: "tools.apply_codeleveler_title",
+    messageKey: "tools.apply_codeleveler_msg",
+    apply: () => api.applyCodelevelerConfig(),
+  },
 } satisfies Partial<Record<ClientId, ApplyFlow>>;
 
 /// 客户端配置 / 进程探测的轮询周期。读多个配置文件 + pgrep，变化频率低；
@@ -156,6 +165,8 @@ export function Tools() {
   );
   const [dshStatus, setDshStatus] =
     useState<DeepSeekHarnessConfigStatus | null>(null);
+  const [codelevelerStatus, setCodelevelerStatus] =
+    useState<CodelevelerConfigStatus | null>(null);
   const [cdPreview, setCdPreview] = useState("");
   const [historyClients, setHistoryClients] = useState<string[]>([]);
   // gateway status 走全局 store——Topbar 常驻轮询，这里只订阅。
@@ -205,18 +216,20 @@ export function Tools() {
 
   const load = useCallback(async () => {
     try {
-      const [c, cc, oc, gc, ac, cd, kimi, grok, dsh, hist] = await Promise.all([
-        api.detectCodexConfig(),
-        api.detectClaudeCodeEnv(),
-        api.detectOpenCodeConfig(),
-        api.detectGeminiConfig(),
-        api.detectAtomCodeConfig(),
-        api.detectClaudeDesktop().catch(() => null),
-        api.detectKimiConfig().catch(() => null),
-        api.detectGrokConfig().catch(() => null),
-        api.detectDshConfig().catch(() => null),
-        api.clientsWithApplyHistory().catch(() => [] as string[]),
-      ]);
+      const [c, cc, oc, gc, ac, cd, kimi, grok, dsh, leveler, hist] =
+        await Promise.all([
+          api.detectCodexConfig(),
+          api.detectClaudeCodeEnv(),
+          api.detectOpenCodeConfig(),
+          api.detectGeminiConfig(),
+          api.detectAtomCodeConfig(),
+          api.detectClaudeDesktop().catch(() => null),
+          api.detectKimiConfig().catch(() => null),
+          api.detectGrokConfig().catch(() => null),
+          api.detectDshConfig().catch(() => null),
+          api.detectCodelevelerConfig().catch(() => null),
+          api.clientsWithApplyHistory().catch(() => [] as string[]),
+        ]);
       setCodexStatus(c);
       setClaudeEnv(cc);
       setOpenCodeStatus(oc);
@@ -226,6 +239,7 @@ export function Tools() {
       setKimiStatus(kimi);
       setGrokStatus(grok);
       setDshStatus(dsh);
+      setCodelevelerStatus(leveler);
       setHistoryClients(hist);
       const snippet = await api.generateCodexConfig();
       setCodexConfig(snippet);
@@ -255,6 +269,7 @@ export function Tools() {
       if (id === "kimi_cli") return "kimi";
       if (id === "grok_build") return "grok";
       if (id === "deepseek_harness") return "dsh";
+      if (id === "codeleveler") return "leveler";
       return id;
     };
     const activeIds = (
@@ -267,6 +282,7 @@ export function Tools() {
         ["kimi_cli", kimiStatus?.has_agentgate],
         ["grok_build", grokStatus?.has_agentgate],
         ["deepseek_harness", dshStatus?.has_agentgate],
+        ["codeleveler", codelevelerStatus?.has_agentgate],
       ] as const
     )
       .filter(([, ok]) => !!ok)
@@ -295,6 +311,7 @@ export function Tools() {
     kimiStatus?.has_agentgate,
     grokStatus?.has_agentgate,
     dshStatus?.has_agentgate,
+    codelevelerStatus?.has_agentgate,
   ]);
 
   useEffect(() => {
@@ -509,6 +526,11 @@ export function Tools() {
       : dshStatus?.exists
         ? "detected"
         : "absent";
+    const codelevelerPresence: ClientPresence = codelevelerStatus?.has_agentgate
+      ? "active"
+      : codelevelerStatus?.exists
+        ? "detected"
+        : "absent";
     const claudeDesktopPresence: ClientPresence =
       claudeDesktopStatus?.has_agentgate_profile
         ? "active"
@@ -579,6 +601,13 @@ export function Tools() {
         presence: dshPresence,
         drifted: drifted("deepseek_harness", dshPresence),
       },
+      {
+        id: "codeleveler",
+        name: t("tools.codeleveler"),
+        desc: t("tools.codeleveler_desc"),
+        presence: codelevelerPresence,
+        drifted: drifted("codeleveler", codelevelerPresence),
+      },
     ];
   }, [
     codexStatus,
@@ -590,6 +619,7 @@ export function Tools() {
     kimiStatus,
     grokStatus,
     dshStatus,
+    codelevelerStatus,
     historyClients,
     t,
   ]);
@@ -868,6 +898,14 @@ export function Tools() {
             <DeepSeekHarnessDetail
               status={dshStatus}
               onApply={() => setPendingApply(APPLY_FLOWS.deepseek_harness)}
+              load={load}
+              t={t}
+            />
+          )}
+          {selectedClientId === "codeleveler" && (
+            <CodelevelerDetail
+              status={codelevelerStatus}
+              onApply={() => setPendingApply(APPLY_FLOWS.codeleveler)}
               load={load}
               t={t}
             />

@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  Codex · Claude Code · Gemini CLI · OpenCode · Kimi CLI · Grok Build · DeepSeek Harness<br>
+  Codex · Claude Code · Gemini CLI · OpenCode · Kimi CLI · Grok Build · DeepSeek Harness · CodeLeveler<br>
   ↓<br>
   <b>MuxLayer</b><br>
   ↓<br>
@@ -67,7 +67,7 @@ Send a test request, then open **Logs** to see the selected provider, model, rou
 
 ## Supported clients and providers
 
-**Clients:** Codex · Claude Code · Gemini CLI · OpenCode · AtomCode · Kimi CLI · Grok Build · DeepSeek Harness · Cursor / Continue / Cline
+**Clients:** Codex · Claude Code · Gemini CLI · OpenCode · AtomCode · Kimi CLI · Grok Build · DeepSeek Harness · CodeLeveler · Cursor / Continue / Cline
 
 **Providers:** OpenAI · Anthropic · DeepSeek · Kimi · MiMo · Gemini · OpenRouter · OrcaRouter · Groq · Mistral · Ollama · LM Studio · and 25+ model providers.
 

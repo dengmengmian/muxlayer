@@ -29,6 +29,7 @@ const COMMAND_BY_ID: Record<string, { name: string; command: string }> = {
     command: "npx @deepseek-ai/dsh web",
   },
   dsh: { name: "DeepSeek Harness", command: "npx @deepseek-ai/dsh web" },
+  codeleveler: { name: "CodeLeveler", command: "leveler" },
 };
 
 /** Resolve a launch command for a client id or tool slug, if known. */

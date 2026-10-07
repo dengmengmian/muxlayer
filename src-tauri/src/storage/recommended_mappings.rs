@@ -7,6 +7,9 @@ use crate::models::provider::{CreateProviderInput, Provider};
 use crate::storage::generated_provider_catalog as catalog;
 
 const CODEX_MODELS: &[&str] = &[
+    "gpt-6-astra",
+    "gpt-6.1-sol",
+    "gpt-6-sol",
     "gpt-5.6",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
@@ -15,8 +18,13 @@ const CODEX_MODELS: &[&str] = &[
     "gpt-5.3-codex",
     "gpt-5.2",
 ];
-const CODEX_MINI_MODELS: &[&str] = &["gpt-5.6-luna", "gpt-5.4-mini"];
+const CODEX_MINI_MODELS: &[&str] = &["gpt-6-luna", "gpt-5.6-luna", "gpt-5.4-mini"];
 const CLAUDE_PRIMARY_MODELS: &[&str] = &[
+    "claude-fable-5-1",
+    "claude-opus-5-5",
+    "claude-sonnet-5-5",
+    "claude-opus-5",
+    "claude-sonnet-5",
     "claude-sonnet-4-6",
     "claude-sonnet-4-7",
     "claude-opus-4-6",
@@ -302,6 +310,24 @@ mod tests {
         assert_eq!(mapping.get("gpt-5.6-sol").unwrap(), "deepseek-v4-pro");
         assert_eq!(mapping.get("gpt-5.6-terra").unwrap(), "deepseek-v4-pro");
         assert_eq!(mapping.get("gpt-5.6-luna").unwrap(), "deepseek-flash");
+    }
+
+    #[test]
+    fn gpt_6_and_claude_5_families_covered_by_recommendation() {
+        let mapping = merge_mapping(
+            None,
+            "deepseek",
+            "deepseek-flash",
+            Some("deepseek-v4-pro"),
+            MappingProfile::All,
+        );
+        assert_eq!(mapping.get("gpt-6.1-sol").unwrap(), "deepseek-v4-pro");
+        assert_eq!(mapping.get("gpt-6-sol").unwrap(), "deepseek-v4-pro");
+        assert_eq!(mapping.get("gpt-6-astra").unwrap(), "deepseek-v4-pro");
+        assert_eq!(mapping.get("gpt-6-luna").unwrap(), "deepseek-flash");
+        assert_eq!(mapping.get("claude-opus-5-5").unwrap(), "deepseek-v4-pro");
+        assert_eq!(mapping.get("claude-sonnet-5-5").unwrap(), "deepseek-v4-pro");
+        assert_eq!(mapping.get("claude-fable-5-1").unwrap(), "deepseek-v4-pro");
     }
 
     #[test]

@@ -236,6 +236,10 @@ fn build_specta() -> tauri_specta::Builder<tauri::Wry> {
             commands::apply_dsh_config,
             commands::generate_dsh_config,
             commands::open_dsh_config,
+            commands::detect_codeleveler_config,
+            commands::apply_codeleveler_config,
+            commands::generate_codeleveler_config,
+            commands::open_codeleveler_config,
             // Post-apply process detection
             commands::detect_client_running,
             commands::kill_client_process,

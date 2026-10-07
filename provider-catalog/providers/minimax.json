@@ -9,10 +9,11 @@
   "endpoints": {
     "baseUrl": "https://api.minimax.chat"
   },
-  "defaultModel": "MiniMax-M1",
-  "supportedModels": ["MiniMax-M1"],
+  "defaultModel": "MiniMax-M3",
+  "supportedModels": ["MiniMax-M3", "MiniMax-M2.7"],
   "models": [
-    { "id": "MiniMax-M1", "pricing": { "inputPerMillion": 1, "outputPerMillion": 8 } }
+    { "id": "MiniMax-M3", "pricing": { "inputPerMillion": 0.3, "outputPerMillion": 1.2 } },
+    { "id": "MiniMax-M2.7", "pricing": { "inputPerMillion": 0.3, "outputPerMillion": 1.2 } }
   ],
   "docs": {
     "handlingEn": "Strip reasoning_effort / response_format, `<think>` extraction",

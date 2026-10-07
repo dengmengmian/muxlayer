@@ -9,36 +9,29 @@
   "endpoints": {
     "baseUrl": "https://api.anthropic.com"
   },
-  "defaultModel": "claude-opus-4-8",
+  "defaultModel": "claude-opus-5-5",
   "supportedModels": [
-    "claude-sonnet-4-7",
-    "claude-opus-4-8",
+    "claude-opus-5-5",
+    "claude-sonnet-5-5",
+    "claude-fable-5-1",
     "claude-haiku-4-5"
   ],
   "models": [
     {
-      "id": "claude-sonnet-4-6",
-      "pricing": { "inputPerMillion": 3, "outputPerMillion": 15 }
+      "id": "claude-fable-5-1",
+      "pricing": { "inputPerMillion": 10, "outputPerMillion": 50 }
     },
     {
-      "id": "claude-sonnet-4-7",
-      "pricing": { "inputPerMillion": 3, "outputPerMillion": 15 }
+      "id": "claude-opus-5-5",
+      "pricing": { "inputPerMillion": 4, "outputPerMillion": 20 }
     },
     {
-      "id": "claude-opus-4-6",
-      "pricing": { "inputPerMillion": 15, "outputPerMillion": 75 }
-    },
-    {
-      "id": "claude-opus-4-7",
-      "pricing": { "inputPerMillion": 15, "outputPerMillion": 75 }
-    },
-    {
-      "id": "claude-opus-4-8",
-      "pricing": { "inputPerMillion": 15, "outputPerMillion": 75 }
+      "id": "claude-sonnet-5-5",
+      "pricing": { "inputPerMillion": 2, "outputPerMillion": 10 }
     },
     {
       "id": "claude-haiku-4-5",
-      "pricing": { "inputPerMillion": 0.8, "outputPerMillion": 4 }
+      "pricing": { "inputPerMillion": 1, "outputPerMillion": 5 }
     }
   ],
   "docs": {

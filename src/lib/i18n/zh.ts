@@ -197,7 +197,7 @@ export const zh: Record<TranslationKey, string> = {
     "勾选表示上游原生支持该协议。客户端协议匹配时走原生直连；客户端协议不同时走网关协议转换。模型映射可以改写模型名，虚拟模型 muxlayer（仍兼容 agentgate）会解析成本次路由选中的模型。",
   "providers.model_mapping": "模型映射",
   "providers.model_mapping_hint":
-    "将客户端模型名（如 gpt-5.5、claude-sonnet-4-7）映射到供应商模型。",
+    "将客户端模型名（如 gpt-6.1-sol、claude-opus-5-5）映射到供应商模型。",
   "providers.model_mapping_hint_v2":
     "MiMo 和 DeepSeek 通常会自动补齐推荐映射。原生直通未命中映射时会保留模型名；客户端传虚拟模型 muxlayer（仍兼容 agentgate）时会解析成本次路由选中的模型；协议转换会优先使用映射，未配置时用默认模型兜底。已有映射不会被覆盖。",
   "providers.pass_through_prefix": "原生入口",
@@ -450,6 +450,14 @@ export const zh: Record<TranslationKey, string> = {
   "tools.apply_dsh_title": "应用 MuxLayer 配置到 DeepSeek Harness",
   "tools.apply_dsh_msg":
     "将把 muxlayer 供应商合并进 ~/.dsh/settings.yaml，并把 MUXLAYER_TOKEN 写入 .credentials.yaml。其它供应商保留。",
+  "tools.codeleveler": "CodeLeveler",
+  "tools.codeleveler_desc":
+    "CodeLeveler。在 ~/.leveler/config.toml 里接 OpenAI Chat 网关。",
+  "tools.codeleveler_auth_desc":
+    "应用配置写入 [providers.muxlayer]，并把 default_model 设为 muxlayer/muxlayer。已有供应商、模型和 MCP 保留。设了 LEVELER_HOME 时写到那个目录。",
+  "tools.apply_codeleveler_title": "应用 MuxLayer 配置到 CodeLeveler",
+  "tools.apply_codeleveler_msg":
+    "将更新 ~/.leveler/config.toml（或 $LEVELER_HOME/config.toml），把 MuxLayer 加为 openai_chat 供应商。其它配置保留。",
   "tools.test_connection": "测试连接",
   "tools.step_config": "配置",
   "tools.step_gateway": "网关",

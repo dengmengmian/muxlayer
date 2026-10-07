@@ -14,6 +14,7 @@ import type {
   KimiCliConfigStatus,
   GrokBuildConfigStatus,
   DeepSeekHarnessConfigStatus,
+  CodelevelerConfigStatus,
   ClaudeDesktopStatus,
   ClaudeDesktopApplyResult,
   CodexApplyConfigResult,
@@ -24,6 +25,7 @@ import type {
   KimiCliApplyConfigResult,
   GrokBuildApplyConfigResult,
   DeepSeekHarnessApplyConfigResult,
+  CodelevelerApplyConfigResult,
   CodexToggleResult,
   ClaudeCodeToggleResult,
   GeminiCliToggleResult,
@@ -41,6 +43,7 @@ export type {
   KimiCliConfigStatus,
   GrokBuildConfigStatus,
   DeepSeekHarnessConfigStatus,
+  CodelevelerConfigStatus,
   ClaudeDesktopStatus,
   ClaudeDesktopApplyResult,
 };
@@ -53,7 +56,8 @@ export type ApplyConfigResult =
   | AtomCodeApplyConfigResult
   | KimiCliApplyConfigResult
   | GrokBuildApplyConfigResult
-  | DeepSeekHarnessApplyConfigResult;
+  | DeepSeekHarnessApplyConfigResult
+  | CodelevelerApplyConfigResult;
 
 export type ToggleResult =
   | CodexToggleResult

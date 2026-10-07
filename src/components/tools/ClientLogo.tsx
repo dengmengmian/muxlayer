@@ -13,6 +13,7 @@ export const CLIENT_LOGO_IDS = [
   "kimi_cli",
   "grok_build",
   "deepseek_harness",
+  "codeleveler",
 ] as const;
 
 export type ClientLogoId = (typeof CLIENT_LOGO_IDS)[number];
@@ -27,6 +28,7 @@ const LABELS: Record<ClientLogoId, string> = {
   kimi_cli: "Kimi CLI",
   grok_build: "Grok Build",
   deepseek_harness: "DeepSeek Harness",
+  codeleveler: "CodeLeveler",
 };
 
 function Tile({ fill, children }: { fill: string; children: ReactNode }) {
@@ -201,6 +203,17 @@ function GrokMark() {
   );
 }
 
+function CodelevelerMark() {
+  return (
+    <Tile fill="#143D36">
+      <path
+        d="M7 6.5h6.2c2.4 0 3.8 1.3 3.8 3.2 0 1.4-.8 2.5-2.1 3l2.4 4.8h-2.5l-2.1-4.4H9.2V17.5H7V6.5Zm2.2 1.8v3.4h3.6c1.1 0 1.8-.5 1.8-1.7s-.7-1.7-1.8-1.7H9.2Z"
+        fill="#E7F6F2"
+      />
+    </Tile>
+  );
+}
+
 function DeepSeekMark() {
   return (
     <Tile fill="#4D6BFE">
@@ -233,6 +246,8 @@ function Mark({ id, uid }: { id: ClientLogoId; uid: string }) {
       return <GrokMark />;
     case "deepseek_harness":
       return <DeepSeekMark />;
+    case "codeleveler":
+      return <CodelevelerMark />;
   }
 }
 

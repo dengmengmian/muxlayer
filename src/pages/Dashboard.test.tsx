@@ -94,6 +94,10 @@ describe("Dashboard", () => {
       exists: false,
       has_agentgate: false,
     } as any);
+    vi.mocked(api.detectCodelevelerConfig).mockResolvedValue({
+      exists: false,
+      has_agentgate: false,
+    } as any);
   });
 
   it("renders and fetches initial data", async () => {

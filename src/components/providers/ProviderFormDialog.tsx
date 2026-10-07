@@ -1136,22 +1136,30 @@ export function ProviderFormDialog({
                       value={newMappingClient}
                       onChange={(v) => setNewMappingClient(v)}
                       models={[
+                        "gpt-6.1-sol",
+                        "gpt-6-sol",
+                        "gpt-6-luna",
+                        "gpt-6-astra",
+                        "gpt-5.6",
+                        "gpt-5.6-sol",
+                        "gpt-5.6-terra",
+                        "gpt-5.6-luna",
                         "gpt-5.5",
                         "gpt-5.4",
                         "gpt-5.4-mini",
                         "gpt-5.3-codex",
                         "gpt-5.2",
+                        "claude-opus-5-5",
+                        "claude-sonnet-5-5",
+                        "claude-fable-5-1",
                         "claude-sonnet-4-7",
                         "claude-sonnet-4-6",
                         "claude-opus-4-8",
                         "claude-opus-4-7",
                         "claude-opus-4-6",
                         "claude-haiku-4-5-20251001",
-                        "o3",
-                        "o4-mini",
-                        "gemini-2.5-flash",
-                        "gemini-2.5-pro",
-                        "gemini-3-pro-preview",
+                        "gemini-3.8-flash",
+                        "grok-4.7",
                       ].filter((m) => !(m in modelMapping))}
                       placeholder={t("providers.select_client_model")}
                     />

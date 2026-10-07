@@ -399,6 +399,15 @@ export const applyDshConfig = (): Promise<ApplyConfigResult> =>
 export const generateDshConfig = () => unwrap(bindings.generateDshConfig());
 export const openDshConfig = () => unwrap(bindings.openDshConfig());
 
+export const detectCodelevelerConfig = () =>
+  unwrap(bindings.detectCodelevelerConfig());
+export const applyCodelevelerConfig = (): Promise<ApplyConfigResult> =>
+  unwrap(bindings.applyCodelevelerConfig());
+export const generateCodelevelerConfig = () =>
+  unwrap(bindings.generateCodelevelerConfig());
+export const openCodelevelerConfig = () =>
+  unwrap(bindings.openCodelevelerConfig());
+
 // ── Post-apply process detection ───────────────────────────────
 
 /// Match `client_id` ∈ {codex, claude_code, opencode, gemini, atomcode}.

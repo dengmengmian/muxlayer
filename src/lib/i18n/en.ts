@@ -199,7 +199,7 @@ export const en = {
     "Checked protocols mean the upstream natively supports that API. Matching client requests use native passthrough; different client protocols use gateway translation. Model Mapping can rename models, and the virtual muxlayer model (agentgate still works) resolves to the routed model.",
   "providers.model_mapping": "Model Mapping",
   "providers.model_mapping_hint":
-    "Map client model names (e.g. gpt-5.5, claude-sonnet-4-7) to provider models.",
+    "Map client model names (e.g. gpt-6.1-sol, claude-opus-5-5) to provider models.",
   "providers.model_mapping_hint_v2":
     "Usually auto-filled for MiMo and DeepSeek. Native pass-through keeps the model name unchanged unless a mapping matches or the client sends the virtual muxlayer model (agentgate still works); protocol conversion uses mapping first, then falls back to the provider's default model. Existing mappings are preserved.",
   "providers.pass_through_prefix": "Native API",
@@ -460,6 +460,14 @@ export const en = {
   "tools.apply_dsh_title": "Apply MuxLayer Config to DeepSeek Harness",
   "tools.apply_dsh_msg":
     "This will merge a muxlayer provider into ~/.dsh/settings.yaml and write MUXLAYER_TOKEN into .credentials.yaml. Other providers are kept.",
+  "tools.codeleveler": "CodeLeveler",
+  "tools.codeleveler_desc":
+    "CodeLeveler. OpenAI Chat gateway in ~/.leveler/config.toml.",
+  "tools.codeleveler_auth_desc":
+    "Apply writes [providers.muxlayer] and sets default_model to muxlayer/muxlayer. Existing providers, models, and MCP servers stay. When LEVELER_HOME is set, that directory is used.",
+  "tools.apply_codeleveler_title": "Apply MuxLayer Config to CodeLeveler",
+  "tools.apply_codeleveler_msg":
+    "This will update ~/.leveler/config.toml (or $LEVELER_HOME/config.toml) and add MuxLayer as an openai_chat provider. Other settings stay.",
   "tools.test_connection": "Test Connection",
   "tools.step_config": "Config",
   "tools.step_gateway": "Gateway",

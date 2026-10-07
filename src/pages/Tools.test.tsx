@@ -70,6 +70,10 @@ describe("Tools", () => {
       exists: false,
       has_agentgate: false,
     } as any);
+    vi.mocked(api.detectCodelevelerConfig).mockResolvedValue({
+      exists: false,
+      has_agentgate: false,
+    } as any);
     vi.mocked(api.getGatewayStatus).mockResolvedValue(gatewayStatus());
     vi.mocked(api.clientsWithApplyHistory).mockResolvedValue([]);
     vi.mocked(api.generateCodexConfig).mockResolvedValue("{}");
@@ -107,6 +111,9 @@ describe("Tools", () => {
       screen.getAllByRole("img", { name: "Codex" }).length
     ).toBeGreaterThan(0);
     expect(screen.getByRole("img", { name: "Kimi CLI" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("img", { name: "CodeLeveler" })
+    ).toBeInTheDocument();
   });
 
   it("runs connection test", async () => {

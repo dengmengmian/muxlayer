@@ -274,23 +274,34 @@ export function Dashboard() {
 
   const loadClients = useCallback(async () => {
     try {
-      const [tl, codex, claude, opencode, gemini, atom, kimi, grok, dsh] =
-        await Promise.all([
-          api.listTools(),
-          api.detectCodexConfig().catch(() => null),
-          api.detectClaudeCodeEnv().catch(() => null),
-          api.detectOpenCodeConfig().catch(() => null),
-          api.detectGeminiConfig().catch(() => null),
-          api.detectAtomCodeConfig().catch(() => null),
-          api.detectKimiConfig().catch(() => null),
-          api.detectGrokConfig().catch(() => null),
-          api.detectDshConfig().catch(() => null),
-          useProviders.getState().refetch(),
-          useRouteProfiles
-            .getState()
-            .refetch()
-            .catch(() => {}),
-        ]);
+      const [
+        tl,
+        codex,
+        claude,
+        opencode,
+        gemini,
+        atom,
+        kimi,
+        grok,
+        dsh,
+        leveler,
+      ] = await Promise.all([
+        api.listTools(),
+        api.detectCodexConfig().catch(() => null),
+        api.detectClaudeCodeEnv().catch(() => null),
+        api.detectOpenCodeConfig().catch(() => null),
+        api.detectGeminiConfig().catch(() => null),
+        api.detectAtomCodeConfig().catch(() => null),
+        api.detectKimiConfig().catch(() => null),
+        api.detectGrokConfig().catch(() => null),
+        api.detectDshConfig().catch(() => null),
+        api.detectCodelevelerConfig().catch(() => null),
+        useProviders.getState().refetch(),
+        useRouteProfiles
+          .getState()
+          .refetch()
+          .catch(() => {}),
+      ]);
       const ps = useProviders.getState().items;
       const wired: string[] = [];
       if (codex?.has_agentgate) wired.push("codex");
@@ -301,6 +312,7 @@ export function Dashboard() {
       if (kimi?.has_agentgate) wired.push("kimi_cli");
       if (grok?.has_agentgate) wired.push("grok_build");
       if (dsh?.has_agentgate) wired.push("deepseek_harness");
+      if (leveler?.has_agentgate) wired.push("codeleveler");
       setTools((prev) => (shallowEqual(prev, tl) ? prev : tl));
       setWiredClientIds((prev) => (shallowEqual(prev, wired) ? prev : wired));
       setProviderCount((prev) => (prev === ps.length ? prev : ps.length));

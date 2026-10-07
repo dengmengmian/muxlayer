@@ -1,7 +1,7 @@
 //! 各客户端接入模块共用的文件读写小工具。
 //!
-//! 8 个客户端(codex / claude_code / gemini / atomcode / opencode / kimi / grok /
-//! deepseek harness)原来各自复制了一份「读配置 → tmp+rename → 读回校验」「备份
+//! 9 个客户端(codex / claude_code / gemini / atomcode / opencode / kimi / grok /
+//! deepseek harness / codeleveler)原来各自复制了一份「读配置 → tmp+rename → 读回校验」「备份
 //! 官方配置」「生成带掩码 token 的片段」,行为还不一致(有的吞读取错误、有的丢权限)。
 
 use std::path::Path;

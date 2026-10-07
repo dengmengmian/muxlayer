@@ -72,7 +72,8 @@ fn gateway_host_port_model(db: &DbPool, fallback: &str) -> Result<(String, i64, 
 #[specta::specta]
 pub fn list_tools() -> Result<Vec<ToolConfigView>, AppError> {
     use crate::tools::{
-        atomcode, claude_code, codex, deepseek_harness, gemini_cli, grok_build, kimi_cli, opencode,
+        atomcode, claude_code, codeleveler, codex, deepseek_harness, gemini_cli, grok_build,
+        kimi_cli, opencode,
     };
     Ok(vec![
         tool_view(
@@ -130,6 +131,13 @@ pub fn list_tools() -> Result<Vec<ToolConfigView>, AppError> {
             "sparkles",
             "DeepSeek Harness (dsh). Custom OpenAI-compatible provider in settings.yaml.",
             deepseek_harness::settings_path(),
+        ),
+        tool_view(
+            "codeleveler",
+            "CodeLeveler",
+            "sparkles",
+            "CodeLeveler CLI. OpenAI Chat provider in ~/.leveler/config.toml.",
+            codeleveler::config_path(),
         ),
     ])
 }
@@ -608,6 +616,47 @@ pub fn open_dsh_config() -> Result<bool, AppError> {
 
 #[tauri::command]
 #[specta::specta]
+pub async fn detect_codeleveler_config(
+) -> Result<crate::tools::codeleveler::CodelevelerConfigStatus, AppError> {
+    run_blocking(|| Ok(crate::tools::codeleveler::detect())).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn apply_codeleveler_config(
+    state: State<'_, AppState>,
+) -> Result<crate::tools::codeleveler::ApplyConfigResult, AppError> {
+    let db = state.db.clone();
+    run_blocking(move || {
+        let (host, port) = gateway_host_port(&db)?;
+        record_pre_apply(
+            &db,
+            "codeleveler",
+            "apply",
+            crate::tools::codeleveler::snapshot_paths(),
+            "apply",
+        );
+        crate::tools::codeleveler::apply(&host, port)
+    })
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn generate_codeleveler_config(state: State<'_, AppState>) -> Result<String, AppError> {
+    let (host, port) = gateway_host_port(&state.db)?;
+    Ok(crate::tools::codeleveler::generate_snippet(&host, port))
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn open_codeleveler_config() -> Result<bool, AppError> {
+    crate::tools::codeleveler::open_config()?;
+    Ok(true)
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn generate_atomcode_config(state: State<'_, AppState>) -> Result<String, AppError> {
     let (host, port, model) = gateway_host_port_model(&state.db, "gpt-5.5")?;
     Ok(crate::tools::atomcode::generate_snippet(
@@ -629,6 +678,7 @@ fn client_process_names(client_id: &str) -> Result<&'static [&'static str], AppE
         "kimi_cli" | "kimi" => Ok(&["kimi"]),
         "grok_build" | "grok" => Ok(&["grok"]),
         "deepseek_harness" | "dsh" => Ok(&["dsh"]),
+        "codeleveler" | "leveler" => Ok(&["leveler"]),
         _ => Err(AppError::validation("unknown client_id")),
     }
 }
@@ -874,7 +924,7 @@ mod tests {
     }
 
     #[test]
-    fn list_tools_returns_all_eight_clients() {
+    fn list_tools_returns_all_clients() {
         let _guard = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = setup_temp_home();
         let tools = list_tools().unwrap();
@@ -890,6 +940,7 @@ mod tests {
                 "kimi_cli",
                 "grok_build",
                 "deepseek_harness",
+                "codeleveler",
             ]
         );
         cleanup(&temp);
@@ -904,15 +955,18 @@ mod tests {
         let kimi = temp.join("custom-kimi");
         let grok = temp.join("custom-grok");
         let dsh = temp.join("custom-dsh");
+        let leveler = temp.join("custom-leveler");
         std::fs::create_dir_all(&kimi).unwrap();
         std::fs::write(kimi.join("config.toml"), "").unwrap();
         std::env::set_var("KIMI_CODE_HOME", &kimi);
         std::env::set_var("GROK_HOME", &grok);
         std::env::set_var("DSH_HOME", &dsh);
+        std::env::set_var("LEVELER_HOME", &leveler);
         let tools = list_tools().unwrap();
         std::env::remove_var("KIMI_CODE_HOME");
         std::env::remove_var("GROK_HOME");
         std::env::remove_var("DSH_HOME");
+        std::env::remove_var("LEVELER_HOME");
         let by_id = |id: &str| tools.iter().find(|t| t.id == id).unwrap().clone();
         assert_eq!(
             by_id("kimi_cli").config_path,
@@ -926,6 +980,10 @@ mod tests {
         assert_eq!(
             by_id("deepseek_harness").config_path,
             dsh.join("settings.yaml").to_string_lossy()
+        );
+        assert_eq!(
+            by_id("codeleveler").config_path,
+            leveler.join("config.toml").to_string_lossy()
         );
         cleanup(&temp);
     }

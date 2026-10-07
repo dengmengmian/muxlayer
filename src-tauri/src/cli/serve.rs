@@ -275,13 +275,13 @@ fn seed_config_if_empty(db: &DbPool, path: &str) {
 fn provider_presets() -> std::collections::HashMap<&'static str, (&'static str, &'static str)> {
     [
         ("deepseek", ("https://api.deepseek.com", "deepseek-flash")),
-        ("openai", ("https://api.openai.com", "gpt-5.5")),
+        ("openai", ("https://api.openai.com", "gpt-6.1-sol")),
         (
             "anthropic",
-            ("https://api.anthropic.com", "claude-sonnet-4-7"),
+            ("https://api.anthropic.com", "claude-opus-5-5"),
         ),
         ("kimi", ("https://api.moonshot.cn", "kimi-k3")),
-        ("minimax", ("https://api.minimax.chat", "MiniMax-M1")),
+        ("minimax", ("https://api.minimax.chat", "MiniMax-M3")),
         (
             "groq",
             ("https://api.groq.com/openai", "llama-3.3-70b-versatile"),
@@ -297,10 +297,10 @@ fn provider_presets() -> std::collections::HashMap<&'static str, (&'static str, 
             "google_gemini",
             (
                 "https://generativelanguage.googleapis.com/v1beta/openai",
-                "gemini-2.5-flash",
+                "gemini-3.8-flash",
             ),
         ),
-        ("xai", ("https://api.x.ai", "grok-3-latest")),
+        ("xai", ("https://api.x.ai", "grok-4.7")),
         (
             "mistral",
             ("https://api.mistral.ai", "mistral-large-latest"),

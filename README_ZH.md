@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  Codex · Claude Code · Gemini CLI · OpenCode · Kimi CLI · Grok Build · DeepSeek Harness<br>
+  Codex · Claude Code · Gemini CLI · OpenCode · Kimi CLI · Grok Build · DeepSeek Harness · CodeLeveler<br>
   ↓<br>
   <b>MuxLayer</b><br>
   ↓<br>
@@ -67,7 +67,7 @@ MuxLayer 不是托管 API 分发平台，也不是普通代理，而是位于 Co
 
 ## 支持的客户端和 Provider
 
-**客户端：** Codex · Claude Code · Gemini CLI · OpenCode · AtomCode · Kimi CLI · Grok Build · DeepSeek Harness · Cursor / Continue / Cline
+**客户端：** Codex · Claude Code · Gemini CLI · OpenCode · AtomCode · Kimi CLI · Grok Build · DeepSeek Harness · CodeLeveler · Cursor / Continue / Cline
 
 **Provider：** OpenAI · Anthropic · DeepSeek · Kimi · MiMo · Gemini · OpenRouter · OrcaRouter · Groq · Mistral · Ollama · LM Studio · 以及 25+ 家模型供应商。
 

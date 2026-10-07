@@ -10,28 +10,18 @@
     "baseUrl": "https://api.openai.com",
     "responsesBaseUrl": "https://api.openai.com"
   },
-  "defaultModel": "gpt-5.6-terra",
+  "defaultModel": "gpt-6.1-sol",
   "supportedModels": [
-    "gpt-4o",
-    "gpt-4o-mini",
-    "gpt-5.6-sol",
-    "gpt-5.6-terra",
-    "gpt-5.6-luna",
-    "gpt-5.5",
-    "o3",
-    "o4-mini"
+    "gpt-6.1-sol",
+    "gpt-6-sol",
+    "gpt-6-luna",
+    "gpt-6-astra"
   ],
   "models": [
-    { "id": "gpt-4o", "pricing": { "inputPerMillion": 2.5, "outputPerMillion": 10 } },
-    { "id": "gpt-4o-mini", "pricing": { "inputPerMillion": 0.15, "outputPerMillion": 0.6 } },
-    { "id": "gpt-5.6", "pricing": { "inputPerMillion": 5, "outputPerMillion": 30 } },
-    { "id": "gpt-5.6-sol", "pricing": { "inputPerMillion": 5, "outputPerMillion": 30 } },
-    { "id": "gpt-5.6-terra", "pricing": { "inputPerMillion": 2.5, "outputPerMillion": 15 } },
-    { "id": "gpt-5.6-luna", "pricing": { "inputPerMillion": 1, "outputPerMillion": 6 } },
-    { "id": "gpt-5.5", "pricing": { "inputPerMillion": 2.5, "outputPerMillion": 10 } },
-    { "id": "gpt-5.4", "pricing": { "inputPerMillion": 2.5, "outputPerMillion": 15 } },
-    { "id": "o3", "pricing": { "inputPerMillion": 10, "outputPerMillion": 40 } },
-    { "id": "o4-mini", "pricing": { "inputPerMillion": 1.1, "outputPerMillion": 4.4 } }
+    { "id": "gpt-6-astra", "pricing": { "inputPerMillion": 10, "outputPerMillion": 50 } },
+    { "id": "gpt-6.1-sol", "pricing": { "inputPerMillion": 2, "outputPerMillion": 10 } },
+    { "id": "gpt-6-sol", "pricing": { "inputPerMillion": 2, "outputPerMillion": 10 } },
+    { "id": "gpt-6-luna", "pricing": { "inputPerMillion": 0.1, "outputPerMillion": 0.5 } }
   ],
   "docs": {
     "handlingEn": "None (Responses passthrough or Chat conversion)",

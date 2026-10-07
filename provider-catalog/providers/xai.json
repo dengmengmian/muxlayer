@@ -9,11 +9,10 @@
   "endpoints": {
     "baseUrl": "https://api.x.ai"
   },
-  "defaultModel": "grok-4.3",
-  "supportedModels": ["grok-4.3", "grok-3-latest"],
+  "defaultModel": "grok-4.7",
+  "supportedModels": ["grok-4.7"],
   "models": [
-    { "id": "grok-4.3", "pricing": { "inputPerMillion": 1.25, "outputPerMillion": 2.5 } },
-    { "id": "grok-3-latest", "pricing": { "inputPerMillion": 3, "outputPerMillion": 15 } }
+    { "id": "grok-4.7", "pricing": { "inputPerMillion": 2, "outputPerMillion": 6 } }
   ],
   "docs": {
     "handlingEn": "Generic",

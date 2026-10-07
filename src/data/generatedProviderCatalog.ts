@@ -218,53 +218,40 @@ export const GENERATED_PROVIDER_CATALOG = {
     endpoints: {
       baseUrl: "https://api.anthropic.com",
     },
-    defaultModel: "claude-opus-4-8",
+    defaultModel: "claude-opus-5-5",
     supportedModels: [
-      "claude-sonnet-4-7",
-      "claude-opus-4-8",
+      "claude-opus-5-5",
+      "claude-sonnet-5-5",
+      "claude-fable-5-1",
       "claude-haiku-4-5",
     ],
     models: [
       {
-        id: "claude-sonnet-4-6",
+        id: "claude-fable-5-1",
         pricing: {
-          inputPerMillion: 3,
-          outputPerMillion: 15,
+          inputPerMillion: 10,
+          outputPerMillion: 50,
         },
       },
       {
-        id: "claude-sonnet-4-7",
+        id: "claude-opus-5-5",
         pricing: {
-          inputPerMillion: 3,
-          outputPerMillion: 15,
+          inputPerMillion: 4,
+          outputPerMillion: 20,
         },
       },
       {
-        id: "claude-opus-4-6",
+        id: "claude-sonnet-5-5",
         pricing: {
-          inputPerMillion: 15,
-          outputPerMillion: 75,
-        },
-      },
-      {
-        id: "claude-opus-4-7",
-        pricing: {
-          inputPerMillion: 15,
-          outputPerMillion: 75,
-        },
-      },
-      {
-        id: "claude-opus-4-8",
-        pricing: {
-          inputPerMillion: 15,
-          outputPerMillion: 75,
+          inputPerMillion: 2,
+          outputPerMillion: 10,
         },
       },
       {
         id: "claude-haiku-4-5",
         pricing: {
-          inputPerMillion: 0.8,
-          outputPerMillion: 4,
+          inputPerMillion: 1,
+          outputPerMillion: 5,
         },
       },
     ],
@@ -367,86 +354,35 @@ export const GENERATED_PROVIDER_CATALOG = {
       baseUrl: "https://api.openai.com",
       responsesBaseUrl: "https://api.openai.com",
     },
-    defaultModel: "gpt-5.6-terra",
-    supportedModels: [
-      "gpt-4o",
-      "gpt-4o-mini",
-      "gpt-5.6-sol",
-      "gpt-5.6-terra",
-      "gpt-5.6-luna",
-      "gpt-5.5",
-      "o3",
-      "o4-mini",
-    ],
+    defaultModel: "gpt-6.1-sol",
+    supportedModels: ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-6-astra"],
     models: [
       {
-        id: "gpt-4o",
-        pricing: {
-          inputPerMillion: 2.5,
-          outputPerMillion: 10,
-        },
-      },
-      {
-        id: "gpt-4o-mini",
-        pricing: {
-          inputPerMillion: 0.15,
-          outputPerMillion: 0.6,
-        },
-      },
-      {
-        id: "gpt-5.6",
-        pricing: {
-          inputPerMillion: 5,
-          outputPerMillion: 30,
-        },
-      },
-      {
-        id: "gpt-5.6-sol",
-        pricing: {
-          inputPerMillion: 5,
-          outputPerMillion: 30,
-        },
-      },
-      {
-        id: "gpt-5.6-terra",
-        pricing: {
-          inputPerMillion: 2.5,
-          outputPerMillion: 15,
-        },
-      },
-      {
-        id: "gpt-5.6-luna",
-        pricing: {
-          inputPerMillion: 1,
-          outputPerMillion: 6,
-        },
-      },
-      {
-        id: "gpt-5.5",
-        pricing: {
-          inputPerMillion: 2.5,
-          outputPerMillion: 10,
-        },
-      },
-      {
-        id: "gpt-5.4",
-        pricing: {
-          inputPerMillion: 2.5,
-          outputPerMillion: 15,
-        },
-      },
-      {
-        id: "o3",
+        id: "gpt-6-astra",
         pricing: {
           inputPerMillion: 10,
-          outputPerMillion: 40,
+          outputPerMillion: 50,
         },
       },
       {
-        id: "o4-mini",
+        id: "gpt-6.1-sol",
         pricing: {
-          inputPerMillion: 1.1,
-          outputPerMillion: 4.4,
+          inputPerMillion: 2,
+          outputPerMillion: 10,
+        },
+      },
+      {
+        id: "gpt-6-sol",
+        pricing: {
+          inputPerMillion: 2,
+          outputPerMillion: 10,
+        },
+      },
+      {
+        id: "gpt-6-luna",
+        pricing: {
+          inputPerMillion: 0.1,
+          outputPerMillion: 0.5,
         },
       },
     ],
@@ -472,28 +408,14 @@ export const GENERATED_PROVIDER_CATALOG = {
       baseUrl:
         "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
     },
-    defaultModel: "gemini-3.5-flash",
-    supportedModels: ["gemini-3.5-flash", "gemini-2.5-flash", "gemini-2.5-pro"],
+    defaultModel: "gemini-3.8-flash",
+    supportedModels: ["gemini-3.8-flash"],
     models: [
       {
-        id: "gemini-3.5-flash",
+        id: "gemini-3.8-flash",
         pricing: {
-          inputPerMillion: 1.5,
-          outputPerMillion: 9,
-        },
-      },
-      {
-        id: "gemini-2.5-flash",
-        pricing: {
-          inputPerMillion: 0.15,
-          outputPerMillion: 0.6,
-        },
-      },
-      {
-        id: "gemini-2.5-pro",
-        pricing: {
-          inputPerMillion: 1.25,
-          outputPerMillion: 10,
+          inputPerMillion: 0.75,
+          outputPerMillion: 3.75,
         },
       },
     ],
@@ -673,14 +595,21 @@ export const GENERATED_PROVIDER_CATALOG = {
     endpoints: {
       baseUrl: "https://api.minimax.chat",
     },
-    defaultModel: "MiniMax-M1",
-    supportedModels: ["MiniMax-M1"],
+    defaultModel: "MiniMax-M3",
+    supportedModels: ["MiniMax-M3", "MiniMax-M2.7"],
     models: [
       {
-        id: "MiniMax-M1",
+        id: "MiniMax-M3",
         pricing: {
-          inputPerMillion: 1,
-          outputPerMillion: 8,
+          inputPerMillion: 0.3,
+          outputPerMillion: 1.2,
+        },
+      },
+      {
+        id: "MiniMax-M2.7",
+        pricing: {
+          inputPerMillion: 0.3,
+          outputPerMillion: 1.2,
         },
       },
     ],
@@ -707,35 +636,21 @@ export const GENERATED_PROVIDER_CATALOG = {
       baseUrl: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
       anthropicBaseUrl: "https://open.bigmodel.cn/api/anthropic",
     },
-    defaultModel: "glm-5.2",
-    supportedModels: ["glm-5.2", "glm-5", "glm-5.1", "glm-4-plus"],
+    defaultModel: "glm-5.3",
+    supportedModels: ["glm-5.3", "glm-5.3-flash"],
     models: [
       {
-        id: "glm-5.2",
+        id: "glm-5.3",
         pricing: {
           inputPerMillion: 1.4,
           outputPerMillion: 4.4,
         },
       },
       {
-        id: "glm-5",
+        id: "glm-5.3-flash",
         pricing: {
-          inputPerMillion: 0.55,
-          outputPerMillion: 2.25,
-        },
-      },
-      {
-        id: "glm-5.1",
-        pricing: {
-          inputPerMillion: 0.85,
-          outputPerMillion: 3.4,
-        },
-      },
-      {
-        id: "glm-4-plus",
-        pricing: {
-          inputPerMillion: 0.7,
-          outputPerMillion: 0.7,
+          inputPerMillion: 0.15,
+          outputPerMillion: 0.5,
         },
       },
     ],
@@ -963,21 +878,14 @@ export const GENERATED_PROVIDER_CATALOG = {
     endpoints: {
       baseUrl: "https://api.x.ai",
     },
-    defaultModel: "grok-4.3",
-    supportedModels: ["grok-4.3", "grok-3-latest"],
+    defaultModel: "grok-4.7",
+    supportedModels: ["grok-4.7"],
     models: [
       {
-        id: "grok-4.3",
+        id: "grok-4.7",
         pricing: {
-          inputPerMillion: 1.25,
-          outputPerMillion: 2.5,
-        },
-      },
-      {
-        id: "grok-3-latest",
-        pricing: {
-          inputPerMillion: 3,
-          outputPerMillion: 15,
+          inputPerMillion: 2,
+          outputPerMillion: 6,
         },
       },
     ],
@@ -1270,7 +1178,7 @@ export const GENERATED_PROVIDER_PRESETS = {
   anthropic: {
     baseUrl: "https://api.anthropic.com",
     protocols: ["anthropic_messages"],
-    defaultModel: "claude-opus-4-8",
+    defaultModel: "claude-opus-5-5",
   },
   copilot: {
     baseUrl: "https://api.githubcopilot.com",
@@ -1281,14 +1189,14 @@ export const GENERATED_PROVIDER_PRESETS = {
   openai: {
     baseUrl: "https://api.openai.com",
     protocols: ["openai_chat_completions", "openai_responses"],
-    defaultModel: "gpt-5.6-terra",
+    defaultModel: "gpt-6.1-sol",
     responsesBaseUrl: "https://api.openai.com",
   },
   google_gemini: {
     baseUrl:
       "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
     protocols: ["openai_chat_completions"],
-    defaultModel: "gemini-3.5-flash",
+    defaultModel: "gemini-3.8-flash",
   },
   kimi: {
     baseUrl: "https://api.moonshot.cn",
@@ -1301,12 +1209,12 @@ export const GENERATED_PROVIDER_PRESETS = {
   minimax: {
     baseUrl: "https://api.minimax.chat",
     protocols: ["openai_chat_completions"],
-    defaultModel: "MiniMax-M1",
+    defaultModel: "MiniMax-M3",
   },
   glm: {
     baseUrl: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
     protocols: ["openai_chat_completions"],
-    defaultModel: "glm-5.2",
+    defaultModel: "glm-5.3",
     anthropicBaseUrl: "https://open.bigmodel.cn/api/anthropic",
   },
   dashscope: {
@@ -1353,7 +1261,7 @@ export const GENERATED_PROVIDER_PRESETS = {
   xai: {
     baseUrl: "https://api.x.ai",
     protocols: ["openai_chat_completions"],
-    defaultModel: "grok-4.3",
+    defaultModel: "grok-4.7",
   },
   mistral: {
     baseUrl: "https://api.mistral.ai",

@@ -783,6 +783,38 @@ async openDshConfig() : Promise<Result<boolean, AppError>> {
     else return { status: "error", error: e  as any };
 }
 },
+async detectCodelevelerConfig() : Promise<Result<CodelevelerConfigStatus, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("detect_codeleveler_config") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async applyCodelevelerConfig() : Promise<Result<CodelevelerApplyConfigResult, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("apply_codeleveler_config") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async generateCodelevelerConfig() : Promise<Result<string, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("generate_codeleveler_config") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async openCodelevelerConfig() : Promise<Result<boolean, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("open_codeleveler_config") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 /**
  * After a client's config is rewritten, look up matching live CLI processes
  * so the UI can warn the user that the existing session needs to be
@@ -1605,6 +1637,8 @@ applied_profile_id: string | null;
  * 当前 deploymentMode（"1p" / "3p" / None）
  */
 deployment_mode: string | null }
+export type CodelevelerApplyConfigResult = { success: boolean; config_path: string; changed_keys: string[]; warnings: string[] }
+export type CodelevelerConfigStatus = { config_path: string; exists: boolean; has_agentgate: boolean; current_model: string | null }
 export type CodexApplyConfigResult = { success: boolean; config_path: string; auth_json_path: string; backup_path: string | null; auth_backup_path: string | null; token_path: string; changed_keys: string[]; warnings: string[] }
 export type CodexConfigStatus = { config_path: string; auth_json_path: string; exists: boolean; auth_json_exists: boolean; has_agentgate: boolean; has_agentgate_auth: boolean; current_provider: string | null; current_model: string | null; auth_mode: string; token_path: string; 
 /**

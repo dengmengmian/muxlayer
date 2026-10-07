@@ -9,12 +9,10 @@
   "endpoints": {
     "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
   },
-  "defaultModel": "gemini-3.5-flash",
-  "supportedModels": ["gemini-3.5-flash", "gemini-2.5-flash", "gemini-2.5-pro"],
+  "defaultModel": "gemini-3.8-flash",
+  "supportedModels": ["gemini-3.8-flash"],
   "models": [
-    { "id": "gemini-3.5-flash", "pricing": { "inputPerMillion": 1.5, "outputPerMillion": 9 } },
-    { "id": "gemini-2.5-flash", "pricing": { "inputPerMillion": 0.15, "outputPerMillion": 0.6 } },
-    { "id": "gemini-2.5-pro", "pricing": { "inputPerMillion": 1.25, "outputPerMillion": 10 } }
+    { "id": "gemini-3.8-flash", "pricing": { "inputPerMillion": 0.75, "outputPerMillion": 3.75 } }
   ],
   "docs": {
     "handlingEn": "None",
