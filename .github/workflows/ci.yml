@@ -221,7 +221,7 @@ jobs:
 
       # 预编译二进制,秒级安装,不用每次 cargo install 编译。
       - name: Install cargo-audit
-        uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
         with:
           tool: cargo-audit
 
