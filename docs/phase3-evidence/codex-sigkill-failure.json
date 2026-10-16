@@ -1,0 +1,174 @@
+{
+  "verdict": "FAIL",
+  "mode": "codex_sigkill",
+  "submitted": {
+    "session_id": "0d6b7970-530f-4ab7-8b40-b9e004e1a9d5",
+    "task_id": "937ee6c7-9575-4ea0-936a-38f27531b61a"
+  },
+  "started": {
+    "cancel_requested": false,
+    "created_at": "2026-10-16T05:43:03.226498+00:00",
+    "error": null,
+    "events": [
+      {
+        "kind": "turn/started",
+        "message": ""
+      },
+      {
+        "kind": "item/started",
+        "message": ""
+      },
+      {
+        "kind": "item/completed",
+        "message": ""
+      },
+      {
+        "kind": "item/started",
+        "message": ""
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": "I"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": "’ll"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": " run"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": " `"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": "sleep"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": " "
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": "120"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": "`"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": " now"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": " and"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": " wait"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": " for"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": " it"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": " to"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": " finish"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": "."
+      },
+      {
+        "kind": "item/completed",
+        "message": "I’ll run `sleep 120` now and wait for it to finish."
+      },
+      {
+        "kind": "item/started",
+        "message": "{\"command\":\"/bin/zsh -lc 'sleep 120'\",\"exitCode\":null,\"status\":\"inProgress\",\"type\":\"commandExecution\"}"
+      }
+    ],
+    "events_included": true,
+    "events_next_offset": null,
+    "events_offset": 0,
+    "events_total": 22,
+    "final_answer": null,
+    "final_answer_complete": true,
+    "final_answer_next_offset": null,
+    "final_answer_offset": 0,
+    "final_answer_total_chars": 0,
+    "finished_at": null,
+    "prompt": "Execute the shell command sleep 120 now. This is a cancellation and process-lifecycle test. Do not modify files or delegate. Wait for the command to finish before answering.",
+    "session_id": "0d6b7970-530f-4ab7-8b40-b9e004e1a9d5",
+    "state": "running",
+    "task_id": "937ee6c7-9575-4ea0-936a-38f27531b61a",
+    "thread_id": "01a1433c-3b87-7081-99ed-ae34f2704f8b",
+    "turn_id": "01a1433c-3ca7-7e62-bf15-83f8e87fe471"
+  },
+  "processes_before": [
+    {
+      "pid": 69030,
+      "parent": 68977,
+      "group": 69030,
+      "state": "S",
+      "command": "/bin/sh"
+    },
+    {
+      "pid": 69031,
+      "parent": 69030,
+      "group": 69030,
+      "state": "S",
+      "command": "/opt/homebrew/bin/codex"
+    },
+    {
+      "pid": 69032,
+      "parent": 69030,
+      "group": 69030,
+      "state": "S",
+      "command": "/bin/sh"
+    },
+    {
+      "pid": 69743,
+      "parent": 69031,
+      "group": 69743,
+      "state": "S",
+      "command": "/opt/homebrew/Caskroom/codex/0.162.1/bin/codex-code-mode-host"
+    },
+    {
+      "pid": 69744,
+      "parent": 69031,
+      "group": 69744,
+      "state": "Ss",
+      "command": "sleep"
+    }
+  ],
+  "survivors": [
+    {
+      "pid": 69744,
+      "parent": 69031,
+      "group": 69744,
+      "state": "Ss",
+      "command": "sleep"
+    }
+  ],
+  "persisted_task_after_provider_death": {
+    "task_id": "937ee6c7-9575-4ea0-936a-38f27531b61a",
+    "state": "interrupted",
+    "error": {
+      "code": "process_exited",
+      "message": "Codex app-server exited; cleanup failed: ProcessExited: Codex input closed"
+    }
+  },
+  "cleanup": "Captured private test descendants were killed during test teardown; no desktop processes targeted."
+}

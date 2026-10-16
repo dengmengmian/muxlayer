@@ -1,5 +1,7 @@
 # Agent Gateway 第二阶段验收记录
 
+> 此文件保留第二阶段历史证据；最新第三阶段结论为 **PARTIAL**，见 [第三阶段验收与审计报告](agent-gateway-phase-three-verification.md)。
+
 macOS（官方 Codex CLI `0.162.1`、官方 Claude Code CLI `2.1.287`）下：SQLite 持久化、Claude Code Adapter、本地 IPC、MCP stdio Server、服务独立生命周期全部实现并通过自动化验收。
 
 **Codex 经 MCP 的真实调用 PASS。Claude Code 经 MCP 的真实调用 PASS**：本机 Claude Code 按 DeepSeek 官方文档接入（`ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic` + `ANTHROPIC_AUTH_TOKEN`，写在用户级 `~/.claude/settings.json` 的 `env`），`init` 事件确认 `model=deepseek-flash[1m]`。

@@ -1,0 +1,235 @@
+{
+  "mode": "service_sigkill",
+  "submitted": {
+    "session_id": "bc60060e-fa30-4d02-8a68-43f79e4b8e94",
+    "task_id": "80bd9fb4-206d-4152-859e-69577d1dc0cd"
+  },
+  "started": {
+    "cancel_requested": false,
+    "created_at": "2026-10-16T05:54:43.040267+00:00",
+    "error": null,
+    "events": [
+      {
+        "kind": "turn/started",
+        "message": ""
+      },
+      {
+        "kind": "item/started",
+        "message": ""
+      },
+      {
+        "kind": "item/completed",
+        "message": ""
+      },
+      {
+        "kind": "item/started",
+        "message": ""
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": "I"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": "’ll"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": " run"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": " `"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": "sleep"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": " "
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": "120"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": "`"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": " and"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": " wait"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": " for"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": " it"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": " to"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": " finish"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": "."
+      },
+      {
+        "kind": "item/completed",
+        "message": "I’ll run `sleep 120` and wait for it to finish."
+      },
+      {
+        "kind": "item/started",
+        "message": "{\"command\":\"/bin/zsh -lc 'sleep 120'\",\"exitCode\":null,\"status\":\"inProgress\",\"type\":\"commandExecution\"}"
+      }
+    ],
+    "events_included": true,
+    "events_next_offset": null,
+    "events_offset": 0,
+    "events_total": 21,
+    "final_answer": null,
+    "final_answer_complete": true,
+    "final_answer_next_offset": null,
+    "final_answer_offset": 0,
+    "final_answer_total_chars": 0,
+    "finished_at": null,
+    "prompt": "Execute the shell command sleep 120 now. This is a cancellation and process-lifecycle test. Do not modify files or delegate. Wait for the command to finish before answering.",
+    "session_id": "bc60060e-fa30-4d02-8a68-43f79e4b8e94",
+    "state": "running",
+    "task_id": "80bd9fb4-206d-4152-859e-69577d1dc0cd",
+    "thread_id": "01a14346-ed1a-73e1-9c40-6d1144644d6e",
+    "turn_id": "01a14346-eea6-78c0-a544-c0a47bfcb22f"
+  },
+  "processes_before": [
+    {
+      "pid": 19922,
+      "parent": 19910,
+      "group": 19922,
+      "state": "S",
+      "command": "/bin/sh",
+      "started": "Fri Oct 16 13:54:43 2026"
+    },
+    {
+      "pid": 19923,
+      "parent": 19922,
+      "group": 19922,
+      "state": "S",
+      "command": "/opt/homebrew/bin/codex",
+      "started": "Fri Oct 16 13:54:43 2026"
+    },
+    {
+      "pid": 19924,
+      "parent": 19922,
+      "group": 19922,
+      "state": "S",
+      "command": "/bin/sh",
+      "started": "Fri Oct 16 13:54:43 2026"
+    },
+    {
+      "pid": 20574,
+      "parent": 19923,
+      "group": 20574,
+      "state": "S",
+      "command": "/opt/homebrew/Caskroom/codex/0.162.1/bin/codex-code-mode-host",
+      "started": "Fri Oct 16 13:54:48 2026"
+    },
+    {
+      "pid": 20575,
+      "parent": 19923,
+      "group": 20575,
+      "state": "Ss",
+      "command": "sleep",
+      "started": "Fri Oct 16 13:54:48 2026"
+    }
+  ],
+  "survivors": [],
+  "recovered_task": {
+    "cancel_requested": false,
+    "created_at": "2026-10-16T05:54:43.040267+00:00",
+    "error": null,
+    "events": [],
+    "events_included": true,
+    "events_next_offset": null,
+    "events_offset": 0,
+    "events_total": 0,
+    "final_answer": null,
+    "final_answer_complete": true,
+    "final_answer_next_offset": null,
+    "final_answer_offset": 0,
+    "final_answer_total_chars": 0,
+    "finished_at": "2026-10-16T05:54:51.183034+00:00",
+    "prompt": "Execute the shell command sleep 120 now. This is a cancellation and process-lifecycle test. Do not modify files or delegate. Wait for the command to finish before answering.",
+    "session_id": "bc60060e-fa30-4d02-8a68-43f79e4b8e94",
+    "state": "interrupted",
+    "task_id": "80bd9fb4-206d-4152-859e-69577d1dc0cd",
+    "thread_id": "01a14346-ed1a-73e1-9c40-6d1144644d6e",
+    "turn_id": "01a14346-eea6-78c0-a544-c0a47bfcb22f"
+  },
+  "continued": {
+    "cancel_requested": false,
+    "created_at": "2026-10-16T05:54:51.285473+00:00",
+    "error": null,
+    "events": [
+      {
+        "kind": "turn/started",
+        "message": ""
+      },
+      {
+        "kind": "item/started",
+        "message": ""
+      },
+      {
+        "kind": "item/completed",
+        "message": ""
+      },
+      {
+        "kind": "item/started",
+        "message": ""
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": "REC"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": "OVER"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": "ED"
+      },
+      {
+        "kind": "item/completed",
+        "message": "RECOVERED"
+      }
+    ],
+    "events_included": true,
+    "events_next_offset": null,
+    "events_offset": 0,
+    "events_total": 8,
+    "final_answer": "RECOVERED",
+    "final_answer_complete": true,
+    "final_answer_next_offset": null,
+    "final_answer_offset": 0,
+    "final_answer_total_chars": 9,
+    "finished_at": "2026-10-16T05:54:55.552691+00:00",
+    "prompt": "Reply with exactly RECOVERED. Do not run any commands.",
+    "session_id": "bc60060e-fa30-4d02-8a68-43f79e4b8e94",
+    "state": "completed",
+    "task_id": "93646c12-b917-4a19-89f9-bdf3832fa145",
+    "thread_id": "01a14346-ed1a-73e1-9c40-6d1144644d6e",
+    "turn_id": "01a14347-0b6c-7f61-914b-1cee84e29b95"
+  },
+  "scope": "Only descendants captured before killing the private service; not a proof for arbitrary later forks."
+}

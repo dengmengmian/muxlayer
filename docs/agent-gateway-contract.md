@@ -1,6 +1,8 @@
-# Agent Gateway 接口契约（第二阶段）
+# Agent Gateway 接口契约（第二阶段接口，含第三阶段修正）
 
-本文件对应 `src-tauri/src/agent_gateway/`。第二阶段在保留第一阶段语义的前提下补齐：SQLite 持久化、Claude Code Adapter、本地 IPC、MCP stdio Server 五个工具、Agent Service 独立生命周期与重启恢复。桌面管理 UI、云端能力、CodeLeveler 端到端联调仍不在范围内。
+本文件对应 `src-tauri/src/agent_gateway/`。第二阶段在保留第一阶段语义的前提下补齐：SQLite 持久化、Claude Code Adapter、本地 IPC、MCP stdio Server 五个工具、Agent Service 独立生命周期与重启恢复。第三阶段在这些接口上修复可靠性并完成 CodeLeveler / Pi 联调；桌面管理 UI 与云端能力仍不在范围内。
+
+> 第三阶段总体结论为 **PARTIAL**：常规 MCP / CodeLeveler / Pi 调用、续会、结果与取消已实测；Codex App Server 自身 SIGKILL 后独立 Session 后代仍可能残留，Windows 未完成原生验收。详见 [第三阶段报告](agent-gateway-phase-three-verification.md)。
 
 ## 1. 架构与职责
 
@@ -159,9 +161,10 @@ Gateway 不手动修改或复制 config.toml、auth.json 或 OAuth 凭据；配�
 
 ### 写入规则
 
-- 写穿：`run` / `submit` 先落库再改内存；持久化失败直接返回 `storage` 错误，不产生只在内存里存在的记录。
+- 写穿：`run` / `submit` 在一个事务里写入 Task 和 Session 占位，再更新缓存；取消意图、Thread / Running 映射同样先落库。持久化失败直接返回 `storage` 错误，不留下孤立占位或内存假状态。
 - 原子完成：`finish_task` 在同一个事务里写 Task 终态 + 清空 Session 占位。
 - 终态结果不可丢：若 `completed` 的落库失败，任务降级为 `failed`（`storage` 错误）并重试一次；**绝不允许「结果没落库但对外报成功」**。
+- 终态持续写盘失败时，`status` 明确返回 `storage`，保留最后耐久快照与 Session 占位，阻止不可靠续会；恢复存储后需重启对账，未承诺自动自愈。
 - 过程事件按 25 条为一批刷盘，终态与状态转换（Thread / Turn / cancel 意图）立即写入。
 - `task_ids` 由 `agent_tasks` 有序关系派生，不单独存储。
 - Child / 锁 / channel / JoinHandle / Adapter 实例都是运行时资源，不持久化；不持久化任何凭据。
@@ -171,6 +174,7 @@ Gateway 不手动修改或复制 config.toml、auth.json 或 OAuth 凭据；配�
 - 启动时装载全部记录；仍处于 `queued` / `running` 的任务**先**降级为 `interrupted`，错误码 `process_exited`，原因写明「服务在任务终态前重启，provider 执行状态未知」，并清空对应 Session 占位。
 - 随后由 `reconcile_interrupted()` 逐个对账：Codex 用新的官方 App Server 调 `thread/read` 查原 Turn；只有真实 `completed` 且拿到完整最终回答才升级为 `completed`；`inProgress` / 未知状态保持 `interrupted`；查证失败只记录，不伪装完成。
 - Claude Code 的会话数据是 CLI 私有磁盘格式，没有官方只读终局查询入口，因此不做猜测式解析，一律保持 `interrupted`。
+- 对账前再次重启时，从持久化的重启错误标识重建待对账队列，不丢失原 Turn。
 - 绝不重新执行任务来「恢复」。
 
 ## 7. MCP 五个工具（已实现）
@@ -216,7 +220,7 @@ MCP stdio Server 只做请求解析、参数校验、调用 Agent Service（经 
 | 传输 | 路径 |
 | --- | --- |
 | macOS / Linux | Unix Domain Socket：`<db_dir>/agent-service/agent-service.sock`，权限 0600，目录 0700；路径超过 `sun_path` 上限时回落到用户私有临时目录（目录哈希命名） |
-| Windows | Named Pipe：`\\.\pipe\muxlayer-agent-<db_dir 哈希>`，`first_pipe_instance` 保证单实例 |
+| Windows | Named Pipe：`\\.\pipe\muxlayer-agent-<db_dir 哈希>`，OS 文件锁 + `first_pipe_instance`；Windows 原生权限与运行尚未验收 |
 
 | 方法 | 说明 |
 | --- | --- |
@@ -224,15 +228,18 @@ MCP stdio Server 只做请求解析、参数校验、调用 Agent Service（经 
 | `agent_list` / `agent_run` / `agent_continue` / `agent_status` / `agent_cancel` | 语义与 MCP 工具一一对应，参数相同（`agent_status` 直接接受分页参数） |
 | `agent_session` | `{"session_id": "..."}` → `SessionRecord`，用于校验续会映射 |
 | `service_status` | `{"service","version","running_task_ids","agents"}` |
-| `service_shutdown` | 优雅停止服务（先中断未完成任务再清理 socket / token / lock） |
+| `service_shutdown` | 请求优雅停止服务（中断任务，清理 socket / token，释放 OS 锁；lock 文件保留） |
 
 规则：
 
-- 单条消息上限 32 MiB，超限明确报错，不做静默截断。
+- IPC 与 MCP 输入均在读取期间限制 32 MiB（含换行），不等 EOF 才检查。IPC 响应超限返回结构化 `invalid_request`，提示显式分页，同一连接仍可查询；不静默截断。`agent_cancel` 的完整快照也受此限制，取消动作可能已执行，应使用 `agent_status` 显式分页确认。
 - 客户端每次请求 30 秒超时；服务端所有方法都必须快速返回（任务在后台执行）。
 - 连接断开只影响该连接：任务属于服务端，继续执行；重连后可用原 `task_id` / `session_id` 继续。
 - 连接之间互不阻塞（每个连接独立任务）。
-- 单实例所有权：socket 可连通或 lock 文件的 pid 存活时，第二个实例以 `busy` 拒绝启动，不允许两个实例同时拥有同一批 Running Task。
+- 单实例所有权：CLI 在打开数据库、恢复任务前获取 OS 文件锁，失败返回 `busy`；PID 文本不参与裁决。锁文件永久保留，退出只释放句柄，避免 unlink 造成 inode 分裂。socket probe 仅用于兼容发现已有旧服务。
+- MCP 传输断开只重试 `agent_list` / `agent_status`；变更请求不自动重放，明确报告结果未知，避免重复执行。
+- Unix Adapter 额外持有私有寿命管道，EOF / CLI 退出触发 guardian 清理其专属进程组；不覆盖 CLI 自行 `setsid()` 的后代。Windows 当前仍为单 Child 控制。
+- 优雅关闭失败会使宿主返回真实错误，不输出假成功。
 - IPC 层不重新定义 Task 语义，也不复制状态机。
 
 ## 9. 错误语义
@@ -259,7 +266,7 @@ Service 内部通过 `status(task_id)` 返回完整 `final_answer`，不分页�
 
 MCP 分页见第 7 节：默认返回完整回答，显式分页时给出稳定的字符单位、总长度、下一页位置与完成标记，只读取已持久化的终态结果。`final_answer` 字段不会静默裁剪。长时间运行的容量管理（事件清理/归档）仍不在本阶段承诺内。
 
-## 11. 已验证与待验证
+## 11. 第二阶段历史验证（第三阶段见最新报告）
 
 | 验证项 | 当前证据及边界 |
 | --- | --- |
@@ -291,11 +298,12 @@ AGENTGATE_CODEX_BIN=/opt/homebrew/bin/codex cargo test \
   --test agent_gateway_phase_two_live -- --ignored --nocapture --test-threads=1
 ```
 
-## 12. 下一轮范围
+## 12. 第三阶段后尚未收口的边界
 
-1. CodeLeveler + Pi 端到端联合验收：把 `agentgate-serve mcp-agent` 注册为 MCP server，跑真实的“审计 → 查询 → 续会 → 取消”流程。
-2. Windows 原生验收（Named Pipe、`first_pipe_instance` 单实例、真实 CLI 路径发现）；当前 Windows 代码路径未编译验证。
-3. Claude Code 真实推理：已完成（DeepSeek 官方接入方式，见 [验收记录](agent-gateway-verification.md)）。若改用官方登录，`claude auth login` 后同样直接可用。
-4. 长时间运行的容量管理（事件归档/清理）与桌面管理 UI，均不在当前范围内。
+1. **核心未解决**：macOS Codex App Server 自身 SIGKILL 后的独立 Session 后代回收；第三阶段整体 PARTIAL。
+2. Windows 原生编译、Named Pipe 权限、进程树所有权及端到端验收；交叉检查被缺失 Windows SDK 阻塞。
+3. CodeLeveler / Pi 常规 run / status / continue、完整结果已真实通过；CodeLeveler 显式取消、Pi Unicode 分页、Pi → Claude Code 亦已通过；全部异常退出及原生聊天取消联动语义未穷尽。
+4. Claude Code 实际推理来源为用户既有 DeepSeek 配置；未宣称官方 Anthropic 模型验收。
+5. 长期容量管理与 UI 均未扩展。
 
-若需要改变核心接口，先提交具体问题、复现证据和兼容方案，避免由上层重写本轮生命周期。
+完整证据、Commit SHA 与未解决风险见 [第三阶段验收报告](agent-gateway-phase-three-verification.md)。改变核心接口前仍需具体复现与兼容方案。

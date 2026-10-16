@@ -1,0 +1,23 @@
+{
+  "create": {
+    "exitCode": 1,
+    "stderr": "touch: forbidden.txt: Operation not permitted\n",
+    "stdout": ""
+  },
+  "new_file_absent": true,
+  "overwrite": {
+    "exitCode": 1,
+    "stderr": "/bin/sh: evidence.txt: Operation not permitted\n",
+    "stdout": ""
+  },
+  "read": {
+    "exitCode": 0,
+    "stderr": "",
+    "stdout": "read-only nonce 8d5886e7-8508-4213-9661-0777fecaee40\n"
+  },
+  "sandbox": {
+    "networkAccess": false,
+    "type": "readOnly"
+  },
+  "source_unchanged": true
+}

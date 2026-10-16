@@ -1,0 +1,311 @@
+{
+  "test live_claude_via_mcp_stdio_full_lifecycle ... agents": {
+    "agents": [
+      {
+        "id": "claude-code",
+        "name": "Claude Code",
+        "permissions": [
+          "read_only"
+        ],
+        "supports_cancel": true,
+        "supports_continuation": true
+      },
+      {
+        "id": "codex-native",
+        "name": "Codex Native",
+        "permissions": [
+          "read_only"
+        ],
+        "supports_cancel": true,
+        "supports_continuation": true
+      }
+    ]
+  },
+  "claude first task": {
+    "cancel_requested": false,
+    "created_at": "2026-10-16T05:44:38.633026+00:00",
+    "error": null,
+    "events": [],
+    "events_included": false,
+    "events_next_offset": 0,
+    "events_offset": 0,
+    "events_total": 6,
+    "final_answer": "SOURCE_NONCE=5d75e1af-debd-4d27-8cdd-d926c91bc733",
+    "final_answer_complete": true,
+    "final_answer_next_offset": null,
+    "final_answer_offset": 0,
+    "final_answer_total_chars": 49,
+    "finished_at": "2026-10-16T05:44:44.028019+00:00",
+    "prompt": "Read evidence.txt and return its exact SOURCE_NONCE. Do not modify any file.",
+    "session_id": "2b3c46a3-e98e-43b3-a14c-0b358338a6cd",
+    "state": "completed",
+    "task_id": "61d3d4a2-022c-4f89-a9f1-78e409bc8788",
+    "thread_id": "2fd40792-b761-478c-b95f-0168f63f98b2",
+    "turn_id": "1cd50315-cf0c-4005-8f28-4766e4ab4f3b"
+  },
+  "claude continuation": {
+    "cancel_requested": false,
+    "created_at": "2026-10-16T05:44:44.161538+00:00",
+    "error": null,
+    "events": [],
+    "events_included": false,
+    "events_next_offset": 0,
+    "events_offset": 0,
+    "events_total": 3,
+    "final_answer": "5d75e1af-debd-4d27-8cdd-d926c91bc733",
+    "final_answer_complete": true,
+    "final_answer_next_offset": null,
+    "final_answer_offset": 0,
+    "final_answer_total_chars": 36,
+    "finished_at": "2026-10-16T05:44:48.202976+00:00",
+    "prompt": "Without reading files again, return the SOURCE_NONCE.",
+    "session_id": "2b3c46a3-e98e-43b3-a14c-0b358338a6cd",
+    "state": "completed",
+    "task_id": "18054627-b137-4035-bbe8-999fcf46504f",
+    "thread_id": "2fd40792-b761-478c-b95f-0168f63f98b2",
+    "turn_id": "10a82cd0-07e9-47c4-ad3f-ec456eaafd56"
+  },
+  "claude cancel request": {
+    "cancel_requested": true,
+    "created_at": "2026-10-16T05:44:48.694287+00:00",
+    "error": null,
+    "events": [
+      {
+        "kind": "init",
+        "message": "{\"api_key_source\":\"none\",\"mcp_servers\":[],\"model\":\"deepseek-flash[1m]\",\"permission_mode\":\"default\",\"started_at\":1792129492,\"tools\":[\"Glob\",\"Grep\",\"Read\"]}"
+      }
+    ],
+    "final_answer": null,
+    "finished_at": null,
+    "prompt": "Read every file in this repository one by one and produce an exhaustive report.                            Do not modify any file.",
+    "session_id": "0ce752f2-43bd-4ad3-a7ed-21c03165b8a1",
+    "state": "running",
+    "task_id": "ea9a8419-42f0-458a-84e1-f02498810e2c",
+    "thread_id": "6e0baf7b-c8ca-4fc1-8212-0c025b31fe99",
+    "turn_id": "298eee0b-df36-4fa1-a51c-c2ef5297a981"
+  },
+  "claude cancel terminal": {
+    "cancel_requested": true,
+    "created_at": "2026-10-16T05:44:48.694287+00:00",
+    "error": {
+      "code": "adapter",
+      "message": "Claude Code process was terminated by the cancel request"
+    },
+    "events": [],
+    "events_included": false,
+    "events_next_offset": 0,
+    "events_offset": 0,
+    "events_total": 1,
+    "final_answer": null,
+    "final_answer_complete": true,
+    "final_answer_next_offset": null,
+    "final_answer_offset": 0,
+    "final_answer_total_chars": 0,
+    "finished_at": "2026-10-16T05:44:53.399971+00:00",
+    "prompt": "Read every file in this repository one by one and produce an exhaustive report.                            Do not modify any file.",
+    "session_id": "0ce752f2-43bd-4ad3-a7ed-21c03165b8a1",
+    "state": "cancelled",
+    "task_id": "ea9a8419-42f0-458a-84e1-f02498810e2c",
+    "thread_id": "6e0baf7b-c8ca-4fc1-8212-0c025b31fe99",
+    "turn_id": "298eee0b-df36-4fa1-a51c-c2ef5297a981"
+  },
+  "test live_codex_via_mcp_stdio_full_lifecycle ... agents": {
+    "agents": [
+      {
+        "id": "claude-code",
+        "name": "Claude Code",
+        "permissions": [
+          "read_only"
+        ],
+        "supports_cancel": true,
+        "supports_continuation": true
+      },
+      {
+        "id": "codex-native",
+        "name": "Codex Native",
+        "permissions": [
+          "read_only"
+        ],
+        "supports_cancel": true,
+        "supports_continuation": true
+      }
+    ]
+  },
+  "first task": {
+    "cancel_requested": false,
+    "created_at": "2026-10-16T05:44:53.766328+00:00",
+    "error": null,
+    "events": [],
+    "events_included": false,
+    "events_next_offset": 0,
+    "events_offset": 0,
+    "events_total": 47,
+    "final_answer": "d490d2af-cdee-4ad2-b55f-9cf478549b89",
+    "final_answer_complete": true,
+    "final_answer_next_offset": null,
+    "final_answer_offset": 0,
+    "final_answer_total_chars": 36,
+    "finished_at": "2026-10-16T05:45:01.067285+00:00",
+    "prompt": "Read evidence.txt with a shell command and return its exact SOURCE_NONCE. Do not modify any file.",
+    "session_id": "07d55299-c5ac-400c-9bfb-46303b2378b2",
+    "state": "completed",
+    "task_id": "9f2b54d6-7100-4bd0-8260-6f92822fe24c",
+    "thread_id": "01a1433d-ee47-7062-841e-ab49ec3e1dad",
+    "turn_id": "01a1433d-eefc-7cb1-9721-6c3b735ef23e"
+  },
+  "continuation": {
+    "cancel_requested": false,
+    "created_at": "2026-10-16T05:45:01.308972+00:00",
+    "error": null,
+    "events": [],
+    "events_included": false,
+    "events_next_offset": 0,
+    "events_offset": 0,
+    "events_total": 26,
+    "final_answer": "d490d2af-cdee-4ad2-b55f-9cf478549b89",
+    "final_answer_complete": true,
+    "final_answer_next_offset": null,
+    "final_answer_offset": 0,
+    "final_answer_total_chars": 36,
+    "finished_at": "2026-10-16T05:45:05.725664+00:00",
+    "prompt": "Without reading files again, return the exact SOURCE_NONCE from the previous turn.",
+    "session_id": "07d55299-c5ac-400c-9bfb-46303b2378b2",
+    "state": "completed",
+    "task_id": "67d66819-6cef-45bb-ba8a-69407a747782",
+    "thread_id": "01a1433d-ee47-7062-841e-ab49ec3e1dad",
+    "turn_id": "01a1433e-0886-7af0-a563-0cc4f79c8b4b"
+  },
+  "observed provider command event": {
+    "kind": "item/started",
+    "message": "{\"command\":\"/bin/zsh -lc 'sleep 120'\",\"exitCode\":null,\"status\":\"inProgress\",\"type\":\"commandExecution\"}"
+  },
+  "cancel request": {
+    "cancel_requested": true,
+    "created_at": "2026-10-16T05:45:05.831321+00:00",
+    "error": null,
+    "events": [
+      {
+        "kind": "turn/started",
+        "message": ""
+      },
+      {
+        "kind": "item/started",
+        "message": ""
+      },
+      {
+        "kind": "item/completed",
+        "message": ""
+      },
+      {
+        "kind": "item/started",
+        "message": ""
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": "I"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": "’ll"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": " run"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": " `"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": "sleep"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": " "
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": "120"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": "`"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": " and"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": " report"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": " its"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": " exit"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": " code"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": " when"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": " it"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": " finishes"
+      },
+      {
+        "kind": "item/agentMessage/delta",
+        "message": ".\n"
+      },
+      {
+        "kind": "item/completed",
+        "message": "I’ll run `sleep 120` and report its exit code when it finishes.\n"
+      },
+      {
+        "kind": "item/started",
+        "message": "{\"command\":\"/bin/zsh -lc 'sleep 120'\",\"exitCode\":null,\"status\":\"inProgress\",\"type\":\"commandExecution\"}"
+      }
+    ],
+    "final_answer": null,
+    "finished_at": "2026-10-16T05:45:11.402955+00:00",
+    "prompt": "Run the shell command `sleep 120` and then report the exit code.",
+    "session_id": "207e0882-c232-47df-9b5e-9b85eb852f00",
+    "state": "cancelled",
+    "task_id": "5eabcedc-d6b9-4a2b-9a58-098ec14f62bb",
+    "thread_id": "01a1433e-1a71-7f30-84b1-247b6811be3a",
+    "turn_id": "01a1433e-1f12-7a42-9ed5-a26e4d5384c2"
+  },
+  "cancel terminal": {
+    "cancel_requested": true,
+    "created_at": "2026-10-16T05:45:05.831321+00:00",
+    "error": null,
+    "events": [],
+    "events_included": false,
+    "events_next_offset": 0,
+    "events_offset": 0,
+    "events_total": 23,
+    "final_answer": null,
+    "final_answer_complete": true,
+    "final_answer_next_offset": null,
+    "final_answer_offset": 0,
+    "final_answer_total_chars": 0,
+    "finished_at": "2026-10-16T05:45:11.402955+00:00",
+    "prompt": "Run the shell command `sleep 120` and then report the exit code.",
+    "session_id": "207e0882-c232-47df-9b5e-9b85eb852f00",
+    "state": "cancelled",
+    "task_id": "5eabcedc-d6b9-4a2b-9a58-098ec14f62bb",
+    "thread_id": "01a1433e-1a71-7f30-84b1-247b6811be3a",
+    "turn_id": "01a1433e-1f12-7a42-9ed5-a26e4d5384c2"
+  }
+}
