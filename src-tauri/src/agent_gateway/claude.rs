@@ -4,14 +4,22 @@
 //! stream-json` 程序化入口执行只读任务，不新建第二套 Task Manager，也不改变统一结果格式。
 //!
 //! 只读边界不依赖提示词：
-//! - `--tools Read,Grep,Glob` 只保留读取类内置工具，模型根本没有写文件或执行命令的工具；
-//! - `--restricted` 额外移除可执行命令/代码的内置工具，并忽略 user/project/local settings
-//!   （用户 hooks 不会被加载）；
+//! - `--tools Read,Grep,Glob` 只保留读取类内置工具，模型根本没有写文件或执行命令的工具
+//!   （Bash / Edit / Write / NotebookEdit / WebFetch / Task 都不存在）；
 //! - `--strict-mcp-config` 不加载任何外部 MCP server；
+//! - `--setting-sources user` 只加载用户级 settings，项目 / 本地 settings 一律忽略，
+//!   仓库无法通过 `.claude/settings.json` 注入 hooks、MCP 或插件（有真实验证）；
 //! - `--disable-slash-commands` 关闭 skills；
 //! - `--permission-prompts none` 让任何需要审批的动作直接被拒绝。
 //! 另外每个 Turn 的 `init` 事件会被校验：真实可用工具必须落在白名单内、MCP server 必须为空，
 //! 否则该 Turn 直接失败，绝不把"提示词只读"当成强制只读。
+//!
+//! 为什么不加 `--restricted`：它会连用户级 settings 一起忽略，而 DeepSeek 等第三方
+//! Anthropic 兼容端点正是通过用户 settings 的 `env`（或进程环境变量）配置的；实测
+//! `--restricted` 会让 model 回退到内置默认模型并认证失败，等于让 Claude Code 只能跑
+//! 官方登录。`--setting-sources user` 保留了"排除项目配置"这一安全边界，同时让用户
+//! 自己的模型配置生效。代价（明确边界）：读取类工具不再被限制在 cwd 内，且用户级
+//! hooks / 插件会生效——那是机器主人自己的配置，与凭据同一信任级别。
 //!
 //! 认证：复用本机 Claude Code 自己的登录/配置（`claude auth status` 预检），
 //! 不读取、不输出、不复制任何凭据，也不在失败时切换到其它模型或 API Key。
@@ -218,7 +226,9 @@ pub fn read_only_cli_args(thread_id: &str, resume: bool) -> Vec<String> {
         "--tools".into(),
         READ_ONLY_TOOLS.join(","),
         "--strict-mcp-config".into(),
-        "--restricted".into(),
+        // 项目 / 本地 settings（含其中的 hooks、MCP、插件）一律不加载。
+        "--setting-sources".into(),
+        "user".into(),
         "--disable-slash-commands".into(),
         "--permission-prompts".into(),
         "none".into(),
@@ -828,8 +838,17 @@ printf '{"type":"result","subtype":"success","is_error":false,"result":"FINAL AN
         for allowed in READ_ONLY_TOOLS {
             assert!(tools.contains(allowed));
         }
-        assert!(args.contains(&"--restricted".to_string()));
         assert!(args.contains(&"--strict-mcp-config".to_string()));
+        let sources = args
+            .iter()
+            .position(|a| a == "--setting-sources")
+            .map(|i| args[i + 1].clone())
+            .expect("--setting-sources is required");
+        assert_eq!(sources, "user", "只能加载用户级 settings");
+        assert!(
+            !args.contains(&"--restricted".to_string()),
+            "--restricted 会连用户级模型配置一起忽略，第三方端点将无法使用"
+        );
         assert!(args.contains(&"--disable-slash-commands".to_string()));
         assert!(args.contains(&"--permission-prompts".to_string()));
         assert!(args
@@ -885,7 +904,7 @@ printf '{"type":"result","subtype":"success","is_error":false,"result":"FINAL AN
             .find(|e| e.starts_with("ARGV:") && e.contains("--tools"))
             .unwrap();
         assert!(argv.contains("--tools Read,Grep,Glob"), "{argv}");
-        assert!(argv.contains("--restricted"));
+        assert!(argv.contains("--setting-sources user"), "{argv}");
         assert!(argv.contains("--strict-mcp-config"));
         assert!(!argv.contains("--dangerously-skip-permissions"));
         // Turn 必须在请求的 cwd 里执行（真实目录，不是随机临时目录）。

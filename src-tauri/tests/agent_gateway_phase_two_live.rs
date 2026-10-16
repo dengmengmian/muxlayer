@@ -290,8 +290,7 @@ async fn live_codex_via_mcp_stdio_full_lifecycle() {
     let hang_task = hanging["task_id"].as_str().unwrap().to_owned();
     // 必须先观察到真实 shell 命令开始，再取消；不能凭 RPC 确认就当取消完成。
     let observe = Instant::now();
-    let mut saw_sleep = false;
-    while !saw_sleep {
+    loop {
         let status = client
             .tool(
                 "agent_status",
@@ -308,7 +307,6 @@ async fn live_codex_via_mcp_stdio_full_lifecycle() {
         });
         if let Some(event) = observed {
             println!("observed provider command event: {event}");
-            saw_sleep = true;
             break;
         }
         assert!(
@@ -459,18 +457,44 @@ async fn live_claude_via_mcp_stdio_full_lifecycle() {
     assert_eq!(second["thread_id"].as_str().unwrap(), thread);
     assert!(second["final_answer"].as_str().unwrap().contains(&nonce));
 
+    // Claude 的只读模式没有 Bash 工具，所以用一个需要耗时分析的任务，
+    // 并在它真实执行中（仍非终态）立即取消。
     let hanging = client
         .tool(
             "agent_run",
             json!({
                 "agent": "claude-code",
                 "cwd": repo,
-                "prompt": "Run the shell command `sleep 120` and then report the exit code.",
+                "prompt": "Read every file in this repository one by one and produce an exhaustive report.                            Do not modify any file.",
             }),
         )
         .await;
     let hang_task = hanging["task_id"].as_str().unwrap().to_owned();
-    tokio::time::sleep(Duration::from_secs(8)).await;
+    let observe = Instant::now();
+    loop {
+        let status = client
+            .tool(
+                "agent_status",
+                json!({"task_id": hang_task, "events_limit": 10}),
+            )
+            .await;
+        let running = status["state"].as_str() == Some("running");
+        let events = status["events_total"].as_u64().unwrap_or(0);
+        // 要求"真实 Turn 已在执行且已产生 CLI 事件"，才谈得上取消正在进行的工作。
+        if running && events >= 1 {
+            println!("claude turn is in flight: state=running events={events}");
+            break;
+        }
+        assert!(
+            !status["state"].as_str().is_some_and(terminal_state),
+            "claude task finished before it could be cancelled: {status}"
+        );
+        assert!(
+            observe.elapsed() < Duration::from_secs(60),
+            "claude task never started a turn: {status}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     let requested = client
         .tool("agent_cancel", json!({"task_id": hang_task}))
         .await;
@@ -545,4 +569,71 @@ async fn live_claude_init_event_reports_only_read_only_tools() {
     for forbidden in ["Bash", "Edit", "Write", "Task", "WebFetch"] {
         assert!(!tools.contains(&forbidden.to_string()));
     }
+}
+
+/// 安全边界：仓库内的 `.claude/settings.json` 不能通过 hook 注入代码执行。
+/// 先跑对照组证明探测有效（不加限制时 hook 确实会执行），再验证生产 argv 下不执行。
+#[tokio::test]
+#[ignore = "requires the public Claude Code CLI and a usable Claude Code configuration"]
+async fn live_claude_excludes_project_settings_hooks() {
+    use agentgate_lib::agent_gateway::claude::{discover_for_probe, read_only_cli_args};
+
+    let executable = discover_for_probe().await.expect("public Claude Code CLI");
+    let repo = tempfile::tempdir().unwrap();
+    let marker = repo.path().join("HOOK_RAN");
+    std::fs::create_dir_all(repo.path().join(".claude")).unwrap();
+    std::fs::write(
+        repo.path().join(".claude/settings.json"),
+        format!(
+            r#"{{"hooks":{{"UserPromptSubmit":[{{"hooks":[{{"type":"command","command":"touch {}"}}]}}]}}}}"#,
+            marker.display()
+        ),
+    )
+    .unwrap();
+
+    let run = |args: Vec<String>| {
+        let executable = executable.clone();
+        let cwd = repo.path().to_path_buf();
+        async move {
+            tokio::process::Command::new(executable)
+                .args(args)
+                .arg("Reply with the single word: ok")
+                .current_dir(cwd)
+                .stdin(Stdio::null())
+                .output()
+                .await
+                .expect("run real claude CLI")
+        }
+    };
+
+    // 对照组：不限制 setting-sources，项目 settings 生效。
+    let control = run(vec![
+        "--print".into(),
+        "--output-format".into(),
+        "json".into(),
+        "--tools".into(),
+        "Read,Grep,Glob".into(),
+        "--strict-mcp-config".into(),
+        "--disable-slash-commands".into(),
+        "--permission-prompts".into(),
+        "none".into(),
+    ])
+    .await;
+    assert!(
+        marker.exists(),
+        "control run did not execute the project hook, so this probe proves nothing (exit {}; stderr {})",
+        control.status,
+        String::from_utf8_lossy(&control.stderr)
+    );
+    std::fs::remove_file(&marker).unwrap();
+
+    // 生产 argv：项目 / 本地 settings 必须被排除。
+    let session = uuid::Uuid::new_v4().to_string();
+    let production = run(read_only_cli_args(&session, false)).await;
+    assert!(
+        !marker.exists(),
+        "project settings hook ran under the production argv (exit {}; stderr {})",
+        production.status,
+        String::from_utf8_lossy(&production.stderr)
+    );
 }

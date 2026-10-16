@@ -96,14 +96,18 @@ Codex Adapter 使用 stdio App Server，覆盖 `initialize`、`config/read`、`m
 
 | 参数 | 作用 |
 | --- | --- |
-| `--tools Read,Grep,Glob` | **真实工具白名单**：模型没有写文件/执行命令的工具可调用 |
-| `--restricted` | 额外移除可执行命令/代码的内置工具，忽略 user/project/local settings（用户 hooks 不加载），拒绝 bypassPermissions |
+| `--tools Read,Grep,Glob` | **真实工具白名单**：Bash / Edit / Write / NotebookEdit / WebFetch / Task 都不存在，模型没有写文件或执行命令的工具 |
+| `--setting-sources user` | 只加载用户级 settings；项目 / 本地 settings 一律忽略，仓库无法注入 hooks、MCP 或插件 |
 | `--strict-mcp-config` | 不加载任何外部 MCP server |
 | `--disable-slash-commands` | 关闭 skills |
 | `--permission-prompts none` | 任何需要审批的动作直接被拒绝 |
 | `--session-id <uuid>` / `--resume <uuid>` | 新建 / 继续会话 |
 
-只读不是提示词约定：每个 Turn 的 `init` 事件会被校验，`tools` 必须落在白名单内且 `mcp_servers` 必须为空，否则该 Turn 直接失败（`protocol`）。`resume_thread` 校验 cwd 与 UUID 形式；会话是否真实存在由 CLI 的 `--resume` 裁决，不猜测私有磁盘格式。`interrupt` 是终止该次 `--print` 进程（官方没有 interrupt RPC），终止后由 EOF 报告 `interrupted`，服务据 `cancel_requested` 记为 `cancelled`。认证复用本机 Claude Code 登录：连接前用官方 `claude auth status` 预检，未登录（或存在 `ANTHROPIC_API_KEY` 等本机认证环境）时明确返回 `adapter` 错误，**不**读取、输出、复制凭据，也不切换账号或模型。
+只读不是提示词约定：每个 Turn 的 `init` 事件会被校验，`tools` 必须落在白名单内且 `mcp_servers` 必须为空，否则该 Turn 直接失败（`protocol`）。
+
+**为什么不用 `--restricted`**：它会把用户级 settings 一起忽略，而第三方 Anthropic 兼容端点（DeepSeek 等）正是通过用户 settings 的 `env`（或进程环境变量）配置的。实测 `--restricted` 下 model 回退到内置默认模型并认证失败，等于让 Claude Code 只能跑官方登录。`--setting-sources user` 保留了"排除项目 / 本地配置"这条安全边界（真实 CLI 探针确认仓库级 hook 不会执行），同时让用户自己的模型配置生效。
+
+明确边界：读取类工具不再被限制在 cwd 内（仍只读，无写入能力）；用户级 hooks / 插件会生效——那是机器主人自己的配置，与凭据同一信任级别。`resume_thread` 校验 cwd 与 UUID 形式；会话是否真实存在由 CLI 的 `--resume` 裁决，不猜测私有磁盘格式。`interrupt` 是终止该次 `--print` 进程（官方没有 interrupt RPC），终止后由 EOF 报告 `interrupted`，服务据 `cancel_requested` 记为 `cancelled`。认证复用本机 Claude Code 登录：连接前用官方 `claude auth status` 预检，未登录（或存在 `ANTHROPIC_API_KEY` 等本机认证环境）时明确返回 `adapter` 错误，**不**读取、输出、复制凭据，也不切换账号或模型。
 
 ### 六个 CLI 入口
 
@@ -263,8 +267,8 @@ MCP 分页见第 7 节：默认返回完整回答，显式分页时给出稳定�
 | 持久化 | `agent_sessions` / `agent_tasks` 通过 SQLite 落库；`user_version` 保持 12；完成结果在新连接池/新服务实例下可读；外键拒绝孤儿 Task；`storage` 失败时任务降级为 `failed`，绝不报成功 |
 | 重启恢复 | 非终态任务先降为 `interrupted` 并落库；Codex 经 `thread/read` 只读对账，只有真实完成且带完整回答才升级；Claude 无官方只读终局入口，保持 `interrupted` |
 | Claude Adapter（进程级） | 8 项通过：真实 argv 无写/命令工具、init 白名单校验、真实进程执行 Turn、`--resume` 续会、真实取消、认证预检拒绝、CLI 错误如实上报 |
-| Claude 真实 CLI 只读边界 | PASS：真实 CLI `2.1.287` 对生产 argv 的 `init` 事件只报告 `["Glob","Grep","Read"]`、`mcp_servers: []`、`session_id` 等于请求值（与登录状态无关） |
-| Claude 真实推理 | **BLOCKED**：本机 `claude auth status` 报告 `loggedIn: false` / `authMethod: none`，真实 MCP 任务以明确的 `adapter` 认证错误失败。需先 `claude auth login` 才能完成真实推理验收 |
+| Claude 真实 CLI 只读边界 | PASS：真实 CLI `2.1.287` 对生产 argv 的 `init` 事件只报告 `["Glob","Grep","Read"]`、`mcp_servers: []`、`session_id` 等于请求值；仓库级 settings hook 不执行 |
+| Claude 真实推理 | PASS：本机 Claude Code 已按官方方式接到 DeepSeek（用户 settings `env`），经 MCP 完整跑通 run / continue / cancel，`init` 报告 `model=deepseek-flash[1m]` |
 | MCP 端到端 | 8 项通过：`initialize` / `tools/list` / 五个工具、长任务不阻塞（提交 <800ms）、分页精确重组、客户端退出后任务继续与重连查询、服务重启后结果可读、取消为真实 provider 中断、业务错误与参数错误区分 |
 | stdout 纯净 | PASS：真实二进制 `mcp-agent` 在 stdin 关闭时 stdout 为空、stderr 有日志 |
 | 全库 headless lib | 1415 项通过、1 项真实权限测试默认忽略 |
@@ -291,7 +295,7 @@ AGENTGATE_CODEX_BIN=/opt/homebrew/bin/codex cargo test \
 
 1. CodeLeveler + Pi 端到端联合验收：把 `agentgate-serve mcp-agent` 注册为 MCP server，跑真实的“审计 → 查询 → 续会 → 取消”流程。
 2. Windows 原生验收（Named Pipe、`first_pipe_instance` 单实例、真实 CLI 路径发现）；当前 Windows 代码路径未编译验证。
-3. Claude Code 真实推理验收：本机需要先 `claude auth login`；本轮只完成真实 CLI 的只读工具边界探针与进程级 Adapter 验证。
+3. Claude Code 真实推理：已完成（DeepSeek 官方接入方式，见 [验收记录](agent-gateway-verification.md)）。若改用官方登录，`claude auth login` 后同样直接可用。
 4. 长时间运行的容量管理（事件归档/清理）与桌面管理 UI，均不在当前范围内。
 
 若需要改变核心接口，先提交具体问题、复现证据和兼容方案，避免由上层重写本轮生命周期。
