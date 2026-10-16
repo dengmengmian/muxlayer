@@ -181,6 +181,19 @@ enum Commands {
         #[arg(long)]
         mark: bool,
     },
+    /// Run the MuxLayer Agent Service (local IPC host for Codex / Claude Code tasks).
+    /// Independent of any MCP client: tasks keep running when the client exits.
+    #[command(name = "agent-service")]
+    AgentService {
+        /// Exit after this many seconds without connected clients and without running tasks
+        /// (0 = never, the default).
+        #[arg(long, default_value = "0")]
+        idle_timeout: u64,
+    },
+    /// Run the MCP stdio server that exposes the Agent Service tools
+    /// (agent_list, agent_run, agent_continue, agent_status, agent_cancel).
+    #[command(name = "mcp-agent")]
+    McpAgent,
 }
 
 fn get_db_dir(cli: &Cli) -> PathBuf {
@@ -310,26 +323,34 @@ fn provider_presets() -> std::collections::HashMap<&'static str, (&'static str, 
     .collect()
 }
 
-/// 初始化结构化日志（JSON to stdout）。AGENTGATE_LOG env-filter 控制级别，
+/// 初始化结构化日志（JSON）。AGENTGATE_LOG env-filter 控制级别，
 /// 默认 info（含 reqwest=warn，避免每次请求一条 hyper trace）。
 /// 输出 schema: {timestamp, level, target, fields, message}。
-fn init_tracing() {
+///
+/// MCP stdio 模式必须写 stderr：stdout 只允许出现 MCP 协议消息，否则会污染协议流。
+fn init_tracing(to_stderr: bool) {
     use tracing_subscriber::{fmt, EnvFilter};
     let filter = EnvFilter::try_from_env("AGENTGATE_LOG")
         .unwrap_or_else(|_| EnvFilter::new("info,reqwest=warn,hyper=warn,h2=warn,rustls=warn"));
-    fmt()
+    let builder = fmt()
         .with_env_filter(filter)
         .json()
         .with_current_span(false)
         .with_span_list(false)
         .with_target(true)
-        .flatten_event(true)
-        .init();
+        .flatten_event(true);
+    if to_stderr {
+        builder.with_writer(std::io::stderr).init();
+    } else {
+        builder.init();
+    }
 }
 
 #[tokio::main]
 async fn main() {
-    init_tracing();
+    // mcp-agent 的 stdout 是 MCP 协议流，日志必须先于解析切到 stderr。
+    let mcp_mode = std::env::args().any(|arg| arg == "mcp-agent");
+    init_tracing(mcp_mode);
     let cli = Cli::parse();
 
     match &cli.command {
@@ -415,6 +436,10 @@ async fn main() {
         Some(Commands::HealthCheck { timeout, mark }) => {
             cmd_health_check(&cli, *timeout, *mark).await
         }
+        Some(Commands::AgentService { idle_timeout }) => {
+            cmd_agent_service(&cli, *idle_timeout).await
+        }
+        Some(Commands::McpAgent) => cmd_mcp_agent(&cli).await,
         None => {
             // Default: serve. env-based TLS（用户不传子命令 + 仅靠 env 配置 TLS）。
             let host = agentgate_lib::compat::env_value("MUXLAYER_HOST", "AGENTGATE_HOST")
@@ -460,6 +485,79 @@ fn resolve_provider_api_key(cli_value: Option<&str>, use_env: bool) -> String {
             eprintln!("Error: {e}");
             std::process::exit(1);
         }
+    }
+}
+
+/// 启动 MuxLayer Agent Service：注册可用 Adapter、恢复持久化状态、监听本地 IPC。
+async fn cmd_agent_service(cli: &Cli, idle_timeout: u64) {
+    use agentgate_lib::agent_gateway::claude::ClaudeFactory;
+    use agentgate_lib::agent_gateway::codex::CodexFactory;
+    use agentgate_lib::agent_gateway::ipc;
+    use std::sync::Arc;
+
+    let db_dir = get_db_dir(cli);
+    let paths = ipc::ServicePaths::new(&db_dir);
+    let mut codex: Option<Arc<dyn agentgate_lib::agent_gateway::AdapterFactory>> = None;
+    let mut claude: Option<Arc<dyn agentgate_lib::agent_gateway::AdapterFactory>> = None;
+    match CodexFactory::discover(None).await {
+        Ok(factory) => codex = Some(Arc::new(factory)),
+        Err(e) => eprintln!("Codex agent unavailable: {}", e.message),
+    }
+    match ClaudeFactory::discover(None).await {
+        Ok(factory) => claude = Some(Arc::new(factory)),
+        Err(e) => eprintln!("Claude Code agent unavailable: {}", e.message),
+    }
+    if codex.is_none() && claude.is_none() {
+        eprintln!("No coding agent CLI available (Codex / Claude Code); nothing to serve.");
+        std::process::exit(1);
+    }
+    let store = match ipc::open_store(&db_dir) {
+        Ok(store) => store,
+        Err(e) => {
+            eprintln!("Failed to open agent database: {}", e.message);
+            std::process::exit(1);
+        }
+    };
+    let service = match ipc::build_service(codex, claude, store).await {
+        Ok(service) => service,
+        Err(e) => {
+            eprintln!("Failed to start agent service: {}", e.message);
+            std::process::exit(1);
+        }
+    };
+    let idle = (idle_timeout > 0).then(|| std::time::Duration::from_secs(idle_timeout));
+    match ipc::serve(
+        service,
+        ipc::ServiceHostConfig {
+            paths,
+            idle_timeout: idle,
+        },
+    )
+    .await
+    {
+        Ok(()) => eprintln!("Agent service stopped."),
+        Err(e) => {
+            eprintln!("Agent service failed: {} ({:?})", e.message, e.code);
+            std::process::exit(1);
+        }
+    }
+}
+
+/// 运行 MCP stdio server；服务不在线时自动拉起并等待就绪。
+async fn cmd_mcp_agent(cli: &Cli) {
+    use agentgate_lib::agent_gateway::mcp;
+    let db_dir = get_db_dir(cli);
+    let executable = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(e) => {
+            eprintln!("Cannot resolve current executable: {e}");
+            std::process::exit(1);
+        }
+    };
+    let gateway = mcp::Gateway::new(db_dir, executable);
+    if let Err(e) = mcp::serve_stdio(gateway).await {
+        eprintln!("MCP agent gateway failed: {}", e.message);
+        std::process::exit(1);
     }
 }
 

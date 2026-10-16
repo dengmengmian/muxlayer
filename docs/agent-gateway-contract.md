@@ -1,14 +1,20 @@
-# Agent Gateway 第一阶段接口契约
+# Agent Gateway 接口契约（第二阶段）
 
-本文件对应 `src-tauri/src/agent_gateway/`。本阶段提供进程内 Rust 库接口；MCP、IPC、SQLite、Claude Code、桌面 UI 和跨服务重启恢复均未实现。下文标注“下一轮”的部分是接入约定，不表示已有网络服务。
+本文件对应 `src-tauri/src/agent_gateway/`。第二阶段在保留第一阶段语义的前提下补齐：SQLite 持久化、Claude Code Adapter、本地 IPC、MCP stdio Server 五个工具、Agent Service 独立生命周期与重启恢复。桌面管理 UI、云端能力、CodeLeveler 端到端联调仍不在范围内。
 
 ## 1. 架构与职责
 
 | 模块 | 职责 |
 | --- | --- |
-| `protocol.rs` | 可序列化请求、Task / Session 记录、状态与错误；Adapter trait |
-| `service.rs` | Agent 注册、创建任务、Session 排他、状态转换、取消协调、完整结果保存、关闭 |
-| `codex.rs` | 官方 Codex CLI App Server、JSON-RPC 请求关联、Thread / Turn、事件与结果、Native 配置校验、子进程清理 |
+| `protocol.rs` | 可序列化请求、Task / Session 记录、状态与错误；Adapter trait；`agent_status` 分页投影 |
+| `service.rs` | Agent 注册、创建任务、Session 排他、状态转换、取消协调、完整结果保存、写穿持久化、重启对账、关闭 |
+| `store.rs` | Task / Session 持久化。SQLite 是唯一真相源；`MemoryStore` 仅供 `AgentService::new` 与单元测试 |
+| `codex.rs` | 官方 Codex CLI App Server、JSON-RPC 请求关联、Thread / Turn、事件与结果、Native 配置校验、只读对账、子进程清理 |
+| `claude.rs` | 官方 Claude Code CLI `--print --output-format stream-json`、工具白名单强制只读、会话续接、真实取消 |
+| `ipc.rs` | 本地 IPC（Unix Domain Socket / Windows Named Pipe）、token 认证、单实例所有权、服务宿主与按需拉起 |
+| `mcp.rs` | MCP stdio Server：`initialize` / `tools/list` / `tools/call`，五个工具，参数校验与错误映射 |
+
+数据流：`MCP Client → MCP stdio → 本地 IPC → Agent Service → Codex / Claude Code`。
 
 Agent Gateway 独立于 `gateway/` Model Gateway。它不经过 Provider 选路或模型协议转换，不使用 `gateway/session_store.rs` 的模型响应缓存。`tools/mcp.rs` 管理客户端配置，`session_sync/codex.rs` 解析历史日志，均不承担实时 Agent 执行。
 
@@ -26,6 +32,9 @@ Agent Gateway 独立于 `gateway/` Model Gateway。它不经过 Provider 选路�
 | `session(&session_id)` | `Result<SessionRecord, AgentError>`；返回当前完整会话快照 |
 | `cancel(&task_id).await` | `Result<TaskRecord, AgentError>`；返回请求后的快照，可能仍在执行，必须继续查询终态 |
 | `shutdown().await` | `Result<(), AgentError>`；停止接收任务，中断未完成任务并关闭 Adapter |
+| `with_store(factories, store)` | `Result<AgentService, AgentError>`；持久化入口。装载历史记录，并把重启时仍非终态的任务降为 `interrupted` |
+| `reconcile_interrupted().await` | `Result<usize, AgentError>`；用官方协议查证那些任务的真实终局，只有 provider 明确确认 `completed` 且带完整回答才升级 |
+| `running_task_ids()` | `Result<Vec<String>, AgentError>`；非终态任务 ID，供服务生命周期决策 |
 
 `RunRequest = { agent, cwd, prompt, permission }`；`ContinueRequest = { session_id, prompt }`；`Submission = { task_id, session_id }`。`cwd` 必须是存在的目录，Service 将其规范化。空白 prompt 被拒绝。只有 `read_only` 开放；虽然枚举保留 `execute`，提交它始终返回 `unsupported_permission`。
 
@@ -59,7 +68,7 @@ Agent Gateway 独立于 `gateway/` Model Gateway。它不经过 Provider 选路�
 
 ## 5. Adapter 接口
 
-`AdapterFactory` 提供 `descriptor()` 和异步 `connect()`；后者返回 `Arc<dyn AgentAdapter>`。每条 Adapter 连接专属于一个 Service Session。
+`AdapterFactory` 提供 `descriptor()`、异步 `connect()`（返回 `Arc<dyn AgentAdapter>`）和带默认实现的 `reconcile(session, task)`（只读对账，默认返回 `None`）。每条 Adapter 连接专属于一个 Service Session。
 
 | `AgentAdapter` 方法 | 语义 |
 | --- | --- |
@@ -70,6 +79,7 @@ Agent Gateway 独立于 `gateway/` Model Gateway。它不经过 Provider 选路�
 | `interrupt(thread_id, turn_id)` | 发送真实中断；RPC 确认不代表终态 |
 | `shutdown()` | 关闭进程和通信资源 |
 
+`AdapterFactory::reconcile` 只在服务重启恢复时使用：它必须通过官方协议**只读**查证那个 Turn 的真实终局，禁止借对账重新执行任务。返回 `None` 表示无法查证，服务保留 `interrupted`。
 这些异步方法返回 `BoxFuture<..., Result<..., AgentError>>`。`next_event` 与 `interrupt` 必须可以并发，避免等待事件时阻塞取消。Adapter 的 Drop 负责子进程资源回收。
 
 `AdapterEvent` 分三类：`Progress { thread_id, turn_id, kind, message }`、`TurnFinished { thread_id, turn_id, outcome, final_answer, error }`、`ProcessExited { message }`。Service 仅接受与当前 Thread / Turn 匹配的执行事件；`TurnOutcome::Unknown` 必须失败，不得转换为成功。
@@ -78,43 +88,148 @@ Codex Adapter 使用 stdio App Server，覆盖 `initialize`、`config/read`、`m
 
 工厂入口固定为 `CodexFactory::new(Option<PathBuf>) -> Self`（延迟连接）、`CodexFactory::discover(Option<PathBuf>).await -> Result<Self, AgentError>`（验证公开 CLI 后构造）。`None` 按 `AGENTGATE_CODEX_BIN` 和 PATH 发现 CLI。上层优先调用 `discover` 成功后注册。
 
+### Claude Code Adapter
+
+`ClaudeFactory` 与 `CodexFactory` 同形（`new` / `discover`，`None` 按 `AGENTGATE_CLAUDE_BIN` 和 PATH 发现）。Adapter ID 为 `claude-code`，能力：`read_only`、支持续会、支持取消。
+
+程序化入口是官方 `claude --print --output-format stream-json --verbose`，每个 Turn 一个进程：
+
+| 参数 | 作用 |
+| --- | --- |
+| `--tools Read,Grep,Glob` | **真实工具白名单**：模型没有写文件/执行命令的工具可调用 |
+| `--restricted` | 额外移除可执行命令/代码的内置工具，忽略 user/project/local settings（用户 hooks 不加载），拒绝 bypassPermissions |
+| `--strict-mcp-config` | 不加载任何外部 MCP server |
+| `--disable-slash-commands` | 关闭 skills |
+| `--permission-prompts none` | 任何需要审批的动作直接被拒绝 |
+| `--session-id <uuid>` / `--resume <uuid>` | 新建 / 继续会话 |
+
+只读不是提示词约定：每个 Turn 的 `init` 事件会被校验，`tools` 必须落在白名单内且 `mcp_servers` 必须为空，否则该 Turn 直接失败（`protocol`）。`resume_thread` 校验 cwd 与 UUID 形式；会话是否真实存在由 CLI 的 `--resume` 裁决，不猜测私有磁盘格式。`interrupt` 是终止该次 `--print` 进程（官方没有 interrupt RPC），终止后由 EOF 报告 `interrupted`，服务据 `cancel_requested` 记为 `cancelled`。认证复用本机 Claude Code 登录：连接前用官方 `claude auth status` 预检，未登录（或存在 `ANTHROPIC_API_KEY` 等本机认证环境）时明确返回 `adapter` 错误，**不**读取、输出、复制凭据，也不切换账号或模型。
+
+### 六个 CLI 入口
+
+| 命令 | 作用 |
+| --- | --- |
+| `agentgate-serve agent-service [--idle-timeout N]` | 启动 Agent Service（独立进程；默认永不因空闲退出） |
+| `agentgate-serve mcp-agent` | 启动 MCP stdio Server；服务不在线时自动拉起并等待就绪 |
+
+两者都不需要 GUI。CodeLeveler / Pi 注册 `agentgate-serve mcp-agent` 即可接入。
+
 ### Native 认证边界
 
 Gateway 复用现有 Codex 认证，继承当前 `CODEX_HOME`、credential store 和原生认证环境。它不管理登录，不调用 `account/read` 设置登录门槛，不创建独立认证目录、不强制文件存储，也不要求先运行登录命令。Codex 能调用就执行；缺少有效认证、服务不可达或执行失败时，通过正常 Task 错误返回。
 
 Gateway 不手动修改或复制 config.toml、auth.json 或 OAuth 凭据；配置隔离全部是子进程级覆盖。用户允许官方 Codex 在正常使用中自动刷新及保存认证。官方原生使用现有 ChatGPT / API 认证不属于 Gateway 的重试切换；Gateway 不在失败后更换认证方式或偷偷切到自定义 Provider。参见 [Codex 官方认证文档](https://learn.chatgpt.com/docs/auth#credential-storage)、[官方配置参考](https://learn.chatgpt.com/docs/config-file/config-reference) 及官方源码快照的 [认证刷新管理](https://github.com/openai/codex/blob/86ee40c3801a8c4fbb35b1159c32da1447cf09d9/codex-rs/login/src/auth/manager.rs) 与 [凭据存储](https://github.com/openai/codex/blob/86ee40c3801a8c4fbb35b1159c32da1447cf09d9/codex-rs/login/src/auth/storage.rs)。源码快照是补充审计依据，不代表本机 CLI 构建的确切 commit。
 
-## 6. 下一轮 SQLite 存储边界
+## 6. SQLite 存储边界（已实现）
 
-当前全部记录只在 Service 内存中，进程结束即丢失。`TaskRecord` / `SessionRecord` 是存储 DTO，不是已经接入数据库的 Repository。下一轮须增加实际事务存储与恢复入口，不能只在 MCP 层复制一套状态。
+复用 MuxLayer 现有 SQLite 基础设施（`storage::db::DbPool` + `storage/migrations.rs`），**不修改** Model Gateway 的 `gateway/session_store.rs`。
 
-至少实现：创建 Session 与初始 Task；按 ID 读取记录；原子检查 Session 空闲并附加 Task；保存 Thread / Turn 映射；保存事件、取消意图、完整结果和错误；原子完成 Task 并清空 Session 占位；查询非终态 Task 并执行重启对账。数据库外键为 Task → Session，`task_ids` 可由有序任务关系派生，但对外字段保持一致。
+### 表结构
 
-Child、锁、channel、JoinHandle、Adapter 实例均为运行时资源，不能序列化。不要持久化 OAuth 凭据。重启后不能把旧 `queued/running` 直接标为成功；须通过官方协议查证，无法查证时明确记录 `interrupted` 及原因。跨 Service 重启恢复尚无实现；引入存储钩子和恢复入口前，先按这些字段与核心维护者核对。
+`user_version` 保持 **12**：2.0.5 及更早版本看到更高版本会拒绝启动，而空的新表对旧版本完全无害。因此新增表走 `migrations::ensure_additive_tables`，每次启动 `CREATE TABLE IF NOT EXISTS` 幂等补齐，不 bump 版本。
 
-## 7. 下一轮 MCP 五个工具
+| `agent_sessions` | 说明 |
+| --- | --- |
+| `session_id` TEXT PK | 不透明 ID |
+| `agent` TEXT | Adapter ID（`codex-native` / `claude-code`） |
+| `provider_session_id` TEXT | 真实 Provider Thread / Session 映射 |
+| `cwd` TEXT | 规范化后的目录 |
+| `mode` TEXT | `read_only` / `execute` |
+| `active_task_id` TEXT | 运行中的互斥占位，终态清空 |
+| `created_at` / `updated_at` TEXT | UTC RFC 3339 |
 
-以下是建议采用的 JSON 业务 payload，字段直接对应上述 Rust 类型；当前没有 MCP Server 或工具注册。
+| `agent_tasks` | 说明 |
+| --- | --- |
+| `task_id` TEXT PK | 不透明 ID，与 Session ID 不混用 |
+| `session_id` TEXT NOT NULL → `agent_sessions(session_id)` ON DELETE CASCADE | 一个 Task 只属于一个 Session |
+| `provider_turn_id` TEXT | 真实 Turn 映射 |
+| `status` TEXT | `queued/running/completed/failed/cancelled/interrupted` |
+| `prompt` TEXT | 原始请求 |
+| `final_answer` TEXT | 完整最终回答（不裁剪） |
+| `error_json` TEXT | `AgentError` JSON |
+| `events_json` TEXT NOT NULL DEFAULT '[]' | 过程事件 |
+| `cancel_requested` INTEGER | 取消意图 |
+| `created_at` / `updated_at` / `completed_at` TEXT | 时间字段 |
 
-| 工具 | 请求 | 成功结果 |
+索引：`idx_agent_tasks_session(session_id, created_at)`、`idx_agent_tasks_status(status)`。
+
+### 写入规则
+
+- 写穿：`run` / `submit` 先落库再改内存；持久化失败直接返回 `storage` 错误，不产生只在内存里存在的记录。
+- 原子完成：`finish_task` 在同一个事务里写 Task 终态 + 清空 Session 占位。
+- 终态结果不可丢：若 `completed` 的落库失败，任务降级为 `failed`（`storage` 错误）并重试一次；**绝不允许「结果没落库但对外报成功」**。
+- 过程事件按 25 条为一批刷盘，终态与状态转换（Thread / Turn / cancel 意图）立即写入。
+- `task_ids` 由 `agent_tasks` 有序关系派生，不单独存储。
+- Child / 锁 / channel / JoinHandle / Adapter 实例都是运行时资源，不持久化；不持久化任何凭据。
+
+### 重启恢复规则
+
+- 启动时装载全部记录；仍处于 `queued` / `running` 的任务**先**降级为 `interrupted`，错误码 `process_exited`，原因写明「服务在任务终态前重启，provider 执行状态未知」，并清空对应 Session 占位。
+- 随后由 `reconcile_interrupted()` 逐个对账：Codex 用新的官方 App Server 调 `thread/read` 查原 Turn；只有真实 `completed` 且拿到完整最终回答才升级为 `completed`；`inProgress` / 未知状态保持 `interrupted`；查证失败只记录，不伪装完成。
+- Claude Code 的会话数据是 CLI 私有磁盘格式，没有官方只读终局查询入口，因此不做猜测式解析，一律保持 `interrupted`。
+- 绝不重新执行任务来「恢复」。
+
+## 7. MCP 五个工具（已实现）
+
+MCP stdio Server 只做请求解析、参数校验、调用 Agent Service（经 IPC）、结果序列化与错误映射。它不持有任务状态机，不重试业务错误。
+
+| 工具 | 请求 | 结果 |
 | --- | --- | --- |
 | `agent_list` | `{}` | `{ "agents": [AgentDescriptor] }` |
-| `agent_run` | `{ "agent": "codex-native", "cwd": "/absolute/repo", "prompt": "审计权限架构", "permission": "read_only" }` | `Submission` |
+| `agent_run` | `{ "agent": "codex-native", "cwd": "/absolute/repo", "prompt": "审计权限架构", "permission": "read_only" }` | `Submission`（立即返回，不等执行完成） |
 | `agent_continue` | `{ "session_id": "...", "prompt": "继续调查第一个问题" }` | `Submission` |
-| `agent_status` | `{ "task_id": "..." }` | 完整 `TaskRecord` |
-| `agent_cancel` | `{ "task_id": "..." }` | 请求取消后的完整 `TaskRecord` |
+| `agent_status` | `{ "task_id": "...", "final_answer_offset"?, "final_answer_limit"?, "events_offset"?, "events_limit"? }` | 完整 `TaskRecord` + 分页元数据 |
+| `agent_cancel` | `{ "task_id": "..." }` | 请求取消后的 `TaskRecord`（**不是**终态） |
 
-下一轮将 `AgentError` 转为 MCP tool error，保留原 code 和 message。`agent_status` 返回 `failed/interrupted/cancelled` 也是一次成功查询，不能把这些业务终态包装成 MCP 传输失败。调用方通过查询终态获取最终结果。
+- `agent_run` / `agent_continue` 只提交任务，必须快速返回；执行在 Agent Service 后台进行。
+- `AgentError` 映射为 `isError: true` 的工具结果，文本是 `{"error":{"code","message"}}`，保留原 code 与 message。
+- `agent_status` 返回 `failed/interrupted/cancelled` 也是一次成功查询，不是 MCP 传输失败。
+- 未知工具或参数缺失 → JSON-RPC `-32602`；未知方法 → `-32601`；解析失败 → `-32700`。
+- 协议方法：`initialize`、`notifications/initialized`、`ping`、`logging/setLevel`、`tools/list`、`tools/call`。`initialize` 在 `2024-11-05` / `2025-03-26` / `2025-06-18` 中原样回显，否则回落到 `2025-06-18`。
+- stdout 只允许协议消息；tracing 在 `mcp-agent` 模式写入 stderr（有自动化测试断言 stdout 为空）。
 
-## 8. 下一轮 IPC 契约
+### 分页（不静默截断）
 
-当前没有监听器、socket、stdio IPC 或桌面命令。本阶段不选择传输机制。下一轮建议复用相同 payload，使用以下 envelope，并在接入前补齐本地认证、请求大小和连接生命周期规则：
+`final_answer` 默认返回全部内容。显式给出 `final_answer_limit` 时按 Unicode 字符（scalar value）切片，并同时返回：
+
+| 字段 | 含义 |
+| --- | --- |
+| `final_answer_offset` | 本次切片起点（被 clamp 到总长度内） |
+| `final_answer_total_chars` | 完整回答的字符总数 |
+| `final_answer_next_offset` | 下一页起点；`null` 表示已经取完 |
+| `final_answer_complete` | 是否已取完 |
+
+按 `offset` 递增顺序拼接各页 `final_answer` 即可精确还原原文（有自动化测试覆盖中英文混排的重组）。过程事件默认不返回，只报告 `events_total` 与 `events_next_offset`（非 0 表示仍可读）；给出 `events_limit` 时才返回 `events` 并置 `events_included: true`。
+
+## 8. 本地 IPC 契约（已实现）
 
 ```json
 {"id":"caller-request-id","method":"agent_run","params":{"agent":"codex-native","cwd":"/absolute/repo","prompt":"审计","permission":"read_only"}}
 ```
 
-响应仅二选一：`{"id":"caller-request-id","result":Submission}` 或 `{"id":"caller-request-id","error":{"code":"busy","message":"..."}}`。其余方法与 MCP 表一致；关联 ID 由调用方提供，与 Task / Session ID 无关。该 envelope 是未来 IPC 约定，不是 Codex App Server 的线协议。
+响应仅二选一：`{"id":"caller-request-id","result":{...}}` 或 `{"id":"caller-request-id","error":{"code":"busy","message":"..."}}`。`id` 由调用方提供，与 Task / Session ID 无关。
+
+| 传输 | 路径 |
+| --- | --- |
+| macOS / Linux | Unix Domain Socket：`<db_dir>/agent-service/agent-service.sock`，权限 0600，目录 0700；路径超过 `sun_path` 上限时回落到用户私有临时目录（目录哈希命名） |
+| Windows | Named Pipe：`\\.\pipe\muxlayer-agent-<db_dir 哈希>`，`first_pipe_instance` 保证单实例 |
+
+| 方法 | 说明 |
+| --- | --- |
+| `hello` | `{"token": "...", "client": "mcp"}`；token 由服务启动时生成并写入 0600 文件，客户端读同一文件。失败返回 `unauthorized` |
+| `agent_list` / `agent_run` / `agent_continue` / `agent_status` / `agent_cancel` | 语义与 MCP 工具一一对应，参数相同（`agent_status` 直接接受分页参数） |
+| `agent_session` | `{"session_id": "..."}` → `SessionRecord`，用于校验续会映射 |
+| `service_status` | `{"service","version","running_task_ids","agents"}` |
+| `service_shutdown` | 优雅停止服务（先中断未完成任务再清理 socket / token / lock） |
+
+规则：
+
+- 单条消息上限 32 MiB，超限明确报错，不做静默截断。
+- 客户端每次请求 30 秒超时；服务端所有方法都必须快速返回（任务在后台执行）。
+- 连接断开只影响该连接：任务属于服务端，继续执行；重连后可用原 `task_id` / `session_id` 继续。
+- 连接之间互不阻塞（每个连接独立任务）。
+- 单实例所有权：socket 可连通或 lock 文件的 pid 存活时，第二个实例以 `busy` 拒绝启动，不允许两个实例同时拥有同一批 Running Task。
+- IPC 层不重新定义 Task 语义，也不复制状态机。
 
 ## 9. 错误语义
 
@@ -128,7 +243,9 @@ Child、锁、channel、JoinHandle、Adapter 实例均为运行时资源，不�
 | `closed` | Service 已关闭 |
 | `adapter` | Adapter 连接、认证、配置或执行失败；根据 message 排查 |
 | `protocol` | 响应 / 事件异常、未知结果、成功但缺失最终回答 |
-| `process_exited` | App Server 退出；相关任务为 `interrupted` |
+| `process_exited` | App Server / 子进程退出，或服务重启；相关任务为 `interrupted` |
+| `storage` | 持久化失败。终态结果未能落库时不允许报告成功 |
+| `unauthorized` | 本地 IPC 未通过 token 认证 |
 
 错误 message 是诊断文本，不作为机器分支依据，不保证语言或逐字稳定。不能包含 token、auth.json 内容或完整敏感配置。失败正常返回，不由 Gateway 偷偷改用模型代理或另一种认证。
 
@@ -136,40 +253,45 @@ Child、锁、channel、JoinHandle、Adapter 实例均为运行时资源，不�
 
 Service 内部通过 `status(task_id)` 返回完整 `final_answer`，不分页、不截断。过程事件不能代替最终回答。成功必须同时满足 Turn 成功、回答存在、内容非空、提取无误；仅收到 `turn/completed` 不够。Adapter 仅提取最终 agentMessage，排除 commentary 和 partial_answer，保留全部最终消息；若完成通知未包含完整 items，就读取原 Thread 的匹配 Turn，拒绝 summary 视图，不依赖固定 sleep。失败或取消也可能带部分内容，应保留原真实状态。
 
-MCP 分页尚未实现。下一轮若增加分页，应单独提供稳定的结果版本及明确的 offset / limit 单位、总长度、下一页位置和完成标记，读取不可变终态结果。不能在现有 `final_answer` 字段静默裁剪。当前内存保存没有数据库耐久性，长时间运行的容量管理也不属于本阶段承诺。
+MCP 分页见第 7 节：默认返回完整回答，显式分页时给出稳定的字符单位、总长度、下一页位置与完成标记，只读取已持久化的终态结果。`final_answer` 字段不会静默裁剪。长时间运行的容量管理（事件清理/归档）仍不在本阶段承诺内。
 
 ## 11. 已验证与待验证
 
 | 验证项 | 当前证据及边界 |
 | --- | --- |
-| 独立真实协议 probe | 官方 CLI `0.162.1`、官方来源隔离及 ChatGPT 认证、`gpt-6.1-sol`、只读文件读取与写入阻断、原 Thread 续接、真实 interrupt 通过；该 probe 不能代替最终 Service 验收 |
-| Service 单元测试 | 14 组通过，覆盖状态、长结果、连续会话、并发、取消竞态、连接失败、子进程退出及资源清理 |
-| Adapter 测试 | 最终原生认证继承、Native 配置拒绝、最终消息提取、MCP 禁用及传输关联测试通过 |
-| 全库 headless lib | 最终 1392 项通过、1 项真实权限测试默认忽略；该权限测试已显式执行通过。独立 verifier 此前验证包含 Model Gateway 与 Agent Gateway 的 504 项相关回归通过 |
-| 格式与静态检查 | `cargo fmt --manifest-path src-tauri/Cargo.toml --check` 和 headless `cargo clippy --lib -- -D warnings` 通过。扩大到 `--lib --tests` 会报告 `cli/serve.rs` 的既有 lint：754 行 `print_literal`、759 行 `unnecessary_map_or`、845 行 `too_many_arguments`；未扩大本轮修改范围 |
-| 最终真实 Service 集成 | PASS，macOS 官方 CLI `0.162.1`，1 项通过、76.15 秒：源码审计完整回答 1177 字符，原 Thread 续审 634 字符；观察实际 `sleep 120` 开始后取消，真实终态 `cancelled` |
-| 真实只读执行 | PASS，官方 `exec` 路径 1 项通过、0.11 秒：读取退出码 0，覆盖与新建均退出码 1 / `Operation not permitted`；原文件未变、新文件不存在 |
-| 审计无意外写入 | 审计前后 692 个文件指纹和 Git 状态相同；本次 config.toml / auth.json 哈希相同。官方未来自动刷新认证仍属允许行为 |
-| Windows | 设计使用跨平台 Rust / 官方 CLI 接口，未做 Windows 原生验收 |
-| 进程资源 | shutdown 对活动 Turn 先发送 interrupt，最多等待 2 秒观察对应真实终态，再 kill / wait App Server；未确认时返回显式错误。执行中关闭后是否遗留后代命令进程，尚需真实验收 |
-| 现有 protocol fixture | 当前 38 通过、2 失败；在原 HEAD `7e88df1` 的归档副本复现同样失败：`metrics_requires_token_only_and_health_does_not` 的 Host 限制断言收到 200，`unauthenticated_request_is_rejected_before_body_is_read` 超过 5 秒超时。属于既有失败，未在本轮扩大修改范围；其他 fixture 16 通过 |
+| 第一阶段真实 Codex Service 集成 | PASS，macOS 官方 CLI `0.162.1`；本轮复跑仍通过（67.29 秒），无回归 |
+| 持久化 | `agent_sessions` / `agent_tasks` 通过 SQLite 落库；`user_version` 保持 12；完成结果在新连接池/新服务实例下可读；外键拒绝孤儿 Task；`storage` 失败时任务降级为 `failed`，绝不报成功 |
+| 重启恢复 | 非终态任务先降为 `interrupted` 并落库；Codex 经 `thread/read` 只读对账，只有真实完成且带完整回答才升级；Claude 无官方只读终局入口，保持 `interrupted` |
+| Claude Adapter（进程级） | 8 项通过：真实 argv 无写/命令工具、init 白名单校验、真实进程执行 Turn、`--resume` 续会、真实取消、认证预检拒绝、CLI 错误如实上报 |
+| Claude 真实 CLI 只读边界 | PASS：真实 CLI `2.1.287` 对生产 argv 的 `init` 事件只报告 `["Glob","Grep","Read"]`、`mcp_servers: []`、`session_id` 等于请求值（与登录状态无关） |
+| Claude 真实推理 | **BLOCKED**：本机 `claude auth status` 报告 `loggedIn: false` / `authMethod: none`，真实 MCP 任务以明确的 `adapter` 认证错误失败。需先 `claude auth login` 才能完成真实推理验收 |
+| MCP 端到端 | 8 项通过：`initialize` / `tools/list` / 五个工具、长任务不阻塞（提交 <800ms）、分页精确重组、客户端退出后任务继续与重连查询、服务重启后结果可读、取消为真实 provider 中断、业务错误与参数错误区分 |
+| stdout 纯净 | PASS：真实二进制 `mcp-agent` 在 stdin 关闭时 stdout 为空、stderr 有日志 |
+| 全库 headless lib | 1415 项通过、1 项真实权限测试默认忽略 |
+| 格式与静态检查 | `cargo fmt --check` 通过；headless `cargo clippy --lib -- -D warnings` 通过；Agent Gateway 相关 target 的 `clippy -D warnings` 通过。`--lib --tests` 仍只报告 `cli/serve.rs` 的三项既有 lint（852/857/943 行），未扩大范围 |
+| 现有 protocol fixture | 38 通过、2 失败，与第一阶段记录的既有失败完全一致，本轮未新增失败 |
+| Windows | 仅实现 Named Pipe 代码路径，未编译、未验收 |
 
-本阶段核心及 macOS 真实验收 PASS，完整证据见 [验收记录](agent-gateway-verification.md)。真实集成测试入口是 `src-tauri/tests/agent_gateway_codex_live.rs`，直接使用已有 Codex 环境调用。仅安装 Desktop 不保证 PATH 存在 CLI；不能依赖 Desktop 私有可执行路径。无可用官方 CLI 时返回可执行文件错误；认证或调用失败交由正常执行错误上报。Windows、SQLite、MCP、IPC 均不在已完成能力中；强制崩溃后的后代进程回收尚未真实验收。
+完整证据见 [验收记录](agent-gateway-verification.md)。
 
 ```bash
 # 从仓库根目录执行；真实测试会消耗官方 Codex 使用额度。
 cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features cli --lib agent_gateway
 cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features cli --lib
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features cli --test agent_gateway_mcp_ipc
 AGENTGATE_CODEX_BIN=/opt/homebrew/bin/codex cargo test \
   --manifest-path src-tauri/Cargo.toml --no-default-features --features cli \
   --test agent_gateway_codex_live -- --ignored --nocapture
+AGENTGATE_CODEX_BIN=/opt/homebrew/bin/codex cargo test \
+  --manifest-path src-tauri/Cargo.toml --no-default-features --features cli \
+  --test agent_gateway_phase_two_live -- --ignored --nocapture --test-threads=1
 ```
 
-## 12. 下一轮范围与接入顺序
+## 12. 下一轮范围
 
-1. 基于当前 DTO 与排他规则实现 SQLite migration、事务存储和崩溃对账；先补测试，再接核心状态变更。
-2. 实现 Claude Code `AdapterFactory` / `AgentAdapter`，真实声明能力，不改变 Task 与 Session 语义。
-3. 实现 MCP stdio Server 和五个工具，直接调用 Service，不另建任务状态机。
-4. 实现本地 IPC，并补认证、并发、错误及完整结果传输测试。
+1. CodeLeveler + Pi 端到端联合验收：把 `agentgate-serve mcp-agent` 注册为 MCP server，跑真实的“审计 → 查询 → 续会 → 取消”流程。
+2. Windows 原生验收（Named Pipe、`first_pipe_instance` 单实例、真实 CLI 路径发现）；当前 Windows 代码路径未编译验证。
+3. Claude Code 真实推理验收：本机需要先 `claude auth login`；本轮只完成真实 CLI 的只读工具边界探针与进程级 Adapter 验证。
+4. 长时间运行的容量管理（事件归档/清理）与桌面管理 UI，均不在当前范围内。
 
-当前没有实现上述四项、Pi / CodeLeveler 接入、桌面管理 UI、安装包集成或 Windows 验收。若需要改变核心接口，先提交具体问题、复现证据和兼容方案，避免由上层重写本轮生命周期。
+若需要改变核心接口，先提交具体问题、复现证据和兼容方案，避免由上层重写本轮生命周期。

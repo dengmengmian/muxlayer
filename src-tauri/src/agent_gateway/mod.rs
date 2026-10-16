@@ -1,5 +1,10 @@
+pub mod claude;
 pub mod codex;
+pub mod ipc;
+pub mod mcp;
 pub mod protocol;
 pub mod service;
+pub mod store;
 pub use protocol::*;
 pub use service::AgentService;
+pub use store::{MemoryStore, SqliteStore, TaskStore};

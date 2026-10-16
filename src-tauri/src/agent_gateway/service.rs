@@ -1,6 +1,8 @@
-//! In-memory orchestration only. TaskRecord/SessionRecord are storage DTOs;
-//! adapters, workers, and cancellation coordination must never be persisted.
+//! Orchestration over a write-through store. TaskRecord/SessionRecord are storage DTOs;
+//! adapters, workers, locks, channels and JoinHandles must never be persisted.
+//! SQLite (see `store.rs`) is the single source of truth for Task / Session state.
 use super::protocol::*;
+use super::store::{MemoryStore, TaskStore};
 use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, Mutex, Weak},
@@ -13,6 +15,7 @@ pub struct AgentService {
 }
 struct Inner {
     factories: HashMap<String, Arc<dyn AdapterFactory>>,
+    store: Arc<dyn TaskStore>,
     state: Mutex<State>,
 }
 #[derive(Default)]
@@ -22,6 +25,8 @@ struct State {
     sessions: HashMap<String, Session>,
     tasks: HashMap<String, TaskRecord>,
     workers: Vec<JoinHandle<()>>,
+    /// 重启时被判定为 `interrupted` 但可以继续用官方协议对账的任务。
+    pending_reconcile: Vec<String>,
 }
 struct Session {
     record: SessionRecord,
@@ -57,7 +62,27 @@ fn validate_prompt(prompt: &str) -> Result<(), AgentError> {
 impl AgentService {
     /// Must be used inside a Tokio runtime. Register only factories whose executable
     /// discovery succeeded; authentication and source validation happen on connect.
+    /// In-memory store: tests only. Production hosts must use [`AgentService::with_store`].
     pub fn new(factories: Vec<Arc<dyn AdapterFactory>>) -> Result<Self, AgentError> {
+        Self::with_store(factories, MemoryStore::new())
+    }
+
+    /// Durable variant. Loads persisted Session / Task state and reconciles it before
+    /// accepting new work: a task that was `queued` / `running` when the service died can
+    /// never be reported as successful, because the provider process did not survive.
+    pub fn with_store(
+        factories: Vec<Arc<dyn AdapterFactory>>,
+        store: Arc<dyn TaskStore>,
+    ) -> Result<Self, AgentError> {
+        let service = Self::build(factories, store)?;
+        service.load_persisted_state()?;
+        Ok(service)
+    }
+
+    fn build(
+        factories: Vec<Arc<dyn AdapterFactory>>,
+        store: Arc<dyn TaskStore>,
+    ) -> Result<Self, AgentError> {
         let mut registered = HashMap::new();
         for factory in factories {
             let descriptor = factory.descriptor();
@@ -73,10 +98,160 @@ impl AgentService {
         Ok(Self {
             inner: Arc::new(Inner {
                 factories: registered,
+                store,
                 state: Mutex::new(State::default()),
             }),
         })
     }
+
+    /// 启动恢复：装载持久化状态，并把重启时仍未终态的任务降为 `interrupted`。
+    /// 不确定的旧状态不允许保留为 `running`，否则会留下僵死任务。
+    fn load_persisted_state(&self) -> Result<(), AgentError> {
+        let (sessions, tasks) = self.inner.store.load()?;
+        let mut state = self.inner.state.lock().unwrap();
+        for session in sessions {
+            state.sessions.insert(
+                session.session_id.clone(),
+                Session {
+                    record: session,
+                    adapter: None,
+                    cleanup_error: None,
+                },
+            );
+        }
+        for mut task in tasks {
+            if !task.state.is_terminal() {
+                let reason = "service restarted before the task reached a terminal state; \
+                     provider execution state is unknown until reconciled";
+                task.state = TaskState::Interrupted;
+                task.finished_at = Some(now());
+                task.error = Some(error(ErrorCode::ProcessExited, reason));
+                let session_id = task.session_id.clone();
+                if let Some(session) = state.sessions.get_mut(&session_id) {
+                    if session.record.active_task_id.as_deref() == Some(&task.task_id) {
+                        session.record.active_task_id = None;
+                    }
+                }
+                let session = state
+                    .sessions
+                    .get(&session_id)
+                    .ok_or_else(|| error(ErrorCode::Storage, "task without persisted session"))?
+                    .record
+                    .clone();
+                self.inner.store.finish_task(&task, &session)?;
+                state.pending_reconcile.push(task.task_id.clone());
+            }
+            state.tasks.insert(task.task_id.clone(), task);
+        }
+        Ok(())
+    }
+
+    /// 用官方协议查证重启前未终态的任务。只有 provider 明确确认 `completed` 且带完整
+    /// 最终回答时才升级为 `completed`；否则保留 `interrupted`。绝不重新执行任务。
+    pub async fn reconcile_interrupted(&self) -> Result<usize, AgentError> {
+        let pending: Vec<String> = {
+            let mut state = self.inner.state.lock().unwrap();
+            std::mem::take(&mut state.pending_reconcile)
+        };
+        let mut upgraded = 0;
+        let mut first_error = None;
+        for task_id in pending {
+            let (session, task, factory) = {
+                let state = self.inner.state.lock().unwrap();
+                let Some(task) = state.tasks.get(&task_id).cloned() else {
+                    continue;
+                };
+                let Some(session) = state
+                    .sessions
+                    .get(&task.session_id)
+                    .map(|s| s.record.clone())
+                else {
+                    continue;
+                };
+                let agent = state.sessions[&task.session_id].record.agent.clone();
+                let Some(factory) = self.inner.factories.get(&agent).cloned() else {
+                    continue;
+                };
+                (session, task, factory)
+            };
+            let recovered = match factory.reconcile(&session, &task).await {
+                Ok(value) => value,
+                Err(e) => {
+                    // 查证失败不改变终态，只记录，避免把无法确认的任务伪装成完成。
+                    first_error.get_or_insert(e);
+                    continue;
+                }
+            };
+            let Some(recovered) = recovered else {
+                continue;
+            };
+            let (state_now, err) = match recovered.outcome {
+                TurnOutcome::Completed
+                    if recovered.error.is_none()
+                        && recovered
+                            .final_answer
+                            .as_ref()
+                            .is_some_and(|a| !a.trim().is_empty()) =>
+                {
+                    (TaskState::Completed, None)
+                }
+                TurnOutcome::Completed => (
+                    TaskState::Failed,
+                    Some(error(
+                        ErrorCode::Protocol,
+                        "reconciled turn reports success but has no final answer",
+                    )),
+                ),
+                TurnOutcome::Failed => (
+                    TaskState::Failed,
+                    Some(
+                        recovered
+                            .error
+                            .unwrap_or_else(|| error(ErrorCode::Adapter, "turn failed")),
+                    ),
+                ),
+                TurnOutcome::Cancelled => (TaskState::Cancelled, recovered.error),
+                TurnOutcome::Interrupted => (TaskState::Interrupted, recovered.error),
+                TurnOutcome::Unknown => (
+                    TaskState::Interrupted,
+                    Some(error(
+                        ErrorCode::Protocol,
+                        "reconciled turn outcome is unknown",
+                    )),
+                ),
+            };
+            let applied = {
+                let mut state = self.inner.state.lock().unwrap();
+                let Some(task) = state.tasks.get_mut(&task_id) else {
+                    continue;
+                };
+                task.state = state_now;
+                task.final_answer = recovered.final_answer;
+                task.error = err;
+                task.finished_at = Some(now());
+                let session = state
+                    .sessions
+                    .get(&session.session_id)
+                    .map(|s| s.record.clone());
+                session.map(|session| {
+                    let task = state.tasks[&task_id].clone();
+                    self.inner.store.finish_task(&task, &session)
+                })
+            };
+            match applied {
+                Some(Ok(())) => upgraded += 1,
+                Some(Err(e)) => {
+                    first_error.get_or_insert(e);
+                }
+                None => {}
+            }
+        }
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(upgraded),
+        }
+    }
+
     pub fn list(&self) -> Vec<AgentDescriptor> {
         let mut agents: Vec<_> = self
             .inner
@@ -116,6 +291,21 @@ impl AgentService {
             return Err(error(ErrorCode::InvalidRequest, "cwd must be a directory"));
         }
         let session_id = id();
+        if self.inner.state.lock().unwrap().closed {
+            return Err(error(ErrorCode::Closed, "service is shut down"));
+        }
+        // 先落库再改内存：持久化失败时不能返回一个只在内存里存在的 Session。
+        let session_record = SessionRecord {
+            session_id: session_id.clone(),
+            agent: request.agent,
+            cwd,
+            permission: request.permission,
+            thread_id: None,
+            active_task_id: None,
+            task_ids: vec![],
+            created_at: now(),
+        };
+        self.inner.store.upsert_session(&session_record)?;
         let mut state = self.inner.state.lock().unwrap();
         if state.closed {
             return Err(error(ErrorCode::Closed, "service is shut down"));
@@ -123,21 +313,12 @@ impl AgentService {
         state.sessions.insert(
             session_id.clone(),
             Session {
-                record: SessionRecord {
-                    session_id: session_id.clone(),
-                    agent: request.agent,
-                    cwd,
-                    permission: request.permission,
-                    thread_id: None,
-                    active_task_id: None,
-                    task_ids: vec![],
-                    created_at: now(),
-                },
+                record: session_record,
                 adapter: None,
                 cleanup_error: None,
             },
         );
-        Ok(self.submit(&mut state, session_id, request.prompt))
+        self.submit(&mut state, session_id, request.prompt)
     }
     pub fn continue_session(&self, request: ContinueRequest) -> Result<Submission, AgentError> {
         validate_prompt(&request.prompt)?;
@@ -162,40 +343,51 @@ impl AgentService {
                 "agent does not support continuation",
             ));
         }
-        Ok(self.submit(&mut state, request.session_id, request.prompt))
+        self.submit(&mut state, request.session_id, request.prompt)
     }
-    fn submit(&self, state: &mut State, session_id: String, prompt: String) -> Submission {
+    fn submit(
+        &self,
+        state: &mut State,
+        session_id: String,
+        prompt: String,
+    ) -> Result<Submission, AgentError> {
         state.workers.retain(|worker| !worker.is_finished());
         let task_id = id();
+        let session = state.sessions.get(&session_id).unwrap();
+        let record = TaskRecord {
+            task_id: task_id.clone(),
+            session_id: session_id.clone(),
+            prompt,
+            state: TaskState::Queued,
+            thread_id: session.record.thread_id.clone(),
+            turn_id: None,
+            final_answer: None,
+            error: None,
+            events: vec![],
+            cancel_requested: false,
+            created_at: now(),
+            finished_at: None,
+        };
+        // 任务行有 Session 外键，且 Session 占位必须同时落库，否则重启后
+        // 可能出现「有 Task 没有占位」或反之的不一致。任一步失败都不改内存。
+        let mut updated_session = session.record.clone();
+        updated_session.active_task_id = Some(task_id.clone());
+        updated_session.task_ids.push(task_id.clone());
+        self.inner.store.upsert_session(&updated_session)?;
+        self.inner.store.insert_task(&record)?;
         let session = state.sessions.get_mut(&session_id).unwrap();
         session.record.active_task_id = Some(task_id.clone());
         session.record.task_ids.push(task_id.clone());
-        state.tasks.insert(
-            task_id.clone(),
-            TaskRecord {
-                task_id: task_id.clone(),
-                session_id: session_id.clone(),
-                prompt,
-                state: TaskState::Queued,
-                thread_id: session.record.thread_id.clone(),
-                turn_id: None,
-                final_answer: None,
-                error: None,
-                events: vec![],
-                cancel_requested: false,
-                created_at: now(),
-                finished_at: None,
-            },
-        );
+        state.tasks.insert(task_id.clone(), record);
         let weak = Arc::downgrade(&self.inner);
         let worker_id = task_id.clone();
         state.workers.push(tokio::spawn(async move {
             worker(weak, worker_id).await;
         }));
-        Submission {
+        Ok(Submission {
             task_id,
             session_id,
-        }
+        })
     }
     pub fn status(&self, task_id: &str) -> Result<TaskRecord, AgentError> {
         self.inner
@@ -206,6 +398,21 @@ impl AgentService {
             .get(task_id)
             .cloned()
             .ok_or_else(|| error(ErrorCode::NotFound, "task not found"))
+    }
+    /// 当前未终态的任务 ID（服务生命周期决策用，不对外定义新状态）。
+    pub fn running_task_ids(&self) -> Result<Vec<String>, AgentError> {
+        let mut ids: Vec<String> = self
+            .inner
+            .state
+            .lock()
+            .unwrap()
+            .tasks
+            .values()
+            .filter(|t| !t.state.is_terminal())
+            .map(|t| t.task_id.clone())
+            .collect();
+        ids.sort();
+        Ok(ids)
     }
     pub fn session(&self, session_id: &str) -> Result<SessionRecord, AgentError> {
         self.inner
@@ -230,12 +437,23 @@ impl AgentService {
                 return Ok(task.clone());
             }
             task.cancel_requested = true;
+            // 取消意图必须耐久，否则重启对账读不到真实意图。
+            let task = state.tasks[task_id].clone();
+            self.inner.store.update_task(&task)?;
             let not_started = !state.initializing.contains(task_id);
             let task = &state.tasks[task_id];
             if task.state == TaskState::Queued && not_started {
                 // The worker checks terminal state before creating a process or turn.
                 let session_id = task.session_id.clone();
-                finish(&mut state, task_id, TaskState::Cancelled, None, None);
+                let store = self.inner.store.clone();
+                finish(
+                    store.as_ref(),
+                    &mut state,
+                    task_id,
+                    TaskState::Cancelled,
+                    None,
+                    None,
+                )?;
                 debug_assert!(state.sessions[&session_id].record.active_task_id.is_none());
                 None
             } else {
@@ -263,7 +481,7 @@ impl AgentService {
         self.status(task_id)
     }
     pub async fn shutdown(&self) -> Result<(), AgentError> {
-        let (adapters, workers) = {
+        let (adapters, workers, storage_errors) = {
             let mut state = self.inner.state.lock().unwrap();
             if state.closed {
                 return Ok(());
@@ -275,21 +493,25 @@ impl AgentService {
                 .filter(|t| !t.state.is_terminal())
                 .map(|t| t.task_id.clone())
                 .collect();
+            let mut storage_errors = Vec::new();
             for task in tasks {
-                finish(
+                if let Err(e) = finish(
+                    self.inner.store.as_ref(),
                     &mut state,
                     &task,
                     TaskState::Interrupted,
                     None,
                     Some(error(ErrorCode::Closed, "service shut down")),
-                );
+                ) {
+                    storage_errors.push(e);
+                }
             }
             let adapters: Vec<_> = state
                 .sessions
                 .values_mut()
                 .filter_map(|s| s.adapter.take())
                 .collect();
-            (adapters, std::mem::take(&mut state.workers))
+            (adapters, std::mem::take(&mut state.workers), storage_errors)
         };
         for worker in &workers {
             worker.abort();
@@ -297,7 +519,7 @@ impl AgentService {
         for worker in workers {
             let _ = worker.await;
         }
-        let mut first_error = None;
+        let mut first_error: Option<AgentError> = storage_errors.into_iter().next();
         for adapter in adapters {
             let result = tokio::time::timeout(Duration::from_secs(5), adapter.shutdown())
                 .await
@@ -312,26 +534,57 @@ impl AgentService {
         }
     }
 }
+/// 终态写入。持久化是完成的一部分：只有结果真正落库才允许对外报告 `completed`。
 fn finish(
+    store: &dyn TaskStore,
     state: &mut State,
     task_id: &str,
     status: TaskState,
     answer: Option<String>,
     err: Option<AgentError>,
-) {
+) -> Result<(), AgentError> {
     let task = state.tasks.get_mut(task_id).unwrap();
     if task.state.is_terminal() {
-        return;
+        return Ok(());
     }
     task.state = status;
     task.final_answer = answer;
     task.error = err;
     task.finished_at = Some(now());
     state.initializing.remove(task_id);
-    let session = state.sessions.get_mut(&task.session_id).unwrap();
-    if session.record.active_task_id.as_deref() == Some(task_id) {
-        session.record.active_task_id = None;
+    let session_id = task.session_id.clone();
+    {
+        let session = state.sessions.get_mut(&session_id).unwrap();
+        if session.record.active_task_id.as_deref() == Some(task_id) {
+            session.record.active_task_id = None;
+        }
     }
+    let session = state.sessions[&session_id].record.clone();
+    let mut record = state.tasks[task_id].clone();
+    if let Err(e) = store.finish_task(&record, &session) {
+        if record.state == TaskState::Completed {
+            // 禁止「结果没落库但对外成功」：降级为 failed 并重试一次。
+            record.state = TaskState::Failed;
+            record.final_answer = None;
+            record.error = Some(AgentError::new(
+                ErrorCode::Storage,
+                format!("final answer could not be persisted: {}", e.message),
+            ));
+            state.tasks.insert(task_id.to_owned(), record.clone());
+            store.finish_task(&record, &session).map_err(|retry| {
+                AgentError::new(
+                    ErrorCode::Storage,
+                    format!(
+                        "terminal state could not be persisted: {}; retry: {}",
+                        e.message, retry.message
+                    ),
+                )
+            })?;
+            return Ok(());
+        }
+        return Err(e);
+    }
+    Ok(())
 }
 fn with_state<T>(weak: &Weak<Inner>, f: impl FnOnce(&Inner, &mut State) -> T) -> Option<T> {
     let inner = weak.upgrade()?;
@@ -378,15 +631,46 @@ async fn worker(weak: Weak<Inner>, task_id: String) {
                     .push_str(&format!("; cleanup failed: {}", cleanup_error));
             }
         }
-        with_state(&weak, |_, state| {
+        with_state(&weak, |inner, state| {
             let status = if err.code == ErrorCode::ProcessExited {
                 TaskState::Interrupted
             } else {
                 TaskState::Failed
             };
-            finish(state, &task_id, status, None, Some(err));
+            if let Err(e) = finish(
+                inner.store.as_ref(),
+                state,
+                &task_id,
+                status,
+                None,
+                Some(err),
+            ) {
+                tracing::error!(task = %task_id, error = %e, "agent task terminal state could not be persisted");
+            }
         });
     }
+    // 防止 worker 异常返回时留下永久 running 的僵死任务。
+    with_state(&weak, |inner, state| {
+        if state
+            .tasks
+            .get(&task_id)
+            .is_some_and(|t| !t.state.is_terminal())
+        {
+            if let Err(e) = finish(
+                inner.store.as_ref(),
+                state,
+                &task_id,
+                TaskState::Interrupted,
+                None,
+                Some(error(
+                    ErrorCode::ProcessExited,
+                    "task worker ended without a terminal state",
+                )),
+            ) {
+                tracing::error!(task = %task_id, error = %e, "zombie task could not be persisted");
+            }
+        }
+    });
 }
 async fn execute(
     weak: &Weak<Inner>,
@@ -430,10 +714,10 @@ async fn execute(
     })
     .await
     .map_err(|_| error(ErrorCode::Adapter, "thread initialization timed out"))??;
-    let proceed = with_state(weak, |_, state| {
+    let proceed = with_state(weak, |inner, state| -> Result<bool, AgentError> {
         let task = state.tasks.get_mut(task_id).unwrap();
         if state.closed || task.state.is_terminal() {
-            return false;
+            return Ok(false);
         }
         task.thread_id = Some(thread.clone());
         state
@@ -442,13 +726,26 @@ async fn execute(
             .unwrap()
             .record
             .thread_id = Some(thread.clone());
-        if task.cancel_requested {
-            finish(state, task_id, TaskState::Cancelled, None, None);
-            return false;
+        // Thread 映射是恢复续会的唯一入口，必须与内存同时耐久。
+        inner.store.update_task(&state.tasks[task_id].clone())?;
+        let session_id = state.tasks[task_id].session_id.clone();
+        inner
+            .store
+            .upsert_session(&state.sessions[&session_id].record.clone())?;
+        if state.tasks[task_id].cancel_requested {
+            finish(
+                inner.store.as_ref(),
+                state,
+                task_id,
+                TaskState::Cancelled,
+                None,
+                None,
+            )?;
+            return Ok(false);
         }
-        true
+        Ok(true)
     })
-    .unwrap_or(false);
+    .unwrap_or(Ok(false))?;
     if !proceed {
         return Ok(());
     }
@@ -458,15 +755,17 @@ async fn execute(
     )
     .await
     .map_err(|_| error(ErrorCode::Adapter, "turn start timed out"))??;
-    let cancelled = with_state(weak, |_, state| {
+    let cancelled = with_state(weak, |inner, state| -> Result<bool, AgentError> {
         let task = state.tasks.get_mut(task_id).unwrap();
         task.turn_id = Some(turn.clone());
         if !task.state.is_terminal() {
             task.state = TaskState::Running;
         }
-        task.cancel_requested
+        let cancel_requested = task.cancel_requested;
+        inner.store.update_task(&state.tasks[task_id].clone())?;
+        Ok(cancel_requested)
     })
-    .unwrap_or(true);
+    .unwrap_or(Ok(true))?;
     if cancelled {
         adapter.interrupt(&thread, &turn).await?;
     }
@@ -481,10 +780,16 @@ async fn execute(
                 if thread_id != thread || turn_id != turn {
                     continue;
                 }
-                with_state(weak, |_, state| {
+                with_state(weak, |inner, state| {
                     let task = state.tasks.get_mut(task_id).unwrap();
                     if !task.state.is_terminal() {
                         task.events.push(TaskEvent { kind, message });
+                        // 过程事件定期刷盘（每次写全量 JSON，不必逐条写）。
+                        if task.events.len() % 25 == 0 {
+                            if let Err(e) = inner.store.update_task(&state.tasks[task_id].clone()) {
+                                tracing::error!(task = %task_id, error = %e, "agent task events could not be persisted");
+                            }
+                        }
                     }
                 });
             }
@@ -542,9 +847,17 @@ async fn execute(
                         Some(error(ErrorCode::Protocol, "unknown turn outcome")),
                     ),
                 };
-                with_state(weak, |_, state| {
-                    finish(state, task_id, status, final_answer, err)
-                });
+                with_state(weak, |inner, state| {
+                    finish(
+                        inner.store.as_ref(),
+                        state,
+                        task_id,
+                        status,
+                        final_answer,
+                        err,
+                    )
+                })
+                .transpose()?;
                 return Ok(());
             }
         }
@@ -1109,5 +1422,273 @@ mod tests {
             .unwrap();
         assert_eq!(terminal(&s, &b.task_id).await.state, TaskState::Failed);
         s.shutdown().await.unwrap();
+    }
+
+    // ---- 第二阶段：持久化 / 重启恢复 / 对账 ----
+
+    /// 等待 worker 建立 Adapter 连接；不得在持有锁时 await，否则单线程 runtime 会死锁。
+    async fn wait_for_adapter(factory: &Arc<Factory>) -> Arc<Fake> {
+        loop {
+            if let Some(adapter) = factory.adapters.lock().unwrap().first().cloned() {
+                return adapter;
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+
+    fn sqlite_store(dir: &std::path::Path) -> Arc<dyn TaskStore> {
+        let pool = crate::storage::db::init_database(&dir.to_path_buf()).unwrap();
+        super::super::store::SqliteStore::new(pool)
+    }
+
+    fn persisted_session(id: &str) -> SessionRecord {
+        SessionRecord {
+            session_id: id.into(),
+            agent: "test".into(),
+            cwd: std::env::current_dir().unwrap(),
+            permission: PermissionMode::ReadOnly,
+            thread_id: Some("thread".into()),
+            active_task_id: None,
+            task_ids: vec![],
+            created_at: "2026-01-01T00:00:00Z".into(),
+        }
+    }
+
+    fn persisted_task(id: &str, session_id: &str, state: TaskState) -> TaskRecord {
+        TaskRecord {
+            task_id: id.into(),
+            session_id: session_id.into(),
+            prompt: "audit".into(),
+            state,
+            thread_id: Some("thread".into()),
+            turn_id: Some("turn".into()),
+            final_answer: None,
+            error: None,
+            events: vec![],
+            cancel_requested: false,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            finished_at: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn completed_result_is_readable_after_a_new_service_instance() {
+        let dir = tempfile::tempdir().unwrap();
+        let answer = "full audit answer ".repeat(5000);
+        let task_id;
+        {
+            let factory = Arc::new(Factory {
+                adapters: Mutex::new(vec![]),
+            });
+            let s =
+                AgentService::with_store(vec![factory.clone()], sqlite_store(dir.path())).unwrap();
+            let a = s.run(request()).unwrap();
+            task_id = a.task_id.clone();
+            let adapter = wait_for_adapter(&factory).await;
+            // 先发出 terminal 事件再确认状态，确保写入路径真的走过。
+            adapter.finish(TurnOutcome::Completed, Some(&answer));
+            let task = terminal(&s, &task_id).await;
+            assert_eq!(task.state, TaskState::Completed);
+            s.shutdown().await.unwrap();
+        }
+        // 新进程/新连接池：只能从库里读到结果。
+        let factory = Arc::new(Factory {
+            adapters: Mutex::new(vec![]),
+        });
+        let reopened = AgentService::with_store(vec![factory], sqlite_store(dir.path())).unwrap();
+        let task = reopened.status(&task_id).unwrap();
+        assert_eq!(task.state, TaskState::Completed);
+        assert_eq!(task.final_answer.as_deref(), Some(answer.as_str()));
+        assert!(!task.thread_id.unwrap().is_empty());
+        assert!(reopened.status(&task_id).unwrap().finished_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn restart_never_keeps_an_unfinished_task_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = sqlite_store(dir.path());
+        let mut session = persisted_session("s1");
+        session.active_task_id = Some("t1".into());
+        store.upsert_session(&session).unwrap();
+        store
+            .insert_task(&persisted_task("t1", "s1", TaskState::Running))
+            .unwrap();
+
+        let factory = Arc::new(Factory {
+            adapters: Mutex::new(vec![]),
+        });
+        let s = AgentService::with_store(vec![factory], store.clone()).unwrap();
+        let task = s.status("t1").unwrap();
+        assert_eq!(task.state, TaskState::Interrupted);
+        let error = task.error.unwrap();
+        assert_eq!(error.code, ErrorCode::ProcessExited);
+        assert!(error.message.contains("restarted"));
+        assert!(s.session("s1").unwrap().active_task_id.is_none());
+        // 降级必须落库，不能只改内存。
+        assert_eq!(
+            store.task("t1").unwrap().unwrap().state,
+            TaskState::Interrupted
+        );
+        let again = AgentService::with_store(
+            vec![Arc::new(Factory {
+                adapters: Mutex::new(vec![]),
+            })],
+            store,
+        )
+        .unwrap();
+        assert_eq!(again.status("t1").unwrap().state, TaskState::Interrupted);
+    }
+
+    enum Reconcile {
+        Completed(&'static str),
+        Failed,
+        Unavailable,
+    }
+
+    struct ReconcileFactory(Reconcile);
+    impl AdapterFactory for ReconcileFactory {
+        fn descriptor(&self) -> AgentDescriptor {
+            AgentDescriptor {
+                id: "test".into(),
+                name: "test".into(),
+                permissions: vec![PermissionMode::ReadOnly],
+                supports_continuation: true,
+                supports_cancel: true,
+            }
+        }
+        fn connect(&self) -> BoxFuture<'_, Result<Arc<dyn AgentAdapter>, AgentError>> {
+            Box::pin(async { Err(error(ErrorCode::Adapter, "not used")) })
+        }
+        fn reconcile<'a>(
+            &'a self,
+            _session: &'a SessionRecord,
+            _task: &'a TaskRecord,
+        ) -> BoxFuture<'a, Result<Option<RecoveredTurn>, AgentError>> {
+            Box::pin(async move {
+                Ok(match self.0 {
+                    Reconcile::Completed(answer) => Some(RecoveredTurn {
+                        outcome: TurnOutcome::Completed,
+                        final_answer: Some(answer.into()),
+                        error: None,
+                    }),
+                    Reconcile::Failed => Some(RecoveredTurn {
+                        outcome: TurnOutcome::Failed,
+                        final_answer: None,
+                        error: Some(error(ErrorCode::Adapter, "provider says failed")),
+                    }),
+                    Reconcile::Unavailable => None,
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn reconcile_only_completes_a_provider_confirmed_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = sqlite_store(dir.path());
+        let session = persisted_session("s1");
+        store.upsert_session(&session).unwrap();
+        for (id, state) in [("t1", TaskState::Running), ("t2", TaskState::Queued)] {
+            store.insert_task(&persisted_task(id, "s1", state)).unwrap();
+        }
+        let s = AgentService::with_store(
+            vec![Arc::new(ReconcileFactory(Reconcile::Completed(
+                "confirmed answer",
+            )))],
+            store.clone(),
+        )
+        .unwrap();
+        // 恢复时先降级，避免僵死 running。
+        assert_eq!(s.status("t1").unwrap().state, TaskState::Interrupted);
+        assert_eq!(s.reconcile_interrupted().await.unwrap(), 2);
+        let t1 = s.status("t1").unwrap();
+        assert_eq!(t1.state, TaskState::Completed);
+        assert_eq!(t1.final_answer.as_deref(), Some("confirmed answer"));
+        assert_eq!(
+            store.task("t1").unwrap().unwrap().state,
+            TaskState::Completed
+        );
+
+        // provider 无法查证时保持 interrupted，不得伪装完成。
+        let dir2 = tempfile::tempdir().unwrap();
+        let store2 = sqlite_store(dir2.path());
+        store2.upsert_session(&persisted_session("s2")).unwrap();
+        store2
+            .insert_task(&persisted_task("t3", "s2", TaskState::Running))
+            .unwrap();
+        let s2 = AgentService::with_store(
+            vec![Arc::new(ReconcileFactory(Reconcile::Unavailable))],
+            store2,
+        )
+        .unwrap();
+        assert_eq!(s2.reconcile_interrupted().await.unwrap(), 0);
+        assert_eq!(s2.status("t3").unwrap().state, TaskState::Interrupted);
+
+        // provider 确认失败：按真实终局记为 failed，并保留错误。
+        let dir3 = tempfile::tempdir().unwrap();
+        let store3 = sqlite_store(dir3.path());
+        store3.upsert_session(&persisted_session("s3")).unwrap();
+        store3
+            .insert_task(&persisted_task("t4", "s3", TaskState::Running))
+            .unwrap();
+        let s3 =
+            AgentService::with_store(vec![Arc::new(ReconcileFactory(Reconcile::Failed))], store3)
+                .unwrap();
+        assert_eq!(s3.reconcile_interrupted().await.unwrap(), 1);
+        let t4 = s3.status("t4").unwrap();
+        assert_eq!(t4.state, TaskState::Failed);
+        assert_eq!(t4.error.unwrap().message, "provider says failed");
+    }
+
+    struct FailingStore {
+        inner: MemoryStore,
+    }
+    impl TaskStore for FailingStore {
+        fn upsert_session(&self, s: &SessionRecord) -> Result<(), AgentError> {
+            self.inner.upsert_session(s)
+        }
+        fn insert_task(&self, t: &TaskRecord) -> Result<(), AgentError> {
+            self.inner.insert_task(t)
+        }
+        fn update_task(&self, t: &TaskRecord) -> Result<(), AgentError> {
+            self.inner.update_task(t)
+        }
+        fn finish_task(&self, t: &TaskRecord, s: &SessionRecord) -> Result<(), AgentError> {
+            if t.state == TaskState::Completed {
+                return Err(error(ErrorCode::Storage, "disk full"));
+            }
+            self.inner.finish_task(t, s)
+        }
+        fn task(&self, id: &str) -> Result<Option<TaskRecord>, AgentError> {
+            self.inner.task(id)
+        }
+        fn session(&self, id: &str) -> Result<Option<SessionRecord>, AgentError> {
+            self.inner.session(id)
+        }
+        fn load(&self) -> Result<(Vec<SessionRecord>, Vec<TaskRecord>), AgentError> {
+            self.inner.load()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_result_that_cannot_be_persisted_is_never_reported_completed() {
+        let factory = Arc::new(Factory {
+            adapters: Mutex::new(vec![]),
+        });
+        let store: Arc<dyn TaskStore> = Arc::new(FailingStore {
+            inner: MemoryStore::default(),
+        });
+        let s = AgentService::with_store(vec![factory.clone()], store.clone()).unwrap();
+        let a = s.run(request()).unwrap();
+        let adapter = wait_for_adapter(&factory).await;
+        adapter.finish(TurnOutcome::Completed, Some("valuable answer"));
+        let task = terminal(&s, &a.task_id).await;
+        assert_eq!(task.state, TaskState::Failed);
+        assert!(task.final_answer.is_none());
+        assert_eq!(task.error.as_ref().unwrap().code, ErrorCode::Storage);
+        assert_eq!(
+            store.task(&a.task_id).unwrap().unwrap().state,
+            TaskState::Failed
+        );
     }
 }

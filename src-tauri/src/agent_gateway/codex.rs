@@ -43,6 +43,39 @@ fn disabled_mcp(servers: &serde_json::Map<String, Value>) -> Value {
 fn turn_has_full_items(turn: &Value) -> bool {
     turn["itemsView"].is_null() || turn["itemsView"] == "full"
 }
+/// 服务重启后的只读对账：从官方 `thread/read` 返回的 Turn 推导真实状态。
+/// 仍在执行（没有权威终局）的 Turn 返回 `None`，调用方保留 `interrupted`。
+fn turn_recovery(turn: &Value) -> Option<RecoveredTurn> {
+    let outcome = match turn["status"].as_str() {
+        Some("completed") => TurnOutcome::Completed,
+        Some("failed") => TurnOutcome::Failed,
+        Some("interrupted") => TurnOutcome::Interrupted,
+        // inProgress / 未知状态：没有真实终局，不得当作完成。
+        _ => return None,
+    };
+    let final_answer = if outcome == TurnOutcome::Completed && turn_has_full_items(turn) {
+        turn["items"]
+            .as_array()
+            .and_then(|items| final_answer(items))
+    } else {
+        None
+    };
+    let error = if outcome == TurnOutcome::Failed || !turn["error"].is_null() {
+        Some(AgentError::new(
+            ErrorCode::Adapter,
+            turn["error"]["message"]
+                .as_str()
+                .unwrap_or("Codex turn failed"),
+        ))
+    } else {
+        None
+    };
+    Some(RecoveredTurn {
+        outcome,
+        final_answer,
+        error,
+    })
+}
 fn progress_message(p: &Value) -> String {
     if p["item"]["type"] == "commandExecution" {
         let i = &p["item"];
@@ -126,6 +159,11 @@ impl CodexFactory {
     pub async fn discover(executable: Option<PathBuf>) -> Result<Self, AgentError> {
         Ok(Self::new(Some(discover(executable.as_deref()).await?)))
     }
+    async fn connect_adapter(&self) -> Result<Arc<CodexAdapter>, AgentError> {
+        Ok(Arc::new(
+            CodexAdapter::connect(discover(self.executable.as_deref()).await?).await?,
+        ))
+    }
 }
 async fn discover(explicit: Option<&Path>) -> Result<PathBuf, AgentError> {
     let mut candidates = Vec::new();
@@ -188,11 +226,30 @@ impl AdapterFactory for CodexFactory {
         }
     }
     fn connect(&self) -> BoxFuture<'_, Result<Arc<dyn AgentAdapter>, AgentError>> {
+        Box::pin(async move { Ok(self.connect_adapter().await? as Arc<dyn AgentAdapter>) })
+    }
+    /// 只读对账：新 app-server 读原 Thread 的 Turn，只能查证，不能重跑。
+    fn reconcile<'a>(
+        &'a self,
+        session: &'a SessionRecord,
+        task: &'a TaskRecord,
+    ) -> BoxFuture<'a, Result<Option<RecoveredTurn>, AgentError>> {
         Box::pin(async move {
-            Ok(
-                Arc::new(CodexAdapter::connect(discover(self.executable.as_deref()).await?).await?)
-                    as Arc<dyn AgentAdapter>,
-            )
+            let (Some(thread), Some(turn)) = (task.thread_id.as_deref(), task.turn_id.as_deref())
+            else {
+                return Ok(None);
+            };
+            if session.thread_id.as_deref() != Some(thread) {
+                return Err(protocol(
+                    "persisted task thread does not match its session thread",
+                ));
+            }
+            let adapter = self.connect_adapter().await?;
+            let recovered = adapter.read_turn(thread, turn).await;
+            let cleanup = adapter.shutdown().await;
+            let recovered = recovered?;
+            cleanup?;
+            Ok(recovered)
         })
     }
 }
@@ -329,6 +386,26 @@ impl CodexAdapter {
             .to_owned();
         Ok(adapter)
     }
+    async fn read_turn(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+    ) -> Result<Option<RecoveredTurn>, AgentError> {
+        let r = self
+            .rpc(
+                "thread/read",
+                json!({"threadId":thread_id,"includeTurns":true}),
+            )
+            .await?;
+        let Some(turn) = r["thread"]["turns"]
+            .as_array()
+            .and_then(|turns| turns.iter().find(|t| t["id"] == turn_id))
+        else {
+            return Ok(None);
+        };
+        Ok(turn_recovery(turn))
+    }
+
     async fn notify(&self, method: &str, params: Value) -> Result<(), AgentError> {
         self.stdin
             .lock()
@@ -696,6 +773,33 @@ mod tests {
         );
         assert_eq!(disabled_mcp(&servers), json!({"a.b":{"enabled":false}}));
     }
+    #[test]
+    fn recovery_reads_a_real_terminal_turn_only() {
+        let completed = json!({"id":"t","status":"completed","itemsView":"full","items":[
+            {"type":"agentMessage","phase":"commentary","text":"thinking"},
+            {"type":"agentMessage","phase":"final_answer","text":"the answer"}]});
+        let recovered = turn_recovery(&completed).expect("completed turn is a real terminal state");
+        assert_eq!(recovered.outcome, TurnOutcome::Completed);
+        assert_eq!(recovered.final_answer.as_deref(), Some("the answer"));
+        assert!(recovered.error.is_none());
+
+        for status in ["inProgress", "unknownStatus"] {
+            assert!(turn_recovery(&json!({"id":"t","status":status})).is_none());
+        }
+
+        let failed = json!({"id":"t","status":"failed","error":{"message":"sandbox denied"}});
+        let recovered = turn_recovery(&failed).unwrap();
+        assert_eq!(recovered.outcome, TurnOutcome::Failed);
+        assert_eq!(recovered.error.unwrap().message, "sandbox denied");
+
+        // summary 视图不能当完整回答：宁可无法确认，也不静默截断。
+        let summarized = json!({"id":"t","status":"completed","itemsView":"summary","items":[
+            {"type":"agentMessage","phase":"final_answer","text":"partial"}]});
+        let recovered = turn_recovery(&summarized).unwrap();
+        assert_eq!(recovered.outcome, TurnOutcome::Completed);
+        assert!(recovered.final_answer.is_none());
+    }
+
     #[test]
     fn summarized_items_are_not_complete_answers() {
         assert!(!turn_has_full_items(

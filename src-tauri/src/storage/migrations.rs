@@ -49,6 +49,7 @@ pub fn run_migrations(conn: &Connection) -> Result<(), AppError> {
 
     let tx = conn.unchecked_transaction()?;
     ensure_additive_columns(&tx)?;
+    ensure_additive_tables(&tx)?;
     // 每次启动都补齐 catalog 新增模型的默认价(INSERT OR IGNORE,幂等)。
     // 之前只在 legacy_baseline_v1(新装)里跑,存量用户永远拿不到新模型默认价,
     // cost 一直 NULL、预算闸门看不到花费。
@@ -102,6 +103,46 @@ fn add_column_if_missing(
     if !has_column(conn, table, column)? {
         conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl};"))?;
     }
+    Ok(())
+}
+
+/// 不 bump 版本的纯新增表,每次启动幂等补齐(见 CURRENT_SCHEMA_VERSION 注释)。
+///
+/// **不要**给新增表 bump user_version:2.0.5 及更早版本看到更高的 user_version 会拒绝
+/// 启动,而空的新表对旧版本完全无害。所以这里只做 `CREATE TABLE IF NOT EXISTS`。
+fn ensure_additive_tables(conn: &Connection) -> Result<(), AppError> {
+    // Agent Gateway 的 Task / Session 持久化(第二阶段)。与 Model Gateway 的 session
+    // 缓存完全独立,旧版本读到这两张空表不会有任何行为变化。
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS agent_sessions (
+            session_id TEXT PRIMARY KEY,
+            agent TEXT NOT NULL,
+            provider_session_id TEXT,
+            cwd TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            active_task_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS agent_tasks (
+            task_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES agent_sessions(session_id) ON DELETE CASCADE,
+            provider_turn_id TEXT,
+            status TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            final_answer TEXT,
+            error_json TEXT,
+            events_json TEXT NOT NULL DEFAULT '[]',
+            cancel_requested INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            completed_at TEXT
+         );
+         CREATE INDEX IF NOT EXISTS idx_agent_tasks_session
+            ON agent_tasks(session_id, created_at);
+         CREATE INDEX IF NOT EXISTS idx_agent_tasks_status
+            ON agent_tasks(status);",
+    )?;
     Ok(())
 }
 
