@@ -6,6 +6,7 @@
 #![allow(clippy::doc_lazy_continuation)]
 #![allow(clippy::doc_overindented_list_items)]
 
+pub mod agent_gateway;
 #[cfg(feature = "desktop")]
 mod app;
 pub mod compat;
