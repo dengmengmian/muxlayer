@@ -101,6 +101,9 @@ metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.16", default-features = false }
 tower_governor = "0.4"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",

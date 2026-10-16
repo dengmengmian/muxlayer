@@ -30,6 +30,7 @@ dependencies = [
  "flate2",
  "futures",
  "http-body",
+ "libc",
  "metrics",
  "metrics-exporter-prometheus",
  "open",

@@ -80,6 +80,13 @@ impl Gateway {
             Err(transport) => {
                 // 传输断开：重连一次（服务本身可以比 MCP 客户端活得更久）。
                 self.client = None;
+                // 请求可能已被服务执行。只有只读查询可以安全重放。
+                if !matches!(method, "agent_list" | "agent_status" | "ping") {
+                    return Err(super::protocol::AgentError::new(
+                        transport.code,
+                        format!("{method} outcome is unknown after transport failure; query task status before submitting again: {}", transport.message),
+                    ));
+                }
                 self.connect().await.map_err(|e| {
                     super::protocol::AgentError::new(
                         e.code,
@@ -389,18 +396,36 @@ pub async fn handle_message(gateway: &mut Gateway, message: &str) -> Option<Valu
     }
 }
 
+const MAX_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
+
+async fn read_stdio_line<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    line: &mut String,
+) -> Result<usize, super::protocol::AgentError> {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt};
+    let read = reader
+        .take((MAX_MESSAGE_BYTES + 1) as u64)
+        .read_line(line)
+        .await
+        .map_err(|e| super::protocol::AgentError::new(ErrorCode::Adapter, e.to_string()))?;
+    if line.len() > MAX_MESSAGE_BYTES {
+        return Err(super::protocol::AgentError::new(
+            ErrorCode::InvalidRequest,
+            format!("MCP message exceeds {MAX_MESSAGE_BYTES} bytes"),
+        ));
+    }
+    Ok(read)
+}
+
 /// MCP stdio 主循环：stdout 只写协议消息，日志一律 stderr。
 pub async fn serve_stdio(mut gateway: Gateway) -> Result<(), super::protocol::AgentError> {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    use tokio::io::AsyncWriteExt;
     let mut reader = tokio::io::BufReader::new(tokio::io::stdin());
     let mut stdout = tokio::io::stdout();
     let mut line = String::new();
     loop {
         line.clear();
-        let read = reader
-            .read_line(&mut line)
-            .await
-            .map_err(|e| super::protocol::AgentError::new(ErrorCode::Adapter, e.to_string()))?;
+        let read = read_stdio_line(&mut reader, &mut line).await?;
         if read == 0 {
             tracing::info!("MCP client closed stdin; exiting");
             return Ok(());
@@ -423,6 +448,80 @@ pub async fn serve_stdio(mut gateway: Gateway) -> Result<(), super::protocol::Ag
                 .flush()
                 .await
                 .map_err(|e| super::protocol::AgentError::new(ErrorCode::Adapter, e.to_string()))?;
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod phase_three_tests {
+    use super::*;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    #[tokio::test]
+    async fn oversized_unterminated_stdio_input_is_rejected_without_waiting_for_eof() {
+        let (mut writer, reader) = tokio::io::duplex(8192);
+        let producer = tokio::spawn(async move {
+            let bytes = vec![b'x'; MAX_MESSAGE_BYTES + 1];
+            writer.write_all(&bytes).await.unwrap();
+            // 不结束输入，读取器应在达到预算时立即返回。
+            std::future::pending::<()>().await;
+        });
+        let mut reader = BufReader::new(reader);
+        let mut line = String::new();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            read_stdio_line(&mut reader, &mut line),
+        )
+        .await;
+        producer.abort();
+        assert_eq!(
+            result
+                .expect("oversized input must not wait for EOF")
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidRequest
+        );
+        assert!(line.len() <= MAX_MESSAGE_BYTES + 1);
+    }
+
+    #[tokio::test]
+    async fn lost_mutation_response_is_reported_without_reconnecting_or_resubmitting() {
+        for method in ["agent_run", "agent_continue", "agent_cancel"] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut paths = super::super::ipc::ServicePaths::new(dir.path());
+            // 保证 macOS 的 Unix socket 路径不超过 sockaddr_un 上限。
+            paths.socket = dir.path().join("s");
+            std::fs::create_dir_all(&paths.dir).unwrap();
+            std::fs::write(&paths.token, "test-token").unwrap();
+            let listener = tokio::net::UnixListener::bind(&paths.socket).unwrap();
+            let worker = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut stream = BufReader::new(stream);
+                let mut line = String::new();
+                stream.read_line(&mut line).await.unwrap();
+                let hello: Value = serde_json::from_str(&line).unwrap();
+                let response = json!({"id": hello["id"], "result": {}}).to_string() + "\n";
+                stream
+                    .get_mut()
+                    .write_all(response.as_bytes())
+                    .await
+                    .unwrap();
+                line.clear();
+                stream.read_line(&mut line).await.unwrap();
+                let accepted: Value = serde_json::from_str(&line).unwrap();
+                // 模拟服务已接收操作，但在回复前丢失连接。
+                accepted["method"].as_str().unwrap().to_owned()
+            });
+            let client = super::super::ipc::IpcClient::connect(&paths).await.unwrap();
+            let mut gateway = Gateway {
+                db_dir: dir.path().to_owned(),
+                executable: dir.path().join("missing-executable"),
+                client: Some(client),
+            };
+            let error = gateway.call(method, json!({})).await.unwrap_err();
+            assert_eq!(worker.await.unwrap(), method);
+            assert_eq!(error.code, ErrorCode::ProcessExited);
+            assert!(error.message.contains("outcome is unknown"), "{error}");
         }
     }
 }

@@ -97,7 +97,9 @@ impl ServicePaths {
             // 用目录哈希保证不同数据目录不会互相连接。
             let candidate = dir.join("agent-service.sock");
             if candidate.as_os_str().len() > 100 {
-                std::env::temp_dir().join(format!("muxlayer-agent-{}.sock", short_hash(&identity)))
+                std::env::temp_dir()
+                    .join(format!("muxlayer-agent-{}", short_hash(&identity)))
+                    .join("service.sock")
             } else {
                 candidate
             }
@@ -159,8 +161,24 @@ mod transport {
             })?;
             #[cfg(unix)]
             {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+                use std::os::unix::fs::{MetadataExt, PermissionsExt};
+                let metadata = std::fs::symlink_metadata(parent).map_err(|e| {
+                    AgentError::new(
+                        ErrorCode::Adapter,
+                        format!("cannot inspect socket directory: {e}"),
+                    )
+                })?;
+                if !metadata.file_type().is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+                    return Err(AgentError::new(ErrorCode::Adapter, "socket directory must be owned by the current user and must not be a symlink"));
+                }
+                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700)).map_err(
+                    |e| {
+                        AgentError::new(
+                            ErrorCode::Adapter,
+                            format!("cannot restrict socket directory: {e}"),
+                        )
+                    },
+                )?;
             }
         }
         // 只有确认没有活着的服务时才会走到这里；残留文件直接清理。
@@ -336,6 +354,12 @@ where
     let mut line = serde_json::to_string(message)
         .map_err(|e| AgentError::new(ErrorCode::Protocol, format!("encode failed: {e}")))?;
     line.push('\n');
+    if line.len() > MAX_MESSAGE_BYTES {
+        return Err(AgentError::new(
+            ErrorCode::InvalidRequest,
+            format!("message exceeds {MAX_MESSAGE_BYTES} bytes; use agent_status pagination"),
+        ));
+    }
     writer
         .write_all(line.as_bytes())
         .await
@@ -351,11 +375,12 @@ where
     R: tokio::io::AsyncBufRead + Unpin,
     T: for<'de> Deserialize<'de>,
 {
-    use tokio::io::AsyncBufReadExt;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt};
     let mut line = String::new();
     loop {
         line.clear();
-        let read = reader
+        let read = (&mut *reader)
+            .take((MAX_MESSAGE_BYTES + 1) as u64)
             .read_line(&mut line)
             .await
             .map_err(|e| AgentError::new(ErrorCode::Adapter, format!("read failed: {e}")))?;
@@ -473,43 +498,110 @@ pub async fn serve(
     service: Arc<AgentService>,
     config: ServiceHostConfig,
 ) -> Result<(), AgentError> {
-    let paths = config.paths.clone();
-    std::fs::create_dir_all(&paths.dir).map_err(|e| {
-        AgentError::new(
-            ErrorCode::Adapter,
-            format!("cannot create {}: {e}", paths.dir.display()),
-        )
-    })?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&paths.dir, std::fs::Permissions::from_mode(0o700));
-    }
+    let ownership = ServiceOwnership::acquire(&config.paths)?;
+    serve_owned(service, config, ownership).await
+}
 
-    // 单实例所有权：已有活着的服务时拒绝接管（不允许两个实例拥有同一批 Running Task）。
-    if transport::probe(&paths.socket) {
-        return Err(AgentError::new(
-            ErrorCode::Busy,
-            format!(
-                "another agent service is already listening on {}",
-                paths.socket.display()
-            ),
-        ));
-    }
-    if let Some(pid) = read_lock(&paths.lock) {
-        if pid_alive(pid) {
+/// 持有 OS 文件锁才拥有恢复数据库、绑定端点和清理文件的权限。
+/// 锁文件永久保留：删除会让等待者锁住旧 inode，造成两个 owner。
+pub struct ServiceOwnership {
+    _file: std::fs::File,
+    dir: PathBuf,
+}
+
+impl ServiceOwnership {
+    pub fn acquire(paths: &ServicePaths) -> Result<Self, AgentError> {
+        std::fs::create_dir_all(&paths.dir).map_err(|e| {
+            AgentError::new(
+                ErrorCode::Adapter,
+                format!("cannot create service directory: {e}"),
+            )
+        })?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            let metadata = std::fs::symlink_metadata(&paths.dir).map_err(|e| {
+                AgentError::new(
+                    ErrorCode::Adapter,
+                    format!("cannot inspect service directory: {e}"),
+                )
+            })?;
+            if !metadata.file_type().is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+                return Err(AgentError::new(
+                    ErrorCode::Adapter,
+                    "service directory must not be a symlink",
+                ));
+            }
+            std::fs::set_permissions(&paths.dir, std::fs::Permissions::from_mode(0o700)).map_err(
+                |e| {
+                    AgentError::new(
+                        ErrorCode::Adapter,
+                        format!("cannot restrict service directory: {e}"),
+                    )
+                },
+            )?;
+        }
+        reject_symlink(&paths.lock)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).read(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(&paths.lock).map_err(|e| {
+            AgentError::new(
+                ErrorCode::Adapter,
+                format!("cannot open service ownership lock: {e}"),
+            )
+        })?;
+        file.try_lock().map_err(|e| {
+            AgentError::new(
+                ErrorCode::Busy,
+                format!("another service owns the database: {e}"),
+            )
+        })?;
+        if transport::probe(&paths.socket) {
             return Err(AgentError::new(
                 ErrorCode::Busy,
-                format!(
-                    "another agent service (pid {pid}) holds {}",
-                    paths.lock.display()
-                ),
+                "another agent service is already listening",
             ));
         }
+        Ok(Self {
+            _file: file,
+            dir: paths.dir.clone(),
+        })
     }
+}
 
+fn reject_symlink(path: &Path) -> Result<(), AgentError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if !metadata.file_type().is_file() => Err(AgentError::new(
+            ErrorCode::Adapter,
+            format!("service file must be a regular file: {}", path.display()),
+        )),
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(AgentError::new(
+            ErrorCode::Adapter,
+            format!("cannot inspect service file: {e}"),
+        )),
+    }
+}
+
+pub async fn serve_owned(
+    service: Arc<AgentService>,
+    config: ServiceHostConfig,
+    ownership: ServiceOwnership,
+) -> Result<(), AgentError> {
+    let paths = config.paths.clone();
+    if ownership.dir != paths.dir {
+        return Err(AgentError::new(
+            ErrorCode::InvalidRequest,
+            "ownership does not match service directory",
+        ));
+    }
     let mut listener = transport::bind(&paths.socket)?;
-    write_lock(&paths.lock)?;
     let token = new_token();
     write_token(&paths.token, &token)?;
     tracing::info!(socket = %paths.socket.display(), "agent service listening");
@@ -566,15 +658,17 @@ pub async fn serve(
         });
     };
 
-    // 关闭：先停止接收，再中断未完成任务，最后清理 socket / token / lock。
-    if let Err(e) = service.shutdown().await {
+    // 关闭：先停止接收并中断任务，再清理 socket / token；保留 lock 文件并释放 OS 锁。
+    let shutdown_result = service.shutdown().await;
+    if let Err(e) = &shutdown_result {
         tracing::warn!(error = %e, "agent service shutdown reported an error");
     }
     #[cfg(unix)]
     let _ = std::fs::remove_file(&paths.socket);
     let _ = std::fs::remove_file(&paths.token);
-    let _ = std::fs::remove_file(&paths.lock);
-    result
+    drop(listener);
+    drop(ownership);
+    result.and(shutdown_result)
 }
 
 async fn handle_connection<R, W>(
@@ -616,7 +710,12 @@ where
             Ok(result) => IpcResponse::ok(id, result),
             Err(error) => IpcResponse::failed(id, error),
         };
-        write_message(&mut writer, &response).await?;
+        if let Err(error) = write_message(&mut writer, &response).await {
+            if error.code != ErrorCode::InvalidRequest {
+                return Err(error);
+            }
+            write_message(&mut writer, &IpcResponse::failed(response.id, error)).await?;
+        }
         if wants_shutdown {
             let _ = shutdown.send(true);
             return Ok(());
@@ -635,9 +734,21 @@ fn new_token() -> String {
 }
 
 fn write_token(path: &Path, token: &str) -> Result<(), AgentError> {
-    std::fs::write(path, format!("{token}\n")).map_err(|e| {
-        AgentError::new(ErrorCode::Adapter, format!("cannot write token file: {e}"))
-    })?;
+    reject_symlink(path)?;
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options
+        .open(path)
+        .and_then(|mut file| file.write_all(format!("{token}\n").as_bytes()))
+        .map_err(|e| {
+            AgentError::new(ErrorCode::Adapter, format!("cannot write token file: {e}"))
+        })?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -649,36 +760,6 @@ fn write_token(path: &Path, token: &str) -> Result<(), AgentError> {
         })?;
     }
     Ok(())
-}
-
-fn write_lock(path: &Path) -> Result<(), AgentError> {
-    std::fs::write(path, format!("{}\n", std::process::id()))
-        .map_err(|e| AgentError::new(ErrorCode::Adapter, format!("cannot write lock file: {e}")))
-}
-
-fn read_lock(path: &Path) -> Option<u32> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|raw| raw.trim().parse::<u32>().ok())
-}
-
-#[cfg(unix)]
-fn pid_alive(pid: u32) -> bool {
-    // 不引入 libc 依赖：用 `kill -0` 探测 pid 是否仍然存在（启动路径只调用一次）。
-    pid > 0
-        && std::process::Command::new("kill")
-            .arg("-0")
-            .arg(pid.to_string())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-}
-
-#[cfg(not(unix))]
-fn pid_alive(_pid: u32) -> bool {
-    false
 }
 
 // ---------------------------------------------------------------- client
@@ -872,4 +953,176 @@ pub async fn build_service(
         Err(e) => tracing::warn!(error = %e, "agent task reconciliation failed"),
     }
     Ok(service)
+}
+
+#[cfg(test)]
+mod phase_three_tests {
+    use super::*;
+
+    struct FailingShutdown;
+    impl AdapterFactory for FailingShutdown {
+        fn descriptor(&self) -> AgentDescriptor {
+            AgentDescriptor {
+                id: "failure".into(),
+                name: "failure".into(),
+                permissions: vec![PermissionMode::ReadOnly],
+                supports_continuation: false,
+                supports_cancel: true,
+            }
+        }
+        fn connect(&self) -> BoxFuture<'_, Result<Arc<dyn AgentAdapter>, AgentError>> {
+            Box::pin(async { Ok(Arc::new(FailingShutdown) as Arc<dyn AgentAdapter>) })
+        }
+    }
+    impl AgentAdapter for FailingShutdown {
+        fn start_thread<'a>(&'a self, _: &'a Path) -> BoxFuture<'a, Result<String, AgentError>> {
+            Box::pin(async { Ok("thread".into()) })
+        }
+        fn resume_thread<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a Path,
+        ) -> BoxFuture<'a, Result<(), AgentError>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn start_turn<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a str,
+        ) -> BoxFuture<'a, Result<String, AgentError>> {
+            Box::pin(async { Ok("turn".into()) })
+        }
+        fn next_event(&self) -> BoxFuture<'_, Result<AdapterEvent, AgentError>> {
+            Box::pin(std::future::pending())
+        }
+        fn interrupt<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a str,
+        ) -> BoxFuture<'a, Result<(), AgentError>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn shutdown(&self) -> BoxFuture<'_, Result<(), AgentError>> {
+            Box::pin(async { Err(AgentError::new(ErrorCode::Adapter, "cleanup failed")) })
+        }
+    }
+    #[tokio::test]
+    async fn host_reports_adapter_shutdown_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = ServicePaths::new(dir.path());
+        let service = Arc::new(AgentService::new(vec![Arc::new(FailingShutdown)]).unwrap());
+        let task = service
+            .run(RunRequest {
+                agent: "failure".into(),
+                cwd: dir.path().to_owned(),
+                prompt: "hold".into(),
+                permission: PermissionMode::ReadOnly,
+            })
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while service.status(&task.task_id).unwrap().state != TaskState::Running {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let host = tokio::spawn(serve(
+            service,
+            ServiceHostConfig {
+                paths: paths.clone(),
+                idle_timeout: None,
+            },
+        ));
+        let mut client = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Ok(client) = IpcClient::connect(&paths).await {
+                    break client;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        client
+            .call("service_shutdown", json!({}))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            host.await.unwrap().is_err(),
+            "host must not report successful shutdown after cleanup failed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn socket_parent_symlink_cannot_change_another_directory() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::create_dir(&victim).unwrap();
+        std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let alias = dir.path().join("alias");
+        symlink(&victim, &alias).unwrap();
+        assert!(transport::bind(&alias.join("socket")).is_err());
+        assert_eq!(
+            std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_unterminated_message_is_rejected_before_eof() {
+        use tokio::io::AsyncWriteExt;
+        let (mut writer, reader) = tokio::io::duplex(8192);
+        let sender = tokio::spawn(async move {
+            writer
+                .write_all(&vec![b'x'; MAX_MESSAGE_BYTES + 1])
+                .await
+                .unwrap();
+            std::future::pending::<()>().await;
+        });
+        let result = tokio::time::timeout(
+            Duration::from_secs(3),
+            read_message::<_, Value>(&mut tokio::io::BufReader::new(reader)),
+        )
+        .await;
+        sender.abort();
+        assert!(
+            matches!(
+                result,
+                Ok(Err(AgentError {
+                    code: ErrorCode::InvalidRequest,
+                    ..
+                }))
+            ),
+            "oversized message waited for EOF: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_outgoing_message_is_explicitly_rejected() {
+        let result = write_message(&mut tokio::io::sink(), &"x".repeat(MAX_MESSAGE_BYTES)).await;
+        assert!(matches!(
+            result,
+            Err(AgentError {
+                code: ErrorCode::InvalidRequest,
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn stale_pid_file_does_not_prevent_new_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = ServicePaths::new(dir.path());
+        std::fs::create_dir_all(&paths.dir).unwrap();
+        std::fs::write(&paths.lock, format!("{}\n", std::process::id())).unwrap();
+        let service = Arc::new(AgentService::new(vec![]).unwrap());
+        let config = ServiceHostConfig {
+            paths: paths.clone(),
+            idle_timeout: Some(Duration::from_millis(100)),
+        };
+        assert!(serve(service, config).await.is_ok());
+    }
 }

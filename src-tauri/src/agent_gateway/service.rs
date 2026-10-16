@@ -24,6 +24,8 @@ struct State {
     initializing: HashSet<String>,
     sessions: HashMap<String, Session>,
     tasks: HashMap<String, TaskRecord>,
+    /// 无法提交的终态必须以错误暴露，不能让未落库的缓存冒充已完成。
+    persistence_errors: HashMap<String, AgentError>,
     workers: Vec<JoinHandle<()>>,
     /// 重启时被判定为 `interrupted` 但可以继续用官方协议对账的任务。
     pending_reconcile: Vec<String>,
@@ -59,6 +61,8 @@ fn validate_prompt(prompt: &str) -> Result<(), AgentError> {
         Ok(())
     }
 }
+const RESTART_REASON: &str = "service restarted before the task reached a terminal state; provider execution state is unknown until reconciled";
+
 impl AgentService {
     /// Must be used inside a Tokio runtime. Register only factories whose executable
     /// discovery succeeded; authentication and source validation happen on connect.
@@ -121,11 +125,9 @@ impl AgentService {
         }
         for mut task in tasks {
             if !task.state.is_terminal() {
-                let reason = "service restarted before the task reached a terminal state; \
-                     provider execution state is unknown until reconciled";
                 task.state = TaskState::Interrupted;
                 task.finished_at = Some(now());
-                task.error = Some(error(ErrorCode::ProcessExited, reason));
+                task.error = Some(error(ErrorCode::ProcessExited, RESTART_REASON));
                 let session_id = task.session_id.clone();
                 if let Some(session) = state.sessions.get_mut(&session_id) {
                     if session.record.active_task_id.as_deref() == Some(&task.task_id) {
@@ -139,6 +141,13 @@ impl AgentService {
                     .record
                     .clone();
                 self.inner.store.finish_task(&task, &session)?;
+            }
+            // 对账前再次退出也不能丢失待查证身份；恢复错误本身已持久化。
+            if task.state == TaskState::Interrupted
+                && task.error.as_ref().is_some_and(|e| {
+                    e.code == ErrorCode::ProcessExited && e.message == RESTART_REASON
+                })
+            {
                 state.pending_reconcile.push(task.task_id.clone());
             }
             state.tasks.insert(task.task_id.clone(), task);
@@ -222,7 +231,7 @@ impl AgentService {
             };
             let applied = {
                 let mut state = self.inner.state.lock().unwrap();
-                let Some(task) = state.tasks.get_mut(&task_id) else {
+                let Some(mut task) = state.tasks.get(&task_id).cloned() else {
                     continue;
                 };
                 task.state = state_now;
@@ -234,8 +243,9 @@ impl AgentService {
                     .get(&session.session_id)
                     .map(|s| s.record.clone());
                 session.map(|session| {
-                    let task = state.tasks[&task_id].clone();
-                    self.inner.store.finish_task(&task, &session)
+                    self.inner.store.finish_task(&task, &session)?;
+                    state.tasks.insert(task_id.clone(), task);
+                    Ok(())
                 })
             };
             match applied {
@@ -336,7 +346,12 @@ impl AgentService {
         if session.record.active_task_id.is_some() {
             return Err(error(ErrorCode::Busy, "session already has an active task"));
         }
-        let descriptor = self.inner.factories[&session.record.agent].descriptor();
+        let descriptor = self
+            .inner
+            .factories
+            .get(&session.record.agent)
+            .ok_or_else(|| error(ErrorCode::UnknownAgent, "session agent is not registered"))?
+            .descriptor();
         if !descriptor.supports_continuation {
             return Err(error(
                 ErrorCode::InvalidRequest,
@@ -373,8 +388,7 @@ impl AgentService {
         let mut updated_session = session.record.clone();
         updated_session.active_task_id = Some(task_id.clone());
         updated_session.task_ids.push(task_id.clone());
-        self.inner.store.upsert_session(&updated_session)?;
-        self.inner.store.insert_task(&record)?;
+        self.inner.store.submit_task(&record, &updated_session)?;
         let session = state.sessions.get_mut(&session_id).unwrap();
         session.record.active_task_id = Some(task_id.clone());
         session.record.task_ids.push(task_id.clone());
@@ -390,10 +404,11 @@ impl AgentService {
         })
     }
     pub fn status(&self, task_id: &str) -> Result<TaskRecord, AgentError> {
-        self.inner
-            .state
-            .lock()
-            .unwrap()
+        let state = self.inner.state.lock().unwrap();
+        if let Some(error) = state.persistence_errors.get(task_id) {
+            return Err(error.clone());
+        }
+        state
             .tasks
             .get(task_id)
             .cloned()
@@ -436,10 +451,11 @@ impl AgentService {
             if task.state.is_terminal() {
                 return Ok(task.clone());
             }
+            let mut task = task.clone();
             task.cancel_requested = true;
-            // 取消意图必须耐久，否则重启对账读不到真实意图。
-            let task = state.tasks[task_id].clone();
+            // 只有耐久写入成功才应用取消意图。
             self.inner.store.update_task(&task)?;
+            state.tasks.insert(task_id.to_owned(), task);
             let not_started = !state.initializing.contains(task_id);
             let task = &state.tasks[task_id];
             if task.state == TaskState::Queued && not_started {
@@ -543,26 +559,22 @@ fn finish(
     answer: Option<String>,
     err: Option<AgentError>,
 ) -> Result<(), AgentError> {
-    let task = state.tasks.get_mut(task_id).unwrap();
-    if task.state.is_terminal() {
+    let mut record = state.tasks[task_id].clone();
+    if record.state.is_terminal() {
         return Ok(());
     }
-    task.state = status;
-    task.final_answer = answer;
-    task.error = err;
-    task.finished_at = Some(now());
-    state.initializing.remove(task_id);
-    let session_id = task.session_id.clone();
-    {
-        let session = state.sessions.get_mut(&session_id).unwrap();
-        if session.record.active_task_id.as_deref() == Some(task_id) {
-            session.record.active_task_id = None;
-        }
+    record.state = status;
+    record.final_answer = answer;
+    record.error = err;
+    record.finished_at = Some(now());
+    let session_id = record.session_id.clone();
+    let mut session = state.sessions[&session_id].record.clone();
+    if session.active_task_id.as_deref() == Some(task_id) {
+        session.active_task_id = None;
     }
-    let session = state.sessions[&session_id].record.clone();
-    let mut record = state.tasks[task_id].clone();
-    if let Err(e) = store.finish_task(&record, &session) {
-        if record.state == TaskState::Completed {
+    let persisted = match store.finish_task(&record, &session) {
+        Ok(()) => Ok(()),
+        Err(e) if record.state == TaskState::Completed => {
             // 禁止「结果没落库但对外成功」：降级为 failed 并重试一次。
             record.state = TaskState::Failed;
             record.final_answer = None;
@@ -570,7 +582,6 @@ fn finish(
                 ErrorCode::Storage,
                 format!("final answer could not be persisted: {}", e.message),
             ));
-            state.tasks.insert(task_id.to_owned(), record.clone());
             store.finish_task(&record, &session).map_err(|retry| {
                 AgentError::new(
                     ErrorCode::Storage,
@@ -579,13 +590,24 @@ fn finish(
                         e.message, retry.message
                     ),
                 )
-            })?;
-            return Ok(());
+            })
         }
+        Err(e) => Err(e),
+    };
+    if let Err(e) = persisted {
+        // 保留数据库已确认的快照和占位，status 明确报 storage，阻止续会越过未耐久的终态。
+        state
+            .persistence_errors
+            .insert(task_id.to_owned(), e.clone());
         return Err(e);
     }
+    state.tasks.insert(task_id.to_owned(), record);
+    state.sessions.get_mut(&session_id).unwrap().record = session;
+    state.initializing.remove(task_id);
+    state.persistence_errors.remove(task_id);
     Ok(())
 }
+
 fn with_state<T>(weak: &Weak<Inner>, f: impl FnOnce(&Inner, &mut State) -> T) -> Option<T> {
     let inner = weak.upgrade()?;
     let mut state = inner.state.lock().unwrap();
@@ -715,23 +737,17 @@ async fn execute(
     .await
     .map_err(|_| error(ErrorCode::Adapter, "thread initialization timed out"))??;
     let proceed = with_state(weak, |inner, state| -> Result<bool, AgentError> {
-        let task = state.tasks.get_mut(task_id).unwrap();
+        let task = &state.tasks[task_id];
         if state.closed || task.state.is_terminal() {
             return Ok(false);
         }
-        task.thread_id = Some(thread.clone());
-        state
-            .sessions
-            .get_mut(&task.session_id)
-            .unwrap()
-            .record
-            .thread_id = Some(thread.clone());
-        // Thread 映射是恢复续会的唯一入口，必须与内存同时耐久。
-        inner.store.update_task(&state.tasks[task_id].clone())?;
-        let session_id = state.tasks[task_id].session_id.clone();
-        inner
-            .store
-            .upsert_session(&state.sessions[&session_id].record.clone())?;
+        let session_id = task.session_id.clone();
+        let mut session = state.sessions[&session_id].record.clone();
+        session.thread_id = Some(thread.clone());
+        // Task 的持久化 Thread 来自 Session 关系，先提交唯一映射再刷新缓存。
+        inner.store.upsert_session(&session)?;
+        state.sessions.get_mut(&session_id).unwrap().record = session;
+        state.tasks.get_mut(task_id).unwrap().thread_id = Some(thread.clone());
         if state.tasks[task_id].cancel_requested {
             finish(
                 inner.store.as_ref(),
@@ -756,13 +772,15 @@ async fn execute(
     .await
     .map_err(|_| error(ErrorCode::Adapter, "turn start timed out"))??;
     let cancelled = with_state(weak, |inner, state| -> Result<bool, AgentError> {
-        let task = state.tasks.get_mut(task_id).unwrap();
-        task.turn_id = Some(turn.clone());
-        if !task.state.is_terminal() {
-            task.state = TaskState::Running;
+        let mut task = state.tasks[task_id].clone();
+        if state.closed || task.state.is_terminal() {
+            return Ok(true);
         }
+        task.turn_id = Some(turn.clone());
+        task.state = TaskState::Running;
         let cancel_requested = task.cancel_requested;
-        inner.store.update_task(&state.tasks[task_id].clone())?;
+        inner.store.update_task(&task)?;
+        state.tasks.insert(task_id.to_owned(), task);
         Ok(cancel_requested)
     })
     .unwrap_or(Ok(true))?;
@@ -877,6 +895,7 @@ mod tests {
         fail_interrupt: std::sync::atomic::AtomicBool,
         fail_shutdown: std::sync::atomic::AtomicBool,
         next_error: Mutex<Option<AgentError>>,
+        shutdown_wait: Mutex<Option<Arc<tokio::sync::Notify>>>,
     }
     impl Fake {
         fn new() -> Arc<Self> {
@@ -889,6 +908,7 @@ mod tests {
                 fail_interrupt: false.into(),
                 fail_shutdown: false.into(),
                 next_error: Mutex::new(None),
+                shutdown_wait: Mutex::new(None),
             })
         }
         fn finish(&self, outcome: TurnOutcome, answer: Option<&str>) {
@@ -964,6 +984,10 @@ mod tests {
             Box::pin(async move {
                 self.shutdowns
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let gate = self.shutdown_wait.lock().unwrap().clone();
+                if let Some(gate) = gate {
+                    gate.notified().await;
+                }
                 if self.fail_shutdown.load(std::sync::atomic::Ordering::SeqCst) {
                     Err(error(ErrorCode::Adapter, "cleanup failed"))
                 } else {
@@ -1539,6 +1563,25 @@ mod tests {
         assert_eq!(again.status("t1").unwrap().state, TaskState::Interrupted);
     }
 
+    #[tokio::test]
+    async fn a_second_restart_can_still_reconcile_the_original_interrupted_turn() {
+        let store = MemoryStore::new();
+        store.upsert_session(&persisted_session("s1")).unwrap();
+        store
+            .insert_task(&persisted_task("t1", "s1", TaskState::Running))
+            .unwrap();
+        let factory = || {
+            Arc::new(ReconcileFactory(Reconcile::Completed("confirmed"))) as Arc<dyn AdapterFactory>
+        };
+        drop(AgentService::with_store(vec![factory()], store.clone()).unwrap());
+        let restarted_again = AgentService::with_store(vec![factory()], store).unwrap();
+        assert_eq!(restarted_again.reconcile_interrupted().await.unwrap(), 1);
+        assert_eq!(
+            restarted_again.status("t1").unwrap().state,
+            TaskState::Completed
+        );
+    }
+
     enum Reconcile {
         Completed(&'static str),
         Failed,
@@ -1640,6 +1683,192 @@ mod tests {
         assert_eq!(t4.error.unwrap().message, "provider says failed");
     }
 
+    #[tokio::test]
+    async fn rejected_task_insert_does_not_leave_a_persisted_session_busy() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::storage::db::init_database(&dir.path().to_path_buf()).unwrap();
+        pool.get().unwrap().execute_batch(
+            "CREATE TRIGGER reject_task BEFORE INSERT ON agent_tasks BEGIN SELECT RAISE(ABORT, 'disk full'); END;"
+        ).unwrap();
+        let store = super::super::store::SqliteStore::new(pool);
+        let s = AgentService::with_store(
+            vec![Arc::new(Factory {
+                adapters: Mutex::new(vec![]),
+            })],
+            store.clone(),
+        )
+        .unwrap();
+        assert_eq!(s.run(request()).unwrap_err().code, ErrorCode::Storage);
+        assert!(store
+            .load()
+            .unwrap()
+            .0
+            .iter()
+            .all(|s| s.active_task_id.is_none()));
+    }
+
+    #[tokio::test]
+    async fn failed_cancel_write_does_not_apply_cancellation_in_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::storage::db::init_database(&dir.path().to_path_buf()).unwrap();
+        let factory = Arc::new(Factory {
+            adapters: Mutex::new(vec![]),
+        });
+        let store = super::super::store::SqliteStore::new(pool.clone());
+        let s = AgentService::with_store(vec![factory], store).unwrap();
+        let a = s.run(request()).unwrap();
+        running(&s, &a.task_id).await;
+        pool.get().unwrap().execute_batch(
+            "CREATE TRIGGER reject_cancel BEFORE UPDATE ON agent_tasks WHEN NEW.cancel_requested=1 BEGIN SELECT RAISE(ABORT, 'disk full'); END;"
+        ).unwrap();
+        assert_eq!(
+            s.cancel(&a.task_id).await.unwrap_err().code,
+            ErrorCode::Storage
+        );
+        assert!(!s.status(&a.task_id).unwrap().cancel_requested);
+        s.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn continuing_a_persisted_unregistered_agent_returns_unknown_agent() {
+        let store = MemoryStore::new();
+        store.upsert_session(&persisted_session("old")).unwrap();
+        let s = AgentService::with_store(vec![], store).unwrap();
+        assert_eq!(
+            s.continue_session(ContinueRequest {
+                session_id: "old".into(),
+                prompt: "next".into()
+            })
+            .unwrap_err()
+            .code,
+            ErrorCode::UnknownAgent
+        );
+    }
+
+    #[tokio::test]
+    async fn reconciliation_write_failure_does_not_report_completed() {
+        let store = Arc::new(FailingStore {
+            inner: MemoryStore::default(),
+        });
+        store.upsert_session(&persisted_session("s1")).unwrap();
+        store
+            .insert_task(&persisted_task("t1", "s1", TaskState::Running))
+            .unwrap();
+        let s = AgentService::with_store(
+            vec![Arc::new(ReconcileFactory(Reconcile::Completed("answer")))],
+            store.clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            s.reconcile_interrupted().await.unwrap_err().code,
+            ErrorCode::Storage
+        );
+        assert_eq!(s.status("t1").unwrap().state, TaskState::Interrupted);
+        assert_eq!(
+            store.task("t1").unwrap().unwrap().state,
+            TaskState::Interrupted
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_thread_mapping_write_keeps_the_persisted_mapping_authoritative() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::storage::db::init_database(&dir.path().to_path_buf()).unwrap();
+        pool.get().unwrap().execute_batch(
+            "CREATE TRIGGER reject_thread BEFORE UPDATE ON agent_sessions WHEN NEW.provider_session_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'disk full'); END;"
+        ).unwrap();
+        let s = AgentService::with_store(
+            vec![Arc::new(Factory {
+                adapters: Mutex::new(vec![]),
+            })],
+            super::super::store::SqliteStore::new(pool),
+        )
+        .unwrap();
+        let a = s.run(request()).unwrap();
+        let task = terminal(&s, &a.task_id).await;
+        assert_eq!(task.state, TaskState::Failed);
+        assert_eq!(task.error.unwrap().code, ErrorCode::Storage);
+        assert!(task.thread_id.is_none());
+        assert!(s.session(&a.session_id).unwrap().thread_id.is_none());
+        s.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_running_write_does_not_publish_an_undurable_running_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::storage::db::init_database(&dir.path().to_path_buf()).unwrap();
+        pool.get().unwrap().execute_batch(
+            "CREATE TRIGGER reject_running BEFORE UPDATE ON agent_tasks WHEN NEW.status='running' BEGIN SELECT RAISE(ABORT, 'disk full'); END;"
+        ).unwrap();
+        let fake = Fake::new();
+        let gate = Arc::new(tokio::sync::Notify::new());
+        *fake.shutdown_wait.lock().unwrap() = Some(gate.clone());
+        let factory = Arc::new(SlowFactory {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            fake: fake.clone(),
+        });
+        let s = AgentService::with_store(
+            vec![factory.clone()],
+            super::super::store::SqliteStore::new(pool),
+        )
+        .unwrap();
+        let a = s.run(request()).unwrap();
+        factory.entered.notified().await;
+        factory.release.notify_one();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while fake.shutdowns.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(s.status(&a.task_id).unwrap().state, TaskState::Queued);
+        gate.notify_one();
+        assert_eq!(terminal(&s, &a.task_id).await.state, TaskState::Failed);
+        s.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn terminal_storage_failure_is_visible_and_does_not_release_the_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::storage::db::init_database(&dir.path().to_path_buf()).unwrap();
+        let factory = Arc::new(Factory {
+            adapters: Mutex::new(vec![]),
+        });
+        let store = super::super::store::SqliteStore::new(pool.clone());
+        let s = AgentService::with_store(vec![factory.clone()], store.clone()).unwrap();
+        let a = s.run(request()).unwrap();
+        running(&s, &a.task_id).await;
+        pool.get().unwrap().execute_batch(
+            "CREATE TRIGGER reject_terminal BEFORE UPDATE ON agent_tasks WHEN NEW.status IN ('completed', 'failed', 'interrupted', 'cancelled') BEGIN SELECT RAISE(ABORT, 'disk full'); END;"
+        ).unwrap();
+        factory.adapters.lock().unwrap()[0].finish(TurnOutcome::Completed, Some("answer"));
+        let result = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match s.status(&a.task_id) {
+                    Err(error) => break error,
+                    Ok(task) if task.state.is_terminal() => {
+                        panic!("undurable terminal state reported: {:?}", task.state)
+                    }
+                    _ => tokio::task::yield_now().await,
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(result.code, ErrorCode::Storage);
+        assert_eq!(
+            store.task(&a.task_id).unwrap().unwrap().state,
+            TaskState::Running
+        );
+        assert_eq!(
+            s.session(&a.session_id).unwrap().active_task_id.as_deref(),
+            Some(a.task_id.as_str())
+        );
+        assert!(s.shutdown().await.is_err());
+    }
+
     struct FailingStore {
         inner: MemoryStore,
     }
@@ -1649,6 +1878,9 @@ mod tests {
         }
         fn insert_task(&self, t: &TaskRecord) -> Result<(), AgentError> {
             self.inner.insert_task(t)
+        }
+        fn submit_task(&self, t: &TaskRecord, s: &SessionRecord) -> Result<(), AgentError> {
+            self.inner.submit_task(t, s)
         }
         fn update_task(&self, t: &TaskRecord) -> Result<(), AgentError> {
             self.inner.update_task(t)

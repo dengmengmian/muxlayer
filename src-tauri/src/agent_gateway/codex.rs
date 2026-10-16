@@ -12,7 +12,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    process::{Child, ChildStdin, Command},
+    process::{ChildStdin, Command},
     sync::{mpsc, oneshot, watch, Mutex},
 };
 fn protocol(message: impl Into<String>) -> AgentError {
@@ -205,7 +205,7 @@ async fn discover(explicit: Option<&Path>) -> Result<PathBuf, AgentError> {
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, AgentError>>>>>;
 struct CodexAdapter {
     stdin: Arc<Mutex<ChildStdin>>,
-    child: Mutex<Child>,
+    child: Mutex<super::process::OwnedChild>,
     pending: Pending,
     events: Mutex<mpsc::UnboundedReceiver<Value>>,
     ids: AtomicU64,
@@ -278,7 +278,7 @@ impl CodexAdapter {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true);
-        let mut child = cmd.spawn().map_err(|_| {
+        let mut child = super::process::spawn(&mut cmd).map_err(|_| {
             AgentError::new(ErrorCode::Adapter, "Could not launch Codex app-server")
         })?;
         let stdin = Arc::new(Mutex::new(

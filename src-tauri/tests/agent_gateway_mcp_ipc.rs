@@ -90,7 +90,11 @@ impl AgentAdapter for Fake {
                         thread_id: "thread-1".into(),
                         turn_id,
                         outcome: TurnOutcome::Completed,
-                        final_answer: Some(format!("{LONG_ANSWER}{prompt}")),
+                        final_answer: Some(if prompt == "HUGE" {
+                            "中🙂é".repeat((32 * 1024 * 1024) / "中🙂é".len() + 1)
+                        } else {
+                            format!("{LONG_ANSWER}{prompt}")
+                        }),
                         error: None,
                     });
                 }
@@ -694,4 +698,102 @@ fn mcp_agent_binary_never_writes_logs_to_stdout() {
     );
     // 日志确实产生了，只是走了 stderr。
     assert!(!output.stderr.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn oversized_unicode_result_remains_durable_and_pageable_after_status_and_cancel_errors() {
+    let harness = Harness::start().await;
+    let mut client = IpcClient::connect(&harness.paths()).await.unwrap();
+    let submitted = client
+        .call(
+            "agent_run",
+            json!({
+                "agent": "fake-native", "cwd": std::env::current_dir().unwrap(),
+                "prompt": "HUGE", "permission": "read_only"
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let task_id = submitted["task_id"].as_str().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let status = client
+            .call(
+                "agent_status",
+                json!({
+                    "task_id": task_id, "final_answer_limit": 0
+                }),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        if status["state"] == "completed" {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "huge task did not complete: {status}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let expected = "中🙂é".repeat((32 * 1024 * 1024) / "中🙂é".len() + 1);
+    assert!(expected.len() > 32 * 1024 * 1024);
+    let stored = ipc::open_store(&harness.db_dir)
+        .unwrap()
+        .task(task_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        stored.state,
+        agentgate_lib::agent_gateway::TaskState::Completed
+    );
+    assert!(
+        stored.final_answer.as_deref() == Some(expected.as_str()),
+        "SQLite lost the complete Unicode answer"
+    );
+    drop(stored);
+
+    // 超限是同连接上的结构化业务错误，不能断线或触发任务重放。
+    for method in ["agent_status", "agent_cancel"] {
+        let error = client
+            .call(method, json!({"task_id": task_id}))
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(error.message.contains("pagination"), "{error}");
+    }
+    let total_chars = expected.chars().count();
+    let mut rebuilt = String::with_capacity(expected.len());
+    let mut offset = 0usize;
+    loop {
+        let page = client.call("agent_status", json!({
+            "task_id": task_id, "final_answer_offset": offset, "final_answer_limit": 2_000_000
+        })).await.unwrap().unwrap();
+        assert_eq!(page["state"], "completed");
+        assert_eq!(page["final_answer_offset"], offset);
+        assert_eq!(page["final_answer_total_chars"], total_chars);
+        let answer = page["final_answer"].as_str().unwrap();
+        let expected_next = offset + answer.chars().count();
+        rebuilt.push_str(answer);
+        match page["final_answer_next_offset"].as_u64() {
+            Some(next) => {
+                assert_eq!(next as usize, expected_next);
+                assert_eq!(page["final_answer_complete"], false);
+                offset = next as usize;
+            }
+            None => {
+                assert_eq!(expected_next, total_chars);
+                assert_eq!(page["final_answer_complete"], true);
+                break;
+            }
+        }
+    }
+    assert_eq!(rebuilt.len(), expected.len());
+    assert!(
+        rebuilt == expected,
+        "IPC pages did not reconstruct the exact Unicode answer"
+    );
+    harness.stop().await;
 }

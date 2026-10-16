@@ -2,6 +2,7 @@ pub mod claude;
 pub mod codex;
 pub mod ipc;
 pub mod mcp;
+mod process;
 pub mod protocol;
 pub mod service;
 pub mod store;

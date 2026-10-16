@@ -497,6 +497,14 @@ async fn cmd_agent_service(cli: &Cli, idle_timeout: u64) {
 
     let db_dir = get_db_dir(cli);
     let paths = ipc::ServicePaths::new(&db_dir);
+    // 持有 OS 所有权后才能恢复数据库；被拒绝的第二实例不得改写现任任务。
+    let ownership = match ipc::ServiceOwnership::acquire(&paths) {
+        Ok(ownership) => ownership,
+        Err(e) => {
+            eprintln!("Failed to acquire agent service ownership: {}", e.message);
+            std::process::exit(1);
+        }
+    };
     let mut codex: Option<Arc<dyn agentgate_lib::agent_gateway::AdapterFactory>> = None;
     let mut claude: Option<Arc<dyn agentgate_lib::agent_gateway::AdapterFactory>> = None;
     match CodexFactory::discover(None).await {
@@ -526,12 +534,13 @@ async fn cmd_agent_service(cli: &Cli, idle_timeout: u64) {
         }
     };
     let idle = (idle_timeout > 0).then(|| std::time::Duration::from_secs(idle_timeout));
-    match ipc::serve(
+    match ipc::serve_owned(
         service,
         ipc::ServiceHostConfig {
             paths,
             idle_timeout: idle,
         },
+        ownership,
     )
     .await
     {

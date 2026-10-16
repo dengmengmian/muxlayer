@@ -240,7 +240,7 @@ pub fn project_status(task: &TaskRecord, query: &StatusQuery) -> serde_json::Val
     let events_offset = query.events_offset.min(events_total);
     let events: &[TaskEvent] = match query.events_limit {
         Some(limit) => {
-            let end = (events_offset + limit).min(events_total);
+            let end = events_offset.saturating_add(limit).min(events_total);
             &task.events[events_offset..end]
         }
         None => &[],
@@ -350,6 +350,20 @@ mod tests {
         let projected = project_status(&task(Some(&answer), 0), &q);
         assert_eq!(projected["final_answer"], "");
         assert_eq!(projected["final_answer_complete"], true);
+    }
+
+    #[test]
+    fn oversized_event_limit_does_not_overflow() {
+        let mut q = query("t1");
+        q.events_offset = 1;
+        q.events_limit = Some(usize::MAX);
+        assert_eq!(
+            project_status(&task(Some("done"), 2), &q)["events"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]

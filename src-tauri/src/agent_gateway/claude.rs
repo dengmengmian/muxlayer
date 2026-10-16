@@ -39,7 +39,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
-    process::{Child, Command},
+    process::Command,
     sync::{mpsc, Mutex},
     task::JoinHandle,
 };
@@ -302,7 +302,7 @@ fn progress_text(message: &Value) -> String {
 
 struct ClaudeAdapter {
     executable: PathBuf,
-    child: Mutex<Option<Child>>,
+    child: Mutex<Option<super::process::OwnedChild>>,
     reader: Mutex<Option<JoinHandle<()>>>,
     events: Mutex<mpsc::UnboundedReceiver<Value>>,
     sender: mpsc::UnboundedSender<Value>,
@@ -353,8 +353,7 @@ impl ClaudeAdapter {
             // 与 Codex Adapter 一致：stderr 不进入错误消息，避免诊断文本泄露凭据。
             .stderr(Stdio::null())
             .kill_on_drop(true);
-        let mut child = cmd
-            .spawn()
+        let mut child = super::process::spawn(&mut cmd)
             .map_err(|e| adapter(format!("could not launch Claude Code: {e}")))?;
         let stdout = child
             .stdout

@@ -19,6 +19,8 @@ use std::{
 pub trait TaskStore: Send + Sync {
     fn upsert_session(&self, session: &SessionRecord) -> Result<(), AgentError>;
     fn insert_task(&self, task: &TaskRecord) -> Result<(), AgentError>;
+    /// 原子提交任务与 Session 占位，失败时两者都不改变。
+    fn submit_task(&self, task: &TaskRecord, session: &SessionRecord) -> Result<(), AgentError>;
     fn update_task(&self, task: &TaskRecord) -> Result<(), AgentError>;
     /// 原子完成：终态结果与 Session 占位清空在同一事务里提交。
     /// 不允许先写半个结果再宣布 Completed。
@@ -282,6 +284,16 @@ impl TaskStore for SqliteStore {
         write_task(&conn, task, true)
     }
 
+    fn submit_task(&self, task: &TaskRecord, session: &SessionRecord) -> Result<(), AgentError> {
+        let mut conn = self.conn()?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| store_error("begin submit tx", e))?;
+        write_session(&tx, session, false)?;
+        write_task(&tx, task, true)?;
+        tx.commit().map_err(|e| store_error("commit submit tx", e))
+    }
+
     fn update_task(&self, task: &TaskRecord) -> Result<(), AgentError> {
         let conn = self.conn()?;
         write_task(&conn, task, false)
@@ -413,6 +425,13 @@ impl TaskStore for MemoryStore {
             .lock()
             .unwrap()
             .insert(task.task_id.clone(), task.clone());
+        Ok(())
+    }
+    fn submit_task(&self, task: &TaskRecord, session: &SessionRecord) -> Result<(), AgentError> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let mut tasks = self.tasks.lock().unwrap();
+        sessions.insert(session.session_id.clone(), session.clone());
+        tasks.insert(task.task_id.clone(), task.clone());
         Ok(())
     }
     fn update_task(&self, task: &TaskRecord) -> Result<(), AgentError> {
