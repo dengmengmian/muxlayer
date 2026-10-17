@@ -1,0 +1,66 @@
+{
+  "started_at": "2026-10-17T11:56:45Z",
+  "binary_sha256": "e757121da74fc95a7382c2f6cc5c5b1bfb7e81c8e9800f916727d8a12b51f029",
+  "install": {
+    "binary": "/private/tmp/muxlayer-rc-20261017/install/bin/agentgate-serve",
+    "version": "agentgate 2.0.8",
+    "tools": [
+      "agent_list",
+      "agent_run",
+      "agent_continue",
+      "agent_status",
+      "agent_cancel"
+    ],
+    "agents": [
+      {
+        "id": "claude-code",
+        "name": "Claude Code",
+        "permissions": [
+          "read_only"
+        ],
+        "supports_cancel": true,
+        "supports_continuation": true
+      },
+      {
+        "id": "codex-native",
+        "name": "Codex Native",
+        "permissions": [
+          "read_only"
+        ],
+        "supports_cancel": true,
+        "supports_continuation": true
+      }
+    ],
+    "service": {
+      "agents": [
+        {
+          "id": "claude-code",
+          "name": "Claude Code",
+          "permissions": [
+            "read_only"
+          ],
+          "supports_cancel": true,
+          "supports_continuation": true
+        },
+        {
+          "id": "codex-native",
+          "name": "Codex Native",
+          "permissions": [
+            "read_only"
+          ],
+          "supports_cancel": true,
+          "supports_continuation": true
+        }
+      ],
+      "running_task_ids": [],
+      "service": "muxlayer-agent-service",
+      "version": "2.0.8"
+    },
+    "client_exit_kept_service": true,
+    "stdout_bytes_on_empty_input": 0,
+    "codex_override": "/opt/homebrew/bin/codex",
+    "claude_override": "/Users/mengmian/.local/bin/claude"
+  },
+  "verdict": "PASS",
+  "finished_at": "2026-10-17T11:56:47Z"
+}

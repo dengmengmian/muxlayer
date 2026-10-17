@@ -190,8 +190,8 @@ MCP stdio Server 只做请求解析、参数校验、调用 Agent Service（经 
 | `agent_cancel` | `{ "task_id": "..." }` | 请求取消后的 `TaskRecord`（**不是**终态） |
 
 - `agent_run` / `agent_continue` 只提交任务，必须快速返回；执行在 Agent Service 后台进行。
-- `AgentError` 映射为 `isError: true` 的工具结果，文本是 `{"error":{"code","message"}}`，保留原 code 与 message。
-- `agent_status` 返回 `failed/interrupted/cancelled` 也是一次成功查询，不是 MCP 传输失败。
+- 顶层 `AgentError` 映射为 `isError: true` 的工具结果，文本是 `{"error":{"code","message"}}`，保留原 code 与 message。
+- `agent_status` / `agent_cancel` 返回的 `TaskRecord.error` 是任务数据，不是工具失败；`failed/interrupted/cancelled` 也是一次成功查询，必须保持 `isError: false`，否则客户端无法读取取消或失败后的结果。
 - 未知工具或参数缺失 → JSON-RPC `-32602`；未知方法 → `-32601`；解析失败 → `-32700`。
 - 协议方法：`initialize`、`notifications/initialized`、`ping`、`logging/setLevel`、`tools/list`、`tools/call`。`initialize` 在 `2024-11-05` / `2025-03-26` / `2025-06-18` 中原样回显，否则回落到 `2025-06-18`。
 - stdout 只允许协议消息；tracing 在 `mcp-agent` 模式写入 stderr（有自动化测试断言 stdout 为空）。
@@ -235,6 +235,7 @@ MCP stdio Server 只做请求解析、参数校验、调用 Agent Service（经 
 - IPC 与 MCP 输入均在读取期间限制 32 MiB（含换行），不等 EOF 才检查。IPC 响应超限返回结构化 `invalid_request`，提示显式分页，同一连接仍可查询；不静默截断。`agent_cancel` 的完整快照也受此限制，取消动作可能已执行，应使用 `agent_status` 显式分页确认。
 - 客户端每次请求 30 秒超时；服务端所有方法都必须快速返回（任务在后台执行）。
 - 连接断开只影响该连接：任务属于服务端，继续执行；重连后可用原 `task_id` / `session_id` 继续。
+- MCP 自动拉起的 Service 在 Unix 上使用独立进程组：终端关闭的 `SIGHUP`、Ctrl+C 的 `SIGINT` 只发给前台 MCP 客户端，不会连带终止 Service 和正在执行的任务。这不是新的 daemon 体系，只是让既有 Service 真正脱离客户端进程组。
 - 连接之间互不阻塞（每个连接独立任务）。
 - 单实例所有权：CLI 在打开数据库、恢复任务前获取 OS 文件锁，失败返回 `busy`；PID 文本不参与裁决。锁文件永久保留，退出只释放句柄，避免 unlink 造成 inode 分裂。socket probe 仅用于兼容发现已有旧服务。
 - MCP 传输断开只重试 `agent_list` / `agent_status`；变更请求不自动重放，明确报告结果未知，避免重复执行。
@@ -307,5 +308,6 @@ AGENTGATE_CODEX_BIN=/opt/homebrew/bin/codex cargo test \
 3. CodeLeveler / Pi 常规 run / status / continue、完整结果已真实通过；CodeLeveler 显式取消、Pi Unicode 分页、Pi → Claude Code 亦已通过；全部异常退出及原生聊天取消联动语义未穷尽。
 4. Claude Code 实际推理来源为用户既有 DeepSeek 配置；未宣称官方 Anthropic 模型验收。
 5. 长期容量管理与 UI 均未扩展。
+6. macOS RC 为 **CONDITIONAL_PASS**：headless CLI 真实安装、MCP、Codex、Claude Code、CodeLeveler、Pi 与 A–H 已验收；Service 终端组信号和 MCP `isError` 已修复。仍保留 turn-start 窗口取消竞态、CodeLeveler 1.0.16 客户端版本条件和 Windows 未验收，见 [macOS RC 报告](agent-gateway-macos-rc.md)。
 
-完整证据、Commit SHA 与未解决风险见 [第三阶段验收报告](agent-gateway-phase-three-verification.md)。改变核心接口前仍需具体复现与兼容方案。
+完整证据、Commit SHA 与未解决风险见 [第三阶段验收报告](agent-gateway-phase-three-verification.md) 和 [macOS RC 报告](agent-gateway-macos-rc.md)。改变核心接口前仍需具体复现与兼容方案。

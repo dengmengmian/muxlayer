@@ -1,0 +1,34 @@
+{
+  "date": "2026-10-17",
+  "platform": "macOS 26.6.2 arm64",
+  "commands": {
+    "format": "cargo fmt --manifest-path src-tauri/Cargo.toml --check",
+    "version_consistency": "bash scripts/check-version-consistency.sh",
+    "agent_gateway_unit": "cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features cli --lib agent_gateway::",
+    "full_lib": "cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features cli --lib",
+    "mcp_ipc": "cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features cli --test agent_gateway_mcp_ipc --test agent_gateway_phase_three_cli",
+    "live_codex_claude": "AGENTGATE_CODEX_BIN=/opt/homebrew/bin/codex cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features cli --test agent_gateway_phase_two_live -- --ignored --nocapture --test-threads=1",
+    "live_codex_library": "AGENTGATE_CODEX_BIN=/opt/homebrew/bin/codex cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features cli --test agent_gateway_codex_live -- --ignored --nocapture",
+    "protocol_fixture": "cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features cli --test protocol_fixture",
+    "clippy_lib": "cargo clippy --manifest-path src-tauri/Cargo.toml --no-default-features --features cli --lib -- -D warnings",
+    "clippy_lib_tests": "cargo clippy --manifest-path src-tauri/Cargo.toml --no-default-features --features cli --lib --tests -- -D warnings",
+    "lifecycle": "AGENTGATE_CODEX_BIN=/opt/homebrew/bin/codex python3 scripts/verify-agent-gateway-lifecycle.py --binary /tmp/muxlayer-rc-20261017/install/bin/agentgate-serve --codex /opt/homebrew/bin/codex --output /tmp/muxlayer-rc-20261017/lifecycle",
+    "installed_rc": "python3 scripts/verify-agent-gateway-rc.py --binary /tmp/muxlayer-rc-20261017/install/bin/agentgate-serve --output /tmp/muxlayer-rc-20261017/evidence-<scenario> --scenario <install|hangup|codex|claude>"
+  },
+  "results": {
+    "format": "PASS",
+    "version_consistency": "PASS (2.0.8)",
+    "agent_gateway_unit": "75 passed / 0 failed / 3 ignored",
+    "full_lib": "1440 passed / 0 failed / 3 ignored",
+    "mcp_ipc": "9 passed / 0 failed",
+    "phase_three_cli": "1 passed / 0 failed",
+    "live_codex_claude": "4 passed / 0 failed (50.68s)",
+    "live_codex_library": "1 passed / 0 failed (64.27s)",
+    "protocol_fixture": "38 passed / 2 failed (known baseline: metrics_requires_token_only_and_health_does_not, unauthenticated_request_is_rejected_before_body_is_read)",
+    "clippy_lib": "PASS",
+    "clippy_lib_tests": "3 known baseline CLI lints only: print_literal (serve.rs:867), unnecessary_map_or (serve.rs:872), too_many_arguments (serve.rs:958)",
+    "lifecycle": "A-H 8/8 PASS; survivors empty for every scenario; all unrelated sentinels alive",
+    "installed_rc": "install PASS, hangup PASS, codex PASS, claude PASS"
+  },
+  "baseline_note": "The two protocol_fixture failures and three CLI lints predate this round and were not modified or marked ignored."
+}

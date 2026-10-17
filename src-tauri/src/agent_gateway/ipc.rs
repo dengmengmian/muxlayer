@@ -880,6 +880,13 @@ pub fn spawn_detached_service(db_dir: &Path, executable: &Path) -> Result<(), Ag
         .stdout(std::process::Stdio::from(log))
         .stderr(std::process::Stdio::from(log2))
         .current_dir(std::env::temp_dir());
+    // 独立进程组：终端关闭的 SIGHUP 和 Ctrl+C 的 SIGINT 只发给前台组，
+    // 不能连带结束后台任务。这里不做新的 daemon，只让既有服务真正脱离客户端组。
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
     let child = command.spawn().map_err(|e| {
         AgentError::new(
             ErrorCode::Adapter,

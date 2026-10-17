@@ -288,12 +288,15 @@ async fn handle_call(gateway: &mut Gateway, id: Option<Value>, params: &Value) -
     };
     match gateway.call(method, forwarded).await {
         Ok(value) => {
-            // `agent_*` 业务错误由服务端以 {"error":{"code","message"}} 明确回答，
-            // 这仍然是一次成功的工具调用；注意 TaskRecord.error 为 null 时不算错误。
-            let is_error = value
-                .get("error")
-                .and_then(|error| error.get("code"))
-                .is_some();
+            // `agent_*` 业务错误由服务端以 {"error":{"code","message"}} 明确回答。
+            // TaskRecord（status / cancel）自身的 error 是任务数据，不能把一次成功的
+            // 状态查询标成工具失败——取消或失败的任务仍必须可被客户端读取。
+            let is_task_record = value.get("task_id").is_some() && value.get("state").is_some();
+            let is_error = !is_task_record
+                && value
+                    .get("error")
+                    .and_then(|error| error.get("code"))
+                    .is_some();
             rpc_result(id, tool_text(value, is_error))
         }
         Err(transport) => {
@@ -482,6 +485,78 @@ mod phase_three_tests {
             ErrorCode::InvalidRequest
         );
         assert!(line.len() <= MAX_MESSAGE_BYTES + 1);
+    }
+
+    #[tokio::test]
+    async fn task_record_error_field_does_not_mark_status_or_cancel_as_tool_error() {
+        use super::super::ipc::{IpcClient, ServicePaths};
+        let dir = tempfile::tempdir().unwrap();
+        let mut paths = ServicePaths::new(dir.path());
+        paths.socket = dir.path().join("s");
+        std::fs::create_dir_all(&paths.dir).unwrap();
+        std::fs::write(&paths.token, "test-token").unwrap();
+        let listener = tokio::net::UnixListener::bind(&paths.socket).unwrap();
+        let record = json!({
+            "task_id": "t1", "session_id": "s1", "prompt": "p",
+            "state": "cancelled", "thread_id": "th", "turn_id": "tu",
+            "final_answer": null,
+            "error": {"code": "adapter", "message": "cancelled by request"},
+            "events": [], "cancel_requested": true,
+            "created_at": "2026-10-17T00:00:00Z", "finished_at": "2026-10-17T00:00:01Z"
+        });
+        let worker = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = BufReader::new(stream);
+            let mut line = String::new();
+            stream.read_line(&mut line).await.unwrap();
+            let hello: Value = serde_json::from_str(&line).unwrap();
+            let response = json!({"id": hello["id"], "result": {}}).to_string() + "\n";
+            stream
+                .get_mut()
+                .write_all(response.as_bytes())
+                .await
+                .unwrap();
+            for _ in 0..3 {
+                line.clear();
+                stream.read_line(&mut line).await.unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let result = match request["method"].as_str().unwrap() {
+                    "agent_status" | "agent_cancel" => record.clone(),
+                    _ => json!({"error": {"code": "invalid_request", "message": "bad"}}),
+                };
+                let response = json!({"id": request["id"], "result": result}).to_string() + "\n";
+                stream
+                    .get_mut()
+                    .write_all(response.as_bytes())
+                    .await
+                    .unwrap();
+            }
+        });
+        let client = IpcClient::connect(&paths).await.unwrap();
+        let mut gateway = Gateway {
+            db_dir: dir.path().to_owned(),
+            executable: dir.path().join("missing-executable"),
+            client: Some(client),
+        };
+        for (sequence, tool) in [(1, "agent_status"), (2, "agent_cancel")] {
+            let response = handle_call(
+                &mut gateway,
+                Some(json!(sequence)),
+                &json!({"name": tool, "arguments": {"task_id": "t1"}}),
+            )
+            .await;
+            assert_eq!(response["result"]["isError"], false, "{tool}: {response}");
+        }
+        let failed_run = handle_call(
+            &mut gateway,
+            Some(json!(3)),
+            &json!({"name": "agent_run", "arguments": {
+                "agent": "codex-native", "cwd": "/tmp", "prompt": "x",
+                "permission": "read_only"}}),
+        )
+        .await;
+        assert_eq!(failed_run["result"]["isError"], true, "{failed_run}");
+        worker.await.unwrap();
     }
 
     #[tokio::test]

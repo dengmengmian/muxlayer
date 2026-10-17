@@ -1,0 +1,1160 @@
+[
+  {
+    "mode": "A",
+    "pass": true,
+    "task": {
+      "session_id": "e623ef45-fcf9-49d3-939f-2514f7d12677",
+      "task_id": "4509dca9-4b63-4201-a5e4-cf6a670460f2"
+    },
+    "service": {
+      "pid": 31207,
+      "parent": 31185,
+      "group": 31174,
+      "state": "S",
+      "command": "/private/tmp/muxlayer-rc-20261017/install/bin/agentgate-serve",
+      "started": "Sat Oct 17 19:52:12 2026",
+      "sid": 31174,
+      "unique": 140092345,
+      "parent_unique": 140092323,
+      "version": 219603398
+    },
+    "before": [
+      {
+        "pid": 31239,
+        "parent": 31207,
+        "group": 31239,
+        "state": "S",
+        "command": "/private/tmp/muxlayer-rc-20261017/install/bin/agentgate-serve",
+        "started": "Sat Oct 17 19:52:12 2026",
+        "sid": 31174,
+        "unique": 140092377,
+        "parent_unique": 140092345,
+        "version": 219603448
+      },
+      {
+        "pid": 31240,
+        "parent": 31239,
+        "group": 31240,
+        "state": "S",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Sat Oct 17 19:52:12 2026",
+        "sid": 31174,
+        "unique": 140092378,
+        "parent_unique": 140092377,
+        "version": 219603450
+      },
+      {
+        "pid": 31930,
+        "parent": 31240,
+        "group": 31930,
+        "state": "S",
+        "command": "/opt/homebrew/Caskroom/codex/0.162.1/bin/codex-code-mode-host",
+        "started": "Sat Oct 17 19:52:18 2026",
+        "sid": 31174,
+        "unique": 140093063,
+        "parent_unique": 140092378,
+        "version": 219604461
+      },
+      {
+        "pid": 31931,
+        "parent": 31240,
+        "group": 31931,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Sat Oct 17 19:52:18 2026",
+        "sid": 31931,
+        "unique": 140093064,
+        "parent_unique": 140092378,
+        "version": 219604466
+      },
+      {
+        "pid": 31978,
+        "parent": 31207,
+        "group": 31978,
+        "state": "S",
+        "command": "/private/tmp/muxlayer-rc-20261017/install/bin/agentgate-serve",
+        "started": "Sat Oct 17 19:52:18 2026",
+        "sid": 31174,
+        "unique": 140093111,
+        "parent_unique": 140092345,
+        "version": 219604550
+      },
+      {
+        "pid": 31979,
+        "parent": 31978,
+        "group": 31979,
+        "state": "S",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Sat Oct 17 19:52:18 2026",
+        "sid": 31174,
+        "unique": 140093112,
+        "parent_unique": 140093111,
+        "version": 219604552
+      }
+    ],
+    "appserver": {
+      "pid": 31240,
+      "parent": 31239,
+      "group": 31240,
+      "state": "S",
+      "command": "/opt/homebrew/bin/codex",
+      "started": "Sat Oct 17 19:52:12 2026",
+      "sid": 31174,
+      "unique": 140092378,
+      "parent_unique": 140092377,
+      "version": 219603450
+    },
+    "independent_shells": [
+      {
+        "pid": 31931,
+        "parent": 31240,
+        "group": 31931,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Sat Oct 17 19:52:18 2026",
+        "sid": 31931,
+        "unique": 140093064,
+        "parent_unique": 140092378,
+        "version": 219604466
+      }
+    ],
+    "survivors": [],
+    "cancel_state": "cancelled",
+    "continued_task": {
+      "session_id": "e623ef45-fcf9-49d3-939f-2514f7d12677",
+      "task_id": "4ff51d2a-51e4-439f-876e-efbe3d233e48"
+    },
+    "continued_thread": "01a149b4-9578-70c0-b54f-2d81cb5419e7",
+    "resumed_provider": {
+      "pid": 31979,
+      "parent": 31978,
+      "group": 31979,
+      "state": "S",
+      "command": "/opt/homebrew/bin/codex",
+      "started": "Sat Oct 17 19:52:18 2026",
+      "sid": 31174,
+      "unique": 140093112,
+      "parent_unique": 140093111,
+      "version": 219604552
+    },
+    "resumed_scope": [
+      {
+        "pid": 31978,
+        "parent": 31207,
+        "group": 31978,
+        "state": "S",
+        "command": "/private/tmp/muxlayer-rc-20261017/install/bin/agentgate-serve",
+        "started": "Sat Oct 17 19:52:18 2026",
+        "sid": 31174,
+        "unique": 140093111,
+        "parent_unique": 140092345,
+        "version": 219604550
+      },
+      {
+        "pid": 31979,
+        "parent": 31978,
+        "group": 31979,
+        "state": "S",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Sat Oct 17 19:52:18 2026",
+        "sid": 31174,
+        "unique": 140093112,
+        "parent_unique": 140093111,
+        "version": 219604552
+      }
+    ],
+    "after_shutdown_survivors": [],
+    "sentinels_before": [
+      {
+        "pid": 31190,
+        "parent": 31185,
+        "group": 31190,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Sat Oct 17 19:52:12 2026",
+        "sid": 31190,
+        "unique": 140092328,
+        "parent_unique": 140092323,
+        "version": 219603367
+      },
+      {
+        "pid": 31191,
+        "parent": 31185,
+        "group": 31191,
+        "state": "Ss",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Sat Oct 17 19:52:12 2026",
+        "sid": 31191,
+        "unique": 140092329,
+        "parent_unique": 140092323,
+        "version": 219603365
+      }
+    ],
+    "sentinels_alive": true,
+    "task_state": "cancelled"
+  },
+  {
+    "mode": "B_appserver_eof",
+    "pass": true,
+    "before": [
+      {
+        "pid": 32579,
+        "parent": 32578,
+        "group": 32579,
+        "state": "R",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Sat Oct 17 19:52:23 2026",
+        "sid": 31174,
+        "unique": 140093708,
+        "parent_unique": 140093707,
+        "version": 219605450
+      },
+      {
+        "pid": 32581,
+        "parent": 32579,
+        "group": 32581,
+        "state": "Rs",
+        "command": "/bin/sleep",
+        "started": "Sat Oct 17 19:52:23 2026",
+        "sid": 32581,
+        "unique": 140093710,
+        "parent_unique": 140093708,
+        "version": 219605455
+      }
+    ],
+    "survivors": [],
+    "appserver": {
+      "pid": 32579,
+      "parent": 32578,
+      "group": 32579,
+      "state": "R",
+      "command": "/opt/homebrew/bin/codex",
+      "started": "Sat Oct 17 19:52:23 2026",
+      "sid": 31174,
+      "unique": 140093708,
+      "parent_unique": 140093707,
+      "version": 219605450
+    },
+    "guardian_exit": 0,
+    "appserver_raw_exit_status": 0,
+    "sentinels_before": [
+      {
+        "pid": 31190,
+        "parent": 31185,
+        "group": 31190,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Sat Oct 17 19:52:12 2026",
+        "sid": 31190,
+        "unique": 140092328,
+        "parent_unique": 140092323,
+        "version": 219603367
+      },
+      {
+        "pid": 31191,
+        "parent": 31185,
+        "group": 31191,
+        "state": "Ss",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Sat Oct 17 19:52:12 2026",
+        "sid": 31191,
+        "unique": 140092329,
+        "parent_unique": 140092323,
+        "version": 219603365
+      }
+    ],
+    "sentinels_alive": true
+  },
+  {
+    "mode": "C",
+    "pass": true,
+    "task": {
+      "session_id": "9f50831d-2a0a-47fd-a831-b76540e2091b",
+      "task_id": "50b038a1-018c-42ee-9c90-3cb8a1afa6f8"
+    },
+    "service": {
+      "pid": 32618,
+      "parent": 31185,
+      "group": 31174,
+      "state": "S",
+      "command": "/private/tmp/muxlayer-rc-20261017/install/bin/agentgate-serve",
+      "started": "Sat Oct 17 19:52:23 2026",
+      "sid": 31174,
+      "unique": 140093747,
+      "parent_unique": 140092323,
+      "version": 219605520
+    },
+    "before": [
+      {
+        "pid": 32629,
+        "parent": 32618,
+        "group": 32629,
+        "state": "S",
+        "command": "/private/tmp/muxlayer-rc-20261017/install/bin/agentgate-serve",
+        "started": "Sat Oct 17 19:52:24 2026",
+        "sid": 31174,
+        "unique": 140093758,
+        "parent_unique": 140093747,
+        "version": 219605538
+      },
+      {
+        "pid": 32630,
+        "parent": 32629,
+        "group": 32630,
+        "state": "S",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Sat Oct 17 19:52:24 2026",
+        "sid": 31174,
+        "unique": 140093759,
+        "parent_unique": 140093758,
+        "version": 219605540
+      },
+      {
+        "pid": 33358,
+        "parent": 32630,
+        "group": 33358,
+        "state": "S",
+        "command": "/opt/homebrew/Caskroom/codex/0.162.1/bin/codex-code-mode-host",
+        "started": "Sat Oct 17 19:52:28 2026",
+        "sid": 31174,
+        "unique": 140094482,
+        "parent_unique": 140093759,
+        "version": 219606685
+      },
+      {
+        "pid": 33359,
+        "parent": 32630,
+        "group": 33359,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Sat Oct 17 19:52:28 2026",
+        "sid": 33359,
+        "unique": 140094483,
+        "parent_unique": 140093759,
+        "version": 219606699
+      }
+    ],
+    "appserver": {
+      "pid": 32630,
+      "parent": 32629,
+      "group": 32630,
+      "state": "S",
+      "command": "/opt/homebrew/bin/codex",
+      "started": "Sat Oct 17 19:52:24 2026",
+      "sid": 31174,
+      "unique": 140093759,
+      "parent_unique": 140093758,
+      "version": 219605540
+    },
+    "independent_shells": [
+      {
+        "pid": 33359,
+        "parent": 32630,
+        "group": 33359,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Sat Oct 17 19:52:28 2026",
+        "sid": 33359,
+        "unique": 140094483,
+        "parent_unique": 140093759,
+        "version": 219606699
+      }
+    ],
+    "survivors": [],
+    "sentinels_before": [
+      {
+        "pid": 31190,
+        "parent": 31185,
+        "group": 31190,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Sat Oct 17 19:52:12 2026",
+        "sid": 31190,
+        "unique": 140092328,
+        "parent_unique": 140092323,
+        "version": 219603367
+      },
+      {
+        "pid": 31191,
+        "parent": 31185,
+        "group": 31191,
+        "state": "Ss",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Sat Oct 17 19:52:12 2026",
+        "sid": 31191,
+        "unique": 140092329,
+        "parent_unique": 140092323,
+        "version": 219603365
+      }
+    ],
+    "sentinels_alive": true,
+    "task_state": "interrupted"
+  },
+  {
+    "mode": "D",
+    "pass": true,
+    "task": {
+      "session_id": "172b3146-f4cb-4726-a0dd-b005667deebc",
+      "task_id": "9a4d6abe-8633-4ade-bee9-13db98477f2e"
+    },
+    "service": {
+      "pid": 33373,
+      "parent": 31185,
+      "group": 31174,
+      "state": "S",
+      "command": "/private/tmp/muxlayer-rc-20261017/install/bin/agentgate-serve",
+      "started": "Sat Oct 17 19:52:29 2026",
+      "sid": 31174,
+      "unique": 140094497,
+      "parent_unique": 140092323,
+      "version": 219606718
+    },
+    "before": [
+      {
+        "pid": 33417,
+        "parent": 33373,
+        "group": 33417,
+        "state": "S",
+        "command": "/private/tmp/muxlayer-rc-20261017/install/bin/agentgate-serve",
+        "started": "Sat Oct 17 19:52:29 2026",
+        "sid": 31174,
+        "unique": 140094541,
+        "parent_unique": 140094497,
+        "version": 219606794
+      },
+      {
+        "pid": 33418,
+        "parent": 33417,
+        "group": 33418,
+        "state": "S",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Sat Oct 17 19:52:29 2026",
+        "sid": 31174,
+        "unique": 140094542,
+        "parent_unique": 140094541,
+        "version": 219606796
+      },
+      {
+        "pid": 34046,
+        "parent": 33418,
+        "group": 34046,
+        "state": "S",
+        "command": "/opt/homebrew/Caskroom/codex/0.162.1/bin/codex-code-mode-host",
+        "started": "Sat Oct 17 19:52:34 2026",
+        "sid": 31174,
+        "unique": 140095168,
+        "parent_unique": 140094542,
+        "version": 219607700
+      },
+      {
+        "pid": 34047,
+        "parent": 33418,
+        "group": 34047,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Sat Oct 17 19:52:34 2026",
+        "sid": 34047,
+        "unique": 140095169,
+        "parent_unique": 140094542,
+        "version": 219607705
+      }
+    ],
+    "appserver": {
+      "pid": 33418,
+      "parent": 33417,
+      "group": 33418,
+      "state": "S",
+      "command": "/opt/homebrew/bin/codex",
+      "started": "Sat Oct 17 19:52:29 2026",
+      "sid": 31174,
+      "unique": 140094542,
+      "parent_unique": 140094541,
+      "version": 219606796
+    },
+    "independent_shells": [
+      {
+        "pid": 34047,
+        "parent": 33418,
+        "group": 34047,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Sat Oct 17 19:52:34 2026",
+        "sid": 34047,
+        "unique": 140095169,
+        "parent_unique": 140094542,
+        "version": 219607705
+      }
+    ],
+    "survivors": [],
+    "sentinels_before": [
+      {
+        "pid": 31190,
+        "parent": 31185,
+        "group": 31190,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Sat Oct 17 19:52:12 2026",
+        "sid": 31190,
+        "unique": 140092328,
+        "parent_unique": 140092323,
+        "version": 219603367
+      },
+      {
+        "pid": 31191,
+        "parent": 31185,
+        "group": 31191,
+        "state": "Ss",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Sat Oct 17 19:52:12 2026",
+        "sid": 31191,
+        "unique": 140092329,
+        "parent_unique": 140092323,
+        "version": 219603365
+      }
+    ],
+    "sentinels_alive": true,
+    "task_state": "interrupted"
+  },
+  {
+    "mode": "E",
+    "pass": true,
+    "task": {
+      "session_id": "ffdc4559-ccc4-47df-8bfa-d48f4cce5d2c",
+      "task_id": "8dbf3628-91ad-4f75-9dee-181ae877db6b"
+    },
+    "service": {
+      "pid": 34094,
+      "parent": 31185,
+      "group": 31174,
+      "state": "S",
+      "command": "/private/tmp/muxlayer-rc-20261017/install/bin/agentgate-serve",
+      "started": "Sat Oct 17 19:52:34 2026",
+      "sid": 31174,
+      "unique": 140095216,
+      "parent_unique": 140092323,
+      "version": 219607784
+    },
+    "before": [
+      {
+        "pid": 34107,
+        "parent": 34094,
+        "group": 34107,
+        "state": "S",
+        "command": "/private/tmp/muxlayer-rc-20261017/install/bin/agentgate-serve",
+        "started": "Sat Oct 17 19:52:35 2026",
+        "sid": 31174,
+        "unique": 140095229,
+        "parent_unique": 140095216,
+        "version": 219607806
+      },
+      {
+        "pid": 34108,
+        "parent": 34107,
+        "group": 34108,
+        "state": "S",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Sat Oct 17 19:52:35 2026",
+        "sid": 31174,
+        "unique": 140095230,
+        "parent_unique": 140095229,
+        "version": 219607808
+      },
+      {
+        "pid": 35028,
+        "parent": 34108,
+        "group": 35028,
+        "state": "S",
+        "command": "/opt/homebrew/Caskroom/codex/0.162.1/bin/codex-code-mode-host",
+        "started": "Sat Oct 17 19:52:44 2026",
+        "sid": 31174,
+        "unique": 140096147,
+        "parent_unique": 140095230,
+        "version": 219609247
+      },
+      {
+        "pid": 35029,
+        "parent": 34108,
+        "group": 35029,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Sat Oct 17 19:52:44 2026",
+        "sid": 35029,
+        "unique": 140096148,
+        "parent_unique": 140095230,
+        "version": 219609254
+      }
+    ],
+    "appserver": {
+      "pid": 34108,
+      "parent": 34107,
+      "group": 34108,
+      "state": "S",
+      "command": "/opt/homebrew/bin/codex",
+      "started": "Sat Oct 17 19:52:35 2026",
+      "sid": 31174,
+      "unique": 140095230,
+      "parent_unique": 140095229,
+      "version": 219607808
+    },
+    "independent_shells": [
+      {
+        "pid": 35029,
+        "parent": 34108,
+        "group": 35029,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Sat Oct 17 19:52:44 2026",
+        "sid": 35029,
+        "unique": 140096148,
+        "parent_unique": 140095230,
+        "version": 219609254
+      }
+    ],
+    "guardian_exit_events": [
+      {
+        "pid": 34107,
+        "flags": 2214592512,
+        "raw_status": 0
+      }
+    ],
+    "survivors": [],
+    "sentinels_before": [
+      {
+        "pid": 31190,
+        "parent": 31185,
+        "group": 31190,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Sat Oct 17 19:52:12 2026",
+        "sid": 31190,
+        "unique": 140092328,
+        "parent_unique": 140092323,
+        "version": 219603367
+      },
+      {
+        "pid": 31191,
+        "parent": 31185,
+        "group": 31191,
+        "state": "Ss",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Sat Oct 17 19:52:12 2026",
+        "sid": 31191,
+        "unique": 140092329,
+        "parent_unique": 140092323,
+        "version": 219603365
+      }
+    ],
+    "sentinels_alive": true,
+    "task_state": "interrupted"
+  },
+  {
+    "mode": "F",
+    "pass": true,
+    "task": {
+      "session_id": "5c527e8c-5a25-47cc-8c99-1bb69a698843",
+      "task_id": "158f835f-817e-46e6-81f4-41a061337e93"
+    },
+    "service": {
+      "pid": 35090,
+      "parent": 31185,
+      "group": 31174,
+      "state": "S",
+      "command": "/private/tmp/muxlayer-rc-20261017/install/bin/agentgate-serve",
+      "started": "Sat Oct 17 19:52:45 2026",
+      "sid": 31174,
+      "unique": 140096209,
+      "parent_unique": 140092323,
+      "version": 219609362
+    },
+    "before": [
+      {
+        "pid": 35138,
+        "parent": 35090,
+        "group": 35138,
+        "state": "S",
+        "command": "/private/tmp/muxlayer-rc-20261017/install/bin/agentgate-serve",
+        "started": "Sat Oct 17 19:52:45 2026",
+        "sid": 31174,
+        "unique": 140096257,
+        "parent_unique": 140096209,
+        "version": 219609447
+      },
+      {
+        "pid": 35140,
+        "parent": 35138,
+        "group": 35140,
+        "state": "S",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Sat Oct 17 19:52:45 2026",
+        "sid": 31174,
+        "unique": 140096259,
+        "parent_unique": 140096257,
+        "version": 219609452
+      },
+      {
+        "pid": 35964,
+        "parent": 35140,
+        "group": 35964,
+        "state": "S",
+        "command": "/opt/homebrew/Caskroom/codex/0.162.1/bin/codex-code-mode-host",
+        "started": "Sat Oct 17 19:52:53 2026",
+        "sid": 31174,
+        "unique": 140097079,
+        "parent_unique": 140096259,
+        "version": 219610709
+      },
+      {
+        "pid": 35965,
+        "parent": 35140,
+        "group": 35965,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Sat Oct 17 19:52:53 2026",
+        "sid": 35965,
+        "unique": 140097080,
+        "parent_unique": 140096259,
+        "version": 219610714
+      }
+    ],
+    "appserver": {
+      "pid": 35140,
+      "parent": 35138,
+      "group": 35140,
+      "state": "S",
+      "command": "/opt/homebrew/bin/codex",
+      "started": "Sat Oct 17 19:52:45 2026",
+      "sid": 31174,
+      "unique": 140096259,
+      "parent_unique": 140096257,
+      "version": 219609452
+    },
+    "independent_shells": [
+      {
+        "pid": 35965,
+        "parent": 35140,
+        "group": 35965,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Sat Oct 17 19:52:53 2026",
+        "sid": 35965,
+        "unique": 140097080,
+        "parent_unique": 140096259,
+        "version": 219610714
+      }
+    ],
+    "disconnect_preserved_processes": true,
+    "survivors": [],
+    "cancel_state": "cancelled",
+    "after_shutdown_survivors": [],
+    "sentinels_before": [
+      {
+        "pid": 31190,
+        "parent": 31185,
+        "group": 31190,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Sat Oct 17 19:52:12 2026",
+        "sid": 31190,
+        "unique": 140092328,
+        "parent_unique": 140092323,
+        "version": 219603367
+      },
+      {
+        "pid": 31191,
+        "parent": 31185,
+        "group": 31191,
+        "state": "Ss",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Sat Oct 17 19:52:12 2026",
+        "sid": 31191,
+        "unique": 140092329,
+        "parent_unique": 140092323,
+        "version": 219603365
+      }
+    ],
+    "sentinels_alive": true,
+    "task_state": "cancelled"
+  },
+  {
+    "mode": "G",
+    "pass": true,
+    "task": {
+      "session_id": "0399dd32-3575-4224-9aed-ddac376e48a0",
+      "task_id": "c380b55c-6ade-4564-86f0-c98dedc4c519"
+    },
+    "service": {
+      "pid": 36018,
+      "parent": 31185,
+      "group": 31174,
+      "state": "S",
+      "command": "/private/tmp/muxlayer-rc-20261017/install/bin/agentgate-serve",
+      "started": "Sat Oct 17 19:52:54 2026",
+      "sid": 31174,
+      "unique": 140097133,
+      "parent_unique": 140092323,
+      "version": 219610805
+    },
+    "before": [
+      {
+        "pid": 36033,
+        "parent": 36018,
+        "group": 36033,
+        "state": "S",
+        "command": "/private/tmp/muxlayer-rc-20261017/install/bin/agentgate-serve",
+        "started": "Sat Oct 17 19:52:55 2026",
+        "sid": 31174,
+        "unique": 140097148,
+        "parent_unique": 140097133,
+        "version": 219610830
+      },
+      {
+        "pid": 36034,
+        "parent": 36033,
+        "group": 36034,
+        "state": "S",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Sat Oct 17 19:52:55 2026",
+        "sid": 31174,
+        "unique": 140097149,
+        "parent_unique": 140097148,
+        "version": 219610832
+      },
+      {
+        "pid": 36903,
+        "parent": 36034,
+        "group": 36903,
+        "state": "S",
+        "command": "/opt/homebrew/Caskroom/codex/0.162.1/bin/codex-code-mode-host",
+        "started": "Sat Oct 17 19:53:01 2026",
+        "sid": 31174,
+        "unique": 140098015,
+        "parent_unique": 140097149,
+        "version": 219612252
+      },
+      {
+        "pid": 36904,
+        "parent": 36034,
+        "group": 36904,
+        "state": "Ss",
+        "command": "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python",
+        "started": "Sat Oct 17 19:53:01 2026",
+        "sid": 36904,
+        "unique": 140098016,
+        "parent_unique": 140097149,
+        "version": 219612511
+      },
+      {
+        "pid": 37052,
+        "parent": 36904,
+        "group": 37052,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Sat Oct 17 19:53:04 2026",
+        "sid": 37052,
+        "unique": 140098164,
+        "parent_unique": 140098016,
+        "version": 219612517
+      }
+    ],
+    "appserver": {
+      "pid": 36034,
+      "parent": 36033,
+      "group": 36034,
+      "state": "S",
+      "command": "/opt/homebrew/bin/codex",
+      "started": "Sat Oct 17 19:52:55 2026",
+      "sid": 31174,
+      "unique": 140097149,
+      "parent_unique": 140097148,
+      "version": 219610832
+    },
+    "independent_shells": [
+      {
+        "pid": 37052,
+        "parent": 36904,
+        "group": 37052,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Sat Oct 17 19:53:04 2026",
+        "sid": 37052,
+        "unique": 140098164,
+        "parent_unique": 140098016,
+        "version": 219612517
+      }
+    ],
+    "nested_independent_shells": [
+      {
+        "pid": 37052,
+        "parent": 36904,
+        "group": 37052,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Sat Oct 17 19:53:04 2026",
+        "sid": 37052,
+        "unique": 140098164,
+        "parent_unique": 140098016,
+        "version": 219612517
+      }
+    ],
+    "survivors": [],
+    "sentinels_before": [
+      {
+        "pid": 31190,
+        "parent": 31185,
+        "group": 31190,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Sat Oct 17 19:52:12 2026",
+        "sid": 31190,
+        "unique": 140092328,
+        "parent_unique": 140092323,
+        "version": 219603367
+      },
+      {
+        "pid": 31191,
+        "parent": 31185,
+        "group": 31191,
+        "state": "Ss",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Sat Oct 17 19:52:12 2026",
+        "sid": 31191,
+        "unique": 140092329,
+        "parent_unique": 140092323,
+        "version": 219603365
+      }
+    ],
+    "sentinels_alive": true,
+    "task_state": "interrupted"
+  },
+  {
+    "mode": "H",
+    "pass": true,
+    "task": {
+      "session_id": "c349636c-30b6-4379-b71c-135055515761",
+      "task_id": "2a6a29f9-71de-4bac-bf9d-4ded66cc625e"
+    },
+    "service": {
+      "pid": 37060,
+      "parent": 31185,
+      "group": 31174,
+      "state": "S",
+      "command": "/private/tmp/muxlayer-rc-20261017/install/bin/agentgate-serve",
+      "started": "Sat Oct 17 19:53:04 2026",
+      "sid": 31174,
+      "unique": 140098172,
+      "parent_unique": 140092323,
+      "version": 219612534
+    },
+    "before": [
+      {
+        "pid": 37108,
+        "parent": 37060,
+        "group": 37108,
+        "state": "S",
+        "command": "/private/tmp/muxlayer-rc-20261017/install/bin/agentgate-serve",
+        "started": "Sat Oct 17 19:53:05 2026",
+        "sid": 31174,
+        "unique": 140098220,
+        "parent_unique": 140098172,
+        "version": 219612614
+      },
+      {
+        "pid": 37109,
+        "parent": 37108,
+        "group": 37109,
+        "state": "S",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Sat Oct 17 19:53:05 2026",
+        "sid": 31174,
+        "unique": 140098221,
+        "parent_unique": 140098220,
+        "version": 219612616
+      },
+      {
+        "pid": 37717,
+        "parent": 37109,
+        "group": 37717,
+        "state": "S",
+        "command": "/opt/homebrew/Caskroom/codex/0.162.1/bin/codex-code-mode-host",
+        "started": "Sat Oct 17 19:53:09 2026",
+        "sid": 31174,
+        "unique": 140098827,
+        "parent_unique": 140098221,
+        "version": 219613490
+      },
+      {
+        "pid": 37718,
+        "parent": 37109,
+        "group": 37718,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Sat Oct 17 19:53:09 2026",
+        "sid": 37718,
+        "unique": 140098828,
+        "parent_unique": 140098221,
+        "version": 219613495
+      },
+      {
+        "pid": 37725,
+        "parent": 37060,
+        "group": 37725,
+        "state": "S",
+        "command": "/private/tmp/muxlayer-rc-20261017/install/bin/agentgate-serve",
+        "started": "Sat Oct 17 19:53:09 2026",
+        "sid": 31174,
+        "unique": 140098834,
+        "parent_unique": 140098172,
+        "version": 219613506
+      },
+      {
+        "pid": 37726,
+        "parent": 37725,
+        "group": 37726,
+        "state": "S",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Sat Oct 17 19:53:09 2026",
+        "sid": 31174,
+        "unique": 140098835,
+        "parent_unique": 140098834,
+        "version": 219613508
+      },
+      {
+        "pid": 38449,
+        "parent": 37726,
+        "group": 38449,
+        "state": "S",
+        "command": "/opt/homebrew/Caskroom/codex/0.162.1/bin/codex-code-mode-host",
+        "started": "Sat Oct 17 19:53:16 2026",
+        "sid": 31174,
+        "unique": 140099554,
+        "parent_unique": 140098835,
+        "version": 219614565
+      },
+      {
+        "pid": 38450,
+        "parent": 37726,
+        "group": 38450,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Sat Oct 17 19:53:16 2026",
+        "sid": 38450,
+        "unique": 140099555,
+        "parent_unique": 140098835,
+        "version": 219614570
+      }
+    ],
+    "appserver": {
+      "pid": 37109,
+      "parent": 37108,
+      "group": 37109,
+      "state": "S",
+      "command": "/opt/homebrew/bin/codex",
+      "started": "Sat Oct 17 19:53:05 2026",
+      "sid": 31174,
+      "unique": 140098221,
+      "parent_unique": 140098220,
+      "version": 219612616
+    },
+    "independent_shells": [
+      {
+        "pid": 37718,
+        "parent": 37109,
+        "group": 37718,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Sat Oct 17 19:53:09 2026",
+        "sid": 37718,
+        "unique": 140098828,
+        "parent_unique": 140098221,
+        "version": 219613495
+      }
+    ],
+    "second_task": {
+      "session_id": "291df528-acbd-48f2-a603-f8280f061de9",
+      "task_id": "b93b78a2-321a-47f1-811a-378315bbc8e4"
+    },
+    "second_before": [
+      {
+        "pid": 37725,
+        "parent": 37060,
+        "group": 37725,
+        "state": "S",
+        "command": "/private/tmp/muxlayer-rc-20261017/install/bin/agentgate-serve",
+        "started": "Sat Oct 17 19:53:09 2026",
+        "sid": 31174,
+        "unique": 140098834,
+        "parent_unique": 140098172,
+        "version": 219613506
+      },
+      {
+        "pid": 37726,
+        "parent": 37725,
+        "group": 37726,
+        "state": "S",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Sat Oct 17 19:53:09 2026",
+        "sid": 31174,
+        "unique": 140098835,
+        "parent_unique": 140098834,
+        "version": 219613508
+      },
+      {
+        "pid": 38449,
+        "parent": 37726,
+        "group": 38449,
+        "state": "S",
+        "command": "/opt/homebrew/Caskroom/codex/0.162.1/bin/codex-code-mode-host",
+        "started": "Sat Oct 17 19:53:16 2026",
+        "sid": 31174,
+        "unique": 140099554,
+        "parent_unique": 140098835,
+        "version": 219614565
+      },
+      {
+        "pid": 38450,
+        "parent": 37726,
+        "group": 38450,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Sat Oct 17 19:53:16 2026",
+        "sid": 38450,
+        "unique": 140099555,
+        "parent_unique": 140098835,
+        "version": 219614570
+      }
+    ],
+    "survivors": [],
+    "concurrent_session_preserved": true,
+    "second_survivors": [],
+    "cancel_state": "cancelled",
+    "after_shutdown_survivors": [],
+    "sentinels_before": [
+      {
+        "pid": 31190,
+        "parent": 31185,
+        "group": 31190,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Sat Oct 17 19:52:12 2026",
+        "sid": 31190,
+        "unique": 140092328,
+        "parent_unique": 140092323,
+        "version": 219603367
+      },
+      {
+        "pid": 31191,
+        "parent": 31185,
+        "group": 31191,
+        "state": "Ss",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Sat Oct 17 19:52:12 2026",
+        "sid": 31191,
+        "unique": 140092329,
+        "parent_unique": 140092323,
+        "version": 219603365
+      }
+    ],
+    "sentinels_alive": true,
+    "task_state": "interrupted"
+  }
+]

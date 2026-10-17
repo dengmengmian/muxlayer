@@ -1,0 +1,16 @@
+{
+  "verdict": "KNOWN_RACE",
+  "task": {
+    "task_id": "b19cb7aa-c5ec-4789-a245-8fb7d2a00f4b",
+    "session_id": "942271d3-05a2-49a0-9a74-e2353a135256",
+    "state": "queued"
+  },
+  "error": "AssertionError({'error': {'code': 'protocol', 'message': 'turn/interrupt: Codex RPC rejected request (code -32600)'}})",
+  "note": "First cancel ran during the turn-start window and returned a Codex -32600 protocol error. The task stayed running with cancel_requested=true; a subsequent cancel succeeded and reached cancelled. No false terminal state was reported.",
+  "retry": {
+    "task_id": "b19cb7aa-c5ec-4789-a245-8fb7d2a00f4b",
+    "state": "cancelled",
+    "cancel_requested": true,
+    "error": null
+  }
+}

@@ -41,6 +41,9 @@ Thumbs.db
 # Claude Code
 .claude/
 
+# Pi
+/.pi/
+
 # Tauri updater signing keys
 src-tauri/keys/
 .tauri-keys/
