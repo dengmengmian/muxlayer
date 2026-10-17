@@ -516,7 +516,7 @@ mod phase_three_tests {
                 .write_all(response.as_bytes())
                 .await
                 .unwrap();
-            for _ in 0..3 {
+            for _ in 0..4 {
                 line.clear();
                 stream.read_line(&mut line).await.unwrap();
                 let request: Value = serde_json::from_str(&line).unwrap();
@@ -556,6 +556,17 @@ mod phase_three_tests {
         )
         .await;
         assert_eq!(failed_run["result"]["isError"], true, "{failed_run}");
+        let failed_continue = handle_call(
+            &mut gateway,
+            Some(json!(4)),
+            &json!({"name": "agent_continue", "arguments": {
+                "session_id": "s1", "prompt": "x"}}),
+        )
+        .await;
+        assert_eq!(
+            failed_continue["result"]["isError"], true,
+            "{failed_continue}"
+        );
         worker.await.unwrap();
     }
 

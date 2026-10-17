@@ -1,0 +1,41 @@
+{
+  "date": "2026-10-18",
+  "fix_commit": "e4510fa981802fe3b791d70baddb14b775dc7a6a",
+  "fix_subject": "修复 MCP 工具失败被显示为成功",
+  "fix_file": "crates/leveler-tools/src/mcp.rs",
+  "fix_scope": "MCP client boundary only; no CodeLeveler kernel change",
+  "kernel_modified": false,
+  "current_source_head": "64052750f2ba9bc2238c7a8a16c89332f2281313",
+  "current_source_version": "1.0.18",
+  "latest_tag": "v1.0.17",
+  "tags_containing_fix": [],
+  "minimum_compatible": "the first tagged CodeLeveler release containing e4510fa; 1.0.18 is the current source candidate; v1.0.16 and v1.0.17 do not contain it",
+  "installed": {
+    "binary": "/opt/homebrew/bin/leveler",
+    "version": "1.0.16 (693dcc1d6673-dirty) UNTRUSTED",
+    "agentgate_returned_is_error": true,
+    "codeleveler_tool_result_is_error": false,
+    "observed": "the model saw a structured {\"error\":{\"code\":\"not_found\"}} payload but no tool-level failure",
+    "agentgate_binary_sha256": "36636cd202d24a1128657df57f084f7b14cec461a8c50e476a830f98be05bce3",
+    "note": "MCP isError mapping is unchanged between 36636 and the final 769a binary; the installed-client defect is version-based"
+  },
+  "current_build": {
+    "binary": "/Users/mengmian/Develop/app/dengmengmian/CodeLeveler/target/release/leveler",
+    "version": "1.0.18 (e58c259a2382-dirty) UNTRUSTED",
+    "agentgate_returned_is_error": true,
+    "codeleveler_tool_result_is_error": true,
+    "observed": "tool_result.is_error=true; preview=MCP 调用失败:{\"error\":{\"code\":\"not_found\",\"message\":\"task not found\"}}",
+    "agentgate_binary_sha256": "769a2ed28dac3726d74a7846f2bf787fd943b1ea28c9d979cff2f88f12585c73",
+    "agentgate_binary_note": "verified with the final macOS RC binary"
+  },
+  "regression": {
+    "command": "cargo test --release -p leveler-tools --test mcp_tool_error",
+    "result": "1 passed / 0 failed"
+  },
+  "temporary_registration": {
+    "removed": true,
+    "config_sha256_before": "a8c95199c21a93bdb171b9d98c726b37a55aa90206ea6929ac5ff4a258ae8a45",
+    "config_sha256_after": "a8c95199c21a93bdb171b9d98c726b37a55aa90206ea6929ac5ff4a258ae8a45"
+  },
+  "conclusion": "AgentGate MCP emits isError correctly. The installed CodeLeveler 1.0.16 does not consume it; a CodeLeveler release containing e4510fa is a downstream release dependency. No AgentGate change is needed to accommodate the old client."
+}

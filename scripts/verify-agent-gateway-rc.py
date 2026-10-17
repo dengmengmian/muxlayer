@@ -4,6 +4,11 @@
 Runs the real Codex / Claude Code CLIs through the installed `agentgate-serve`
 MCP server. Uses fresh databases under --output and never reads credentials.
 
+Process safety: signals are sent only to a Popen child created with
+start_new_session=True (verified to be its own group leader) or to the exact
+service child handle. Service discovery is read-only; this script never kills by
+process name and never signals an inherited process group.
+
 Scenarios:
   install  installed binary, MCP stdout, auto-start, service survives client exit
   codex    real Codex run / continue / pagination / cancel / read-only / restart
@@ -18,6 +23,7 @@ import shutil
 import signal
 import sqlite3
 import subprocess
+import threading
 import time
 import uuid
 
@@ -92,33 +98,65 @@ class ExistingMcp:
         self.child.wait(timeout=10)
 
 
+def service_sockets(db):
+    paths = Path(db) / "agent-service"
+    standard = paths / "agent-service.sock"
+    if standard.exists():
+        yield standard
+    log = paths / "service.log"
+    if log.exists():
+        for line in reversed(log.read_text(errors="replace").splitlines()):
+            try:
+                socket_path = json.loads(line).get("socket")
+            except (json.JSONDecodeError, AttributeError):
+                continue
+            if socket_path:
+                candidate = Path(socket_path)
+                if candidate != standard and candidate.exists():
+                    yield candidate
+                break
+
+
 def ipc_call(db, method, params):
     import socket
     paths = Path(db) / "agent-service"
-    with socket.socket(socket.AF_UNIX) as connection:
-        connection.settimeout(10)
-        connection.connect(str(paths / "agent-service.sock"))
-        with connection.makefile("rwb", buffering=0) as stream:
-            stream.write((json.dumps({"id": "hello", "method": "hello",
-                                      "params": {"token": (paths / "token").read_text().strip()}}) + "\n").encode())
-            hello = json.loads(stream.readline())
-            assert "error" not in hello, hello
-            stream.write((json.dumps({"id": "call", "method": method,
-                                      "params": params}) + "\n").encode())
-            response = json.loads(stream.readline())
-            assert "error" not in response, response
-            return response["result"]
+    token = (paths / "token").read_text().strip()
+    last_error = None
+    for socket_path in service_sockets(db):
+        try:
+            with socket.socket(socket.AF_UNIX) as connection:
+                connection.settimeout(10)
+                connection.connect(str(socket_path))
+                with connection.makefile("rwb", buffering=0) as stream:
+                    stream.write((json.dumps({"id": "hello", "method": "hello",
+                                              "params": {"token": token}}) + "\n").encode())
+                    hello = json.loads(stream.readline())
+                    assert "error" not in hello, hello
+                    stream.write((json.dumps({"id": "call", "method": method,
+                                              "params": params}) + "\n").encode())
+                    response = json.loads(stream.readline())
+                    assert "error" not in response, response
+                    return response["result"]
+        except (FileNotFoundError, ConnectionRefusedError, OSError) as error:
+            last_error = error
+    raise FileNotFoundError(f"no reachable agent service socket for {db}: {last_error}")
 
 
-def find_service(binary, db):
+def find_services(binary, db):
     binary = str(Path(binary).resolve())
     output = subprocess.check_output(["ps", "-axo", "pid=,command="], text=True)
+    found = []
     for line in output.splitlines():
         pid, _, command = line.strip().partition(" ")
         if command.startswith(binary) and " agent-service " in f" {command} " \
                 and f"--db-path {db}" in command:
-            return {"pid": int(pid), "command": command}
-    return None
+            found.append({"pid": int(pid), "command": command})
+    return found
+
+
+def find_service(binary, db):
+    found = find_services(binary, db)
+    return found[0] if found else None
 
 
 def wait_service_gone(db, timeout=20):
@@ -200,6 +238,14 @@ def paginate(client, task_id, limit):
     raise AssertionError("pagination did not terminate")
 
 
+def signal_own_group(child, sig):
+    """Send a signal to a Popen child only after proving it owns its group."""
+    pgid = os.getpgid(child.pid)
+    assert pgid == child.pid, "child is not its own process-group leader"
+    assert pgid != os.getpgid(os.getpid()), "refusing to signal the test runner group"
+    os.killpg(pgid, sig)
+
+
 def cancel_and_check(client, service_pid, task_id, evidence, label):
     children = [row for row in crash.descendants(service_pid, crash.process_table())
                 if not row["state"].startswith("Z")]
@@ -253,12 +299,49 @@ def scenario_install(binary, root, codex, claude, evidence):
         quiet = subprocess.run([binary, "mcp-agent", "--db-path", str(db)],
                                input=b"", capture_output=True, timeout=30)
         assert quiet.stdout == b"", quiet.stdout[:200]
-        evidence["install"] = {
-            "binary": binary, "version": version.stdout.strip(),
-            "tools": tools, "agents": agents, "service": status,
-            "client_exit_kept_service": True, "stdout_bytes_on_empty_input": len(quiet.stdout),
-            "codex_override": codex, "claude_override": claude,
-        }
+        race_db = root / "install" / "db-race"
+        race_db.mkdir(parents=True)
+        first = Mcp(binary, race_db, root / "install" / "race-1.log")
+        second = Mcp(binary, race_db, root / "install" / "race-2.log")
+        results = {}
+
+        def query(name, client):
+            results[name] = client.tool("agent_list", {})["agents"]
+
+        try:
+            threads = [threading.Thread(target=query, args=("a", first)),
+                       threading.Thread(target=query, args=("b", second))]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            assert set(results) == {"a", "b"}, results
+            deadline = time.monotonic() + 10
+            services = find_services(binary, race_db)
+            while len(services) > 1 and time.monotonic() < deadline:
+                time.sleep(0.1)
+                services = find_services(binary, race_db)
+            assert len(services) == 1, services
+            evidence["install"] = {
+                "binary": binary, "version": version.stdout.strip(),
+                "tools": tools, "agents": agents, "service": status,
+                "client_exit_kept_service": True,
+                "stdout_bytes_on_empty_input": len(quiet.stdout),
+                "autostart_race_clients": 2,
+                "autostart_services": len(services),
+                "autostart_agents_ok": all({agent["id"] for agent in value} >=
+                                           {"codex-native", "claude-code"}
+                                           for value in results.values()),
+                "codex_override": codex, "claude_override": claude,
+            }
+        finally:
+            first.close()
+            second.close()
+            try:
+                ipc_call(race_db, "service_shutdown", {})
+            except Exception:
+                pass
+            wait_service_gone(race_db)
     finally:
         try:
             ipc_call(db, "service_shutdown", {})
@@ -319,7 +402,7 @@ def codex_catalog(codex):
 
 
 def scenario_hangup(binary, root, evidence):
-    """Terminal hangup (SIGHUP to the client's process group) must not stop the service."""
+    """Terminal SIGINT/SIGHUP to the client group must not stop the service."""
     base = root / "hangup"
     db = base / "db"
     db.mkdir(parents=True)
@@ -331,6 +414,7 @@ def scenario_hangup(binary, root, evidence):
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                              stderr=log, start_new_session=True)
     client = ExistingMcp(child)
+    client2 = None
     service = None
     try:
         client.tool("agent_list", {})
@@ -338,31 +422,60 @@ def scenario_hangup(binary, root, evidence):
         assert service, "MCP did not auto-start a service"
         identity = crash.process_table().get(service["pid"])
         assert identity, "service disappeared before the hangup test"
+        client_group = os.getpgid(child.pid)
+        assert client_group == child.pid, "test MCP must be its own group leader"
+        assert identity["group"] != client_group, "service still shares the terminal group"
         task = client.tool("agent_run", {
             "agent": "codex-native", "cwd": str(repo), "permission": "read_only",
             "prompt": "Run exactly this command with exec_command and wait for it: sleep 120. "
                       "This is a terminal hangup acceptance test. Do not modify files."})
         started = wait_started_command(client, task["task_id"])
-        os.killpg(os.getpgid(child.pid), signal.SIGHUP)
+        signal_own_group(child, signal.SIGINT)
         time.sleep(2)
+        after_sigint = ipc_call(db, "agent_status", {"task_id": task["task_id"]})
+        assert after_sigint["state"] in ("running", "completed"), after_sigint
         current = crash.process_table().get(service["pid"])
-        assert crash.same_process(identity, current), "terminal hangup killed the agent service"
-        after = ipc_call(db, "agent_status", {"task_id": task["task_id"]})
-        assert after["state"] in ("running", "completed"), after
+        assert crash.same_process(identity, current), "SIGINT killed the agent service"
         client.close()
-        client = Mcp(binary, db, base / "mcp-reconnect.log")
-        running = client.tool("agent_status", {"task_id": task["task_id"]})
+        client = None
+        child2 = subprocess.Popen([binary, "mcp-agent", "--db-path", str(db)],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                  stderr=open(base / "mcp-2.log", "ab"),
+                                  start_new_session=True)
+        client2 = ExistingMcp(child2)
+        client2_group = os.getpgid(child2.pid)
+        assert client2_group == child2.pid, "second MCP must be its own group leader"
+        assert identity["group"] != client2_group, "service shares the second client group"
+        running = client2.tool("agent_status", {"task_id": task["task_id"]})
         assert running["state"] in ("running", "completed"), running
+        signal_own_group(child2, signal.SIGHUP)
+        time.sleep(2)
+        after_sighup = ipc_call(db, "agent_status", {"task_id": task["task_id"]})
+        assert after_sighup["state"] in ("running", "completed"), after_sighup
+        current2 = crash.process_table().get(service["pid"])
+        assert crash.same_process(identity, current2), "SIGHUP killed the agent service"
+        client2.close()
+        client2 = None
+        client = Mcp(binary, db, base / "mcp-reconnect.log")
+        running2 = client.tool("agent_status", {"task_id": task["task_id"]})
+        assert running2["state"] in ("running", "completed"), running2
         cancel_and_check(client, service["pid"], task["task_id"], evidence, "hangup_cancel")
         evidence["hangup"] = {
             "service_before": identity,
-            "service_after_hangup": current,
-            "task_after_hangup": after,
-            "reconnected": running,
+            "client_group": client_group,
+            "second_client_group": client2_group,
+            "service_after_sigint": current,
+            "service_after_sighup": current2,
+            "task_after_sigint": after_sigint,
+            "task_after_sighup": after_sighup,
+            "reconnected": running2,
             "cancel": evidence.pop("hangup_cancel"),
         }
     finally:
-        client.close()
+        if client:
+            client.close()
+        if client2:
+            client2.close()
         try:
             ipc_call(db, "service_shutdown", {})
         except Exception:
@@ -393,6 +506,49 @@ def restart_service(binary, db, service, client, log_path):
         client.close()
     client = Mcp(binary, db, Path(str(log_path) + ".mcp.log"))
     return service, client
+
+
+def scenario_cancel_start(binary, root, evidence):
+    """Cancel immediately after submit, through the turn-start window."""
+    base = root / "cancel-start"
+    db = base / "db"
+    db.mkdir(parents=True)
+    repo = make_repo(base / "repo", uuid.uuid4().hex)
+    service = crash.start_service(binary, db, open(base / "service.log", "ab"))
+    client = Mcp(binary, db, base / "mcp.log")
+    attempts = []
+    try:
+        for attempt in range(3):
+            task = client.tool("agent_run", {
+                "agent": "codex-native", "cwd": str(repo), "permission": "read_only",
+                "prompt": "Run exactly this command with exec_command and wait for it: sleep 120. "
+                          "This is a startup cancellation acceptance test. Do not modify files."})
+            started = time.monotonic()
+            error = None
+            requested = None
+            try:
+                requested = client.tool("agent_cancel", {"task_id": task["task_id"]})
+            except AssertionError as exc:
+                error = str(exc)
+            latency_ms = int((time.monotonic() - started) * 1000)
+            terminal = wait_terminal(client, task["task_id"], timeout=120)
+            attempts.append({
+                "attempt": attempt, "task": task, "cancel_error": error,
+                "requested_state": (requested or {}).get("state"),
+                "cancel_latency_ms": latency_ms, "terminal_state": terminal["state"],
+            })
+            assert error is None, attempts[-1]
+            assert terminal["state"] == "cancelled", attempts[-1]
+        evidence["cancel_start"] = {"attempts": attempts}
+    finally:
+        client.close()
+        if service.poll() is None:
+            service.terminate()
+            try:
+                service.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                service.kill()
+                service.wait(timeout=10)
 
 
 def scenario_codex(binary, root, codex, evidence):
@@ -625,7 +781,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--scenario", choices=["install", "hangup", "codex", "claude", "all"], default="all")
+    parser.add_argument("--scenario", choices=["install", "hangup", "cancel-start", "codex", "claude", "all"], default="all")
     parser.add_argument("--codex", default="/opt/homebrew/bin/codex")
     parser.add_argument("--claude", default=shutil.which("claude") or "claude")
     args = parser.parse_args()
@@ -641,6 +797,8 @@ def main():
             scenario_install(binary, root, args.codex, args.claude, evidence)
         if args.scenario in ("hangup", "all"):
             scenario_hangup(binary, root, evidence)
+        if args.scenario in ("cancel-start", "all"):
+            scenario_cancel_start(binary, root, evidence)
         if args.scenario in ("codex", "all"):
             scenario_codex(binary, root, args.codex, evidence)
         if args.scenario in ("claude", "all"):

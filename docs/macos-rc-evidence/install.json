@@ -1,8 +1,8 @@
 {
-  "started_at": "2026-10-17T11:56:45Z",
-  "binary_sha256": "e757121da74fc95a7382c2f6cc5c5b1bfb7e81c8e9800f916727d8a12b51f029",
+  "started_at": "2026-10-17T16:15:10Z",
+  "binary_sha256": "769a2ed28dac3726d74a7846f2bf787fd943b1ea28c9d979cff2f88f12585c73",
   "install": {
-    "binary": "/private/tmp/muxlayer-rc-20261017/install/bin/agentgate-serve",
+    "binary": "/private/tmp/agentgate-final2-20261018/install/bin/agentgate-serve",
     "version": "agentgate 2.0.8",
     "tools": [
       "agent_list",
@@ -58,9 +58,12 @@
     },
     "client_exit_kept_service": true,
     "stdout_bytes_on_empty_input": 0,
+    "autostart_race_clients": 2,
+    "autostart_services": 1,
+    "autostart_agents_ok": true,
     "codex_override": "/opt/homebrew/bin/codex",
     "claude_override": "/Users/mengmian/.local/bin/claude"
   },
   "verdict": "PASS",
-  "finished_at": "2026-10-17T11:56:47Z"
+  "finished_at": "2026-10-17T16:15:12Z"
 }

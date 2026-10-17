@@ -1,28 +1,39 @@
 {
-  "started_at": "2026-10-17T11:56:49Z",
-  "binary_sha256": "e757121da74fc95a7382c2f6cc5c5b1bfb7e81c8e9800f916727d8a12b51f029",
+  "started_at": "2026-10-17T16:15:16Z",
+  "binary_sha256": "769a2ed28dac3726d74a7846f2bf787fd943b1ea28c9d979cff2f88f12585c73",
   "hangup": {
     "service_before": {
-      "pid": 54931,
-      "parent": 54930,
-      "group": 54931,
+      "pid": 49618,
+      "parent": 49617,
+      "group": 49618,
       "state": "S",
-      "command": "/private/tmp/muxlayer-rc-20261017/install/bin/agentgate-serve",
-      "started": "Sat Oct 17 19:56:49 2026",
-      "sid": 54930
+      "command": "/private/tmp/agentgate-final2-20261018/install/bin/agentgate-serve",
+      "started": "Sun Oct 18 00:15:16 2026",
+      "sid": 49617
     },
-    "service_after_hangup": {
-      "pid": 54931,
+    "client_group": 49617,
+    "second_client_group": 50733,
+    "service_after_sigint": {
+      "pid": 49618,
       "parent": 1,
-      "group": 54931,
+      "group": 49618,
       "state": "S",
-      "command": "/private/tmp/muxlayer-rc-20261017/install/bin/agentgate-serve",
-      "started": "Sat Oct 17 19:56:49 2026",
-      "sid": 54930
+      "command": "/private/tmp/agentgate-final2-20261018/install/bin/agentgate-serve",
+      "started": "Sun Oct 18 00:15:16 2026",
+      "sid": 49617
     },
-    "task_after_hangup": {
+    "service_after_sighup": {
+      "pid": 49618,
+      "parent": 1,
+      "group": 49618,
+      "state": "S",
+      "command": "/private/tmp/agentgate-final2-20261018/install/bin/agentgate-serve",
+      "started": "Sun Oct 18 00:15:16 2026",
+      "sid": 49617
+    },
+    "task_after_sigint": {
       "cancel_requested": false,
-      "created_at": "2026-10-17T11:56:50.119192+00:00",
+      "created_at": "2026-10-17T16:15:16.503463+00:00",
       "error": null,
       "events": [],
       "events_included": false,
@@ -36,15 +47,37 @@
       "final_answer_total_chars": 0,
       "finished_at": null,
       "prompt": "Run exactly this command with exec_command and wait for it: sleep 120. This is a terminal hangup acceptance test. Do not modify files.",
-      "session_id": "bb1e2ef7-7e0d-4e89-a1e4-744a6c37a6d5",
+      "session_id": "a164154b-9ffd-476c-bfd4-da8cec2854ca",
       "state": "running",
-      "task_id": "342ca8b3-7df5-42ea-af59-4cad0fc56ae9",
-      "thread_id": "01a149b8-cca3-7ff0-9570-276febf32200",
-      "turn_id": "01a149b8-d3f3-7f31-b61c-d91d8e6995a8"
+      "task_id": "be9d5e4c-129c-4ca1-8eb7-2b45f9f5f1db",
+      "thread_id": "01a14aa5-7d1d-7a23-97aa-93453a8bb433",
+      "turn_id": "01a14aa5-816b-71f1-bbba-812c146a5a05"
+    },
+    "task_after_sighup": {
+      "cancel_requested": false,
+      "created_at": "2026-10-17T16:15:16.503463+00:00",
+      "error": null,
+      "events": [],
+      "events_included": false,
+      "events_next_offset": 0,
+      "events_offset": 0,
+      "events_total": 24,
+      "final_answer": null,
+      "final_answer_complete": true,
+      "final_answer_next_offset": null,
+      "final_answer_offset": 0,
+      "final_answer_total_chars": 0,
+      "finished_at": null,
+      "prompt": "Run exactly this command with exec_command and wait for it: sleep 120. This is a terminal hangup acceptance test. Do not modify files.",
+      "session_id": "a164154b-9ffd-476c-bfd4-da8cec2854ca",
+      "state": "running",
+      "task_id": "be9d5e4c-129c-4ca1-8eb7-2b45f9f5f1db",
+      "thread_id": "01a14aa5-7d1d-7a23-97aa-93453a8bb433",
+      "turn_id": "01a14aa5-816b-71f1-bbba-812c146a5a05"
     },
     "reconnected": {
       "cancel_requested": false,
-      "created_at": "2026-10-17T11:56:50.119192+00:00",
+      "created_at": "2026-10-17T16:15:16.503463+00:00",
       "error": null,
       "events": [],
       "events_included": false,
@@ -58,16 +91,16 @@
       "final_answer_total_chars": 0,
       "finished_at": null,
       "prompt": "Run exactly this command with exec_command and wait for it: sleep 120. This is a terminal hangup acceptance test. Do not modify files.",
-      "session_id": "bb1e2ef7-7e0d-4e89-a1e4-744a6c37a6d5",
+      "session_id": "a164154b-9ffd-476c-bfd4-da8cec2854ca",
       "state": "running",
-      "task_id": "342ca8b3-7df5-42ea-af59-4cad0fc56ae9",
-      "thread_id": "01a149b8-cca3-7ff0-9570-276febf32200",
-      "turn_id": "01a149b8-d3f3-7f31-b61c-d91d8e6995a8"
+      "task_id": "be9d5e4c-129c-4ca1-8eb7-2b45f9f5f1db",
+      "thread_id": "01a14aa5-7d1d-7a23-97aa-93453a8bb433",
+      "turn_id": "01a14aa5-816b-71f1-bbba-812c146a5a05"
     },
     "cancel": {
       "requested": {
         "cancel_requested": true,
-        "created_at": "2026-10-17T11:56:50.119192+00:00",
+        "created_at": "2026-10-17T16:15:16.503463+00:00",
         "error": null,
         "events": [
           {
@@ -170,15 +203,15 @@
         "final_answer": null,
         "finished_at": null,
         "prompt": "Run exactly this command with exec_command and wait for it: sleep 120. This is a terminal hangup acceptance test. Do not modify files.",
-        "session_id": "bb1e2ef7-7e0d-4e89-a1e4-744a6c37a6d5",
+        "session_id": "a164154b-9ffd-476c-bfd4-da8cec2854ca",
         "state": "running",
-        "task_id": "342ca8b3-7df5-42ea-af59-4cad0fc56ae9",
-        "thread_id": "01a149b8-cca3-7ff0-9570-276febf32200",
-        "turn_id": "01a149b8-d3f3-7f31-b61c-d91d8e6995a8"
+        "task_id": "be9d5e4c-129c-4ca1-8eb7-2b45f9f5f1db",
+        "thread_id": "01a14aa5-7d1d-7a23-97aa-93453a8bb433",
+        "turn_id": "01a14aa5-816b-71f1-bbba-812c146a5a05"
       },
       "terminal": {
         "cancel_requested": true,
-        "created_at": "2026-10-17T11:56:50.119192+00:00",
+        "created_at": "2026-10-17T16:15:16.503463+00:00",
         "error": null,
         "events": [
           {
@@ -287,55 +320,55 @@
         "final_answer_next_offset": null,
         "final_answer_offset": 0,
         "final_answer_total_chars": 0,
-        "finished_at": "2026-10-17T11:56:58.404974+00:00",
+        "finished_at": "2026-10-17T16:15:34.560868+00:00",
         "prompt": "Run exactly this command with exec_command and wait for it: sleep 120. This is a terminal hangup acceptance test. Do not modify files.",
-        "session_id": "bb1e2ef7-7e0d-4e89-a1e4-744a6c37a6d5",
+        "session_id": "a164154b-9ffd-476c-bfd4-da8cec2854ca",
         "state": "cancelled",
-        "task_id": "342ca8b3-7df5-42ea-af59-4cad0fc56ae9",
-        "thread_id": "01a149b8-cca3-7ff0-9570-276febf32200",
-        "turn_id": "01a149b8-d3f3-7f31-b61c-d91d8e6995a8"
+        "task_id": "be9d5e4c-129c-4ca1-8eb7-2b45f9f5f1db",
+        "thread_id": "01a14aa5-7d1d-7a23-97aa-93453a8bb433",
+        "turn_id": "01a14aa5-816b-71f1-bbba-812c146a5a05"
       },
       "captured_processes": [
         {
-          "pid": 54972,
-          "parent": 54931,
-          "group": 54972,
+          "pid": 49664,
+          "parent": 49618,
+          "group": 49664,
           "state": "S",
-          "command": "/private/tmp/muxlayer-rc-20261017/install/bin/agentgate-serve",
-          "started": "Sat Oct 17 19:56:50 2026",
-          "sid": 54930
+          "command": "/private/tmp/agentgate-final2-20261018/install/bin/agentgate-serve",
+          "started": "Sun Oct 18 00:15:16 2026",
+          "sid": 49617
         },
         {
-          "pid": 54973,
-          "parent": 54972,
-          "group": 54973,
+          "pid": 49665,
+          "parent": 49664,
+          "group": 49665,
           "state": "S",
           "command": "/opt/homebrew/bin/codex",
-          "started": "Sat Oct 17 19:56:50 2026",
-          "sid": 54930
+          "started": "Sun Oct 18 00:15:16 2026",
+          "sid": 49617
         },
         {
-          "pid": 55623,
-          "parent": 54973,
-          "group": 55623,
+          "pid": 50653,
+          "parent": 49665,
+          "group": 50653,
           "state": "S",
           "command": "/opt/homebrew/Caskroom/codex/0.162.1/bin/codex-code-mode-host",
-          "started": "Sat Oct 17 19:56:55 2026",
-          "sid": 54930
+          "started": "Sun Oct 18 00:15:29 2026",
+          "sid": 49617
         },
         {
-          "pid": 55624,
-          "parent": 54973,
-          "group": 55624,
+          "pid": 50654,
+          "parent": 49665,
+          "group": 50654,
           "state": "Ss",
           "command": "sleep",
-          "started": "Sat Oct 17 19:56:55 2026",
-          "sid": 55624
+          "started": "Sun Oct 18 00:15:30 2026",
+          "sid": 50654
         }
       ],
       "survivors": []
     }
   },
   "verdict": "PASS",
-  "finished_at": "2026-10-17T11:56:58Z"
+  "finished_at": "2026-10-17T16:15:34Z"
 }

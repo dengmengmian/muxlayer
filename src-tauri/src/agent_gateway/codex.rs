@@ -15,6 +15,13 @@ use tokio::{
     process::{ChildStdin, Command},
     sync::{mpsc, oneshot, watch, Mutex},
 };
+
+/// The provider acknowledges turn/start before the turn becomes interruptible.
+/// Wait for the real `turn/started` event instead of racing `turn/interrupt`.
+#[cfg(not(test))]
+const TURN_START_GRACE: Duration = Duration::from_secs(2);
+#[cfg(test)]
+const TURN_START_GRACE: Duration = Duration::from_millis(500);
 fn protocol(message: impl Into<String>) -> AgentError {
     AgentError::new(ErrorCode::Protocol, message)
 }
@@ -214,6 +221,8 @@ struct CodexAdapter {
     reader: tokio::task::JoinHandle<()>,
     active: Mutex<Option<(String, String)>>,
     completion: watch::Receiver<Option<(String, String)>>,
+    started: watch::Receiver<Option<(String, String)>>,
+    exited: watch::Receiver<bool>,
 }
 impl AdapterFactory for CodexFactory {
     fn descriptor(&self) -> AgentDescriptor {
@@ -296,6 +305,10 @@ impl CodexAdapter {
         let requests = pending.clone();
         let writer = stdin.clone();
         let (completed, completion) = watch::channel(None);
+        let (started_tx, started) = watch::channel(None);
+        let (exited_tx, exited) = watch::channel(false);
+        let reader_started = started_tx.clone();
+        let reader_exited = exited_tx.clone();
         let reader = tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {
@@ -333,6 +346,16 @@ impl CodexAdapter {
                         let _ = waiter.send(result);
                     }
                 } else {
+                    if msg["method"] == "turn/started" {
+                        if let (Some(thread), Some(turn)) = (
+                            msg["params"]["threadId"].as_str(),
+                            msg["params"]["turnId"]
+                                .as_str()
+                                .or_else(|| msg["params"]["turn"]["id"].as_str()),
+                        ) {
+                            let _ = reader_started.send(Some((thread.into(), turn.into())));
+                        }
+                    }
                     if msg["method"] == "turn/completed" {
                         if let (Some(thread), Some(turn)) = (
                             msg["params"]["threadId"].as_str(),
@@ -352,6 +375,7 @@ impl CodexAdapter {
                     "Codex app-server closed its output",
                 )));
             }
+            let _ = reader_exited.send(true);
             let _ = tx.send(json!({"method":"_exit"}));
         });
         let mut adapter = Self {
@@ -365,6 +389,8 @@ impl CodexAdapter {
             reader,
             active: Mutex::new(None),
             completion,
+            started,
+            exited,
         };
         let init=adapter.rpc("initialize",json!({"clientInfo":{"name":"agentgate","title":"AgentGate","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":false}})).await?;
         if init["userAgent"].as_str().is_none() {
@@ -404,6 +430,28 @@ impl CodexAdapter {
             return Ok(None);
         };
         Ok(turn_recovery(turn))
+    }
+
+    async fn interrupt_active(&self, thread_id: &str, turn_id: &str) -> Result<(), AgentError> {
+        let target = (thread_id.to_owned(), turn_id.to_owned());
+        match self
+            .rpc(
+                "turn/interrupt",
+                json!({"threadId":thread_id,"turnId":turn_id}),
+            )
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(error) => {
+                // A terminal event may have arrived while the interrupt RPC was
+                // in flight; completion is authoritative, not the RPC error.
+                if self.completion.borrow().as_ref() == Some(&target) {
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            }
+        }
     }
 
     async fn notify(&self, method: &str, params: Value) -> Result<(), AgentError> {
@@ -644,11 +692,68 @@ impl AgentAdapter for CodexAdapter {
         turn_id: &'a str,
     ) -> BoxFuture<'a, Result<(), AgentError>> {
         Box::pin(async move {
-            self.rpc(
-                "turn/interrupt",
-                json!({"threadId":thread_id,"turnId":turn_id}),
-            )
-            .await?;
+            let target = (thread_id.to_owned(), turn_id.to_owned());
+            let started_now = self.started.borrow().clone();
+            let completed_now = self.completion.borrow().clone();
+            if completed_now.as_ref() == Some(&target) {
+                // The turn already reached its terminal event. The service will
+                // observe it; sending another interrupt would be a no-op error.
+                return Ok(());
+            }
+            if started_now.as_ref() == Some(&target) {
+                return self.interrupt_active(thread_id, turn_id).await;
+            }
+            if *self.exited.borrow() {
+                return Err(AgentError::new(
+                    ErrorCode::ProcessExited,
+                    "Codex app-server exited before the turn started",
+                ));
+            }
+            let mut started = self.started.clone();
+            let mut completed = self.completion.clone();
+            let mut exited = self.exited.clone();
+            let deadline = tokio::time::Instant::now() + TURN_START_GRACE;
+            loop {
+                let started_now = started.borrow().clone();
+                let completed_now = completed.borrow().clone();
+                if completed_now.as_ref() == Some(&target) {
+                    return Ok(());
+                }
+                if started_now.as_ref() == Some(&target) {
+                    return self.interrupt_active(thread_id, turn_id).await;
+                }
+                if *exited.borrow() {
+                    return Err(AgentError::new(
+                        ErrorCode::ProcessExited,
+                        "Codex app-server exited before the turn started",
+                    ));
+                }
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                tokio::select! {
+                    result = started.changed() => {
+                        if result.is_err() { break; }
+                    }
+                    result = completed.changed() => {
+                        if result.is_err() { break; }
+                    }
+                    result = exited.changed() => {
+                        if result.is_err() { break; }
+                    }
+                    _ = tokio::time::sleep(remaining) => {
+                        break;
+                    }
+                }
+            }
+            // Codex acknowledges turn/start before the turn becomes active and
+            // rejects a real turnId with -32600 during that window. An empty
+            // turnId is the provider's documented startup interrupt; it aborts
+            // the pending turn, is acknowledged immediately, and the service
+            // still waits for the real terminal event.
+            self.rpc("turn/interrupt", json!({"threadId":thread_id,"turnId":""}))
+                .await?;
             Ok(())
         })
     }
@@ -665,12 +770,12 @@ impl AgentAdapter for CodexAdapter {
             let interrupt_error = if running {
                 if let Some((thread, turn)) = active {
                     match tokio::time::timeout(
-                        Duration::from_secs(1),
-                        self.rpc("turn/interrupt", json!({"threadId":thread,"turnId":turn})),
+                        Duration::from_secs(4),
+                        self.interrupt(&thread, &turn),
                     )
                     .await
                     {
-                        Ok(Ok(_)) => {
+                        Ok(Ok(())) => {
                             let mut completed = self.completion.clone();
                             let target = (thread, turn);
                             match tokio::time::timeout(Duration::from_secs(2), async {
@@ -894,14 +999,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("codex");
         std::fs::write(&script,r##"#!/usr/bin/env python3
-import sys,json,os
+import sys,json,os,time
 args=sys.argv[1:]; conf={}
 for n,x in enumerate(args):
  if x=='-c':
   key,_,value=args[n+1].partition('=')
   if key=='model_provider':conf[key]=json.loads(value)
-provider=conf['model_provider']; pending=None; mode='matching'
+provider=conf['model_provider']; pending=None; mode='matching'; started=False
+log=os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])),'interrupts.log')
 conf['model_providers']={provider:{'base_url':None,'requires_openai_auth':True,'wire_api':'responses'}}
+def completion(status):
+ print(json.dumps({'method':'turn/completed','params':{'threadId':'thread','turn':{'id':'active-turn','status':status}}}),flush=True)
 for line in sys.stdin:
  m=json.loads(line); method=m['method']
  if 'id' not in m: continue
@@ -915,16 +1023,37 @@ for line in sys.stdin:
  elif method=='turn/start':
   mode=m['params']['input'][0]['text'];r={'turn':{'id':'active-turn'}}
  elif method=='turn/interrupt':
+  turn_id=m['params'].get('turnId','')
+  if log:
+   with open(log,'a') as f: f.write(turn_id+'\n')
+  if turn_id and mode in ('wait-for-test-start','never-started') and not started:
+   print(json.dumps({'id':m['id'],'error':{'code':-32600,'message':'no active turn to interrupt'}}),flush=True);continue
+  if turn_id and mode in ('completed','interrupted'):
+   print(json.dumps({'id':m['id'],'error':{'code':-32600,'message':'no active turn to interrupt'}}),flush=True);continue
+  if turn_id and mode=='error-after-completion':
+   completion('interrupted')
+   print(json.dumps({'id':m['id'],'error':{'code':-32600,'message':'no active turn to interrupt'}}),flush=True);continue
   print(json.dumps({'id':m['id'],'result':{}}),flush=True)
-  print(json.dumps({'method':'turn/completed','params':{'threadId':'thread','turn':{'id':'unrelated-turn','status':'interrupted'}}}),flush=True)
-  if mode=='matching':print(json.dumps({'method':'turn/completed','params':{'threadId':'thread','turn':{'id':'active-turn','status':'interrupted'}}}),flush=True)
+  if mode in ('matching','wait-for-test-start','never-started'):
+   completion('interrupted')
+  elif mode=='wrong-only':
+   print(json.dumps({'method':'turn/completed','params':{'threadId':'thread','turn':{'id':'unrelated-turn','status':'interrupted'}}}),flush=True)
   continue
+ elif method=='test/start':
+  started=True
+  print(json.dumps({'method':'turn/started','params':{'threadId':'thread','turnId':'active-turn'}}),flush=True)
  elif method=='test/first':pending=m['id'];continue
  elif method=='test/second':
   print(json.dumps({'id':m['id'],'result':{'order':2}}),flush=True)
   print(json.dumps({'id':pending,'result':{'order':1}}),flush=True);continue
  elif method=='test/exit':sys.exit(0)
  print(json.dumps({'id':m['id'],'result':r}),flush=True)
+ if method=='turn/start':
+  if mode not in ('never-started','exit-after-start','wait-for-test-start'):
+   started=True
+   print(json.dumps({'method':'turn/started','params':{'threadId':'thread','turnId':'active-turn'}}),flush=True)
+   if mode in ('completed','interrupted'):completion(mode)
+  if mode=='exit-after-start':sys.exit(0)
 "##).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
         let adapter = CodexAdapter::connect(script).await.unwrap();
@@ -954,6 +1083,116 @@ for line in sys.stdin:
         assert!(error.message.contains("did not confirm interruption"));
         assert!(adapter.child.lock().await.try_wait().unwrap().is_some());
     }
+    #[cfg(unix)]
+    async fn wait_for<F: Fn() -> bool>(check: F) {
+        for _ in 0..500 {
+            if check() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("condition was not met");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn interrupt_waits_for_turn_started_before_using_the_turn_id() {
+        let (dir, adapter) = fake_adapter().await;
+        adapter
+            .start_turn("thread", "wait-for-test-start")
+            .await
+            .unwrap();
+        let interrupt = adapter.interrupt("thread", "active-turn");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !dir.path().join("interrupts.log").exists(),
+            "interrupt was sent before the provider reported turn/started"
+        );
+        adapter.rpc("test/start", json!({})).await.unwrap();
+        interrupt.await.unwrap();
+        let log = std::fs::read_to_string(dir.path().join("interrupts.log")).unwrap();
+        assert_eq!(log, "active-turn\n");
+        adapter.shutdown().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn interrupt_before_turn_start_uses_startup_interrupt() {
+        let (dir, adapter) = fake_adapter().await;
+        adapter.start_turn("thread", "never-started").await.unwrap();
+        adapter.interrupt("thread", "active-turn").await.unwrap();
+        let log = std::fs::read_to_string(dir.path().join("interrupts.log")).unwrap();
+        assert_eq!(log, "\n");
+        let _ = adapter.shutdown().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn interrupt_after_terminal_turn_is_a_no_op() {
+        for mode in ["completed", "interrupted"] {
+            let (dir, adapter) = fake_adapter().await;
+            adapter.start_turn("thread", mode).await.unwrap();
+            wait_for(|| adapter.completion.borrow().is_some()).await;
+            adapter.interrupt("thread", "active-turn").await.unwrap();
+            assert!(!dir.path().join("interrupts.log").exists());
+            let _ = adapter.shutdown().await;
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_interrupts_a_turn_that_has_not_started() {
+        let (dir, adapter) = fake_adapter().await;
+        adapter.start_turn("thread", "never-started").await.unwrap();
+        adapter.shutdown().await.unwrap();
+        let log = std::fs::read_to_string(dir.path().join("interrupts.log")).unwrap();
+        assert_eq!(log, "\n");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn interrupt_error_is_ignored_when_completion_arrives_in_flight() {
+        let (_dir, adapter) = fake_adapter().await;
+        adapter
+            .start_turn("thread", "error-after-completion")
+            .await
+            .unwrap();
+        adapter.interrupt("thread", "active-turn").await.unwrap();
+        assert_eq!(
+            adapter.completion.borrow().as_ref(),
+            Some(&("thread".into(), "active-turn".into()))
+        );
+        let _ = adapter.shutdown().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn interrupt_after_process_exit_reports_process_exited() {
+        let (_dir, adapter) = fake_adapter().await;
+        adapter
+            .start_turn("thread", "exit-after-start")
+            .await
+            .unwrap();
+        wait_for(|| *adapter.exited.borrow()).await;
+        let error = adapter
+            .interrupt("thread", "active-turn")
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::ProcessExited);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn interrupt_after_started_turn_uses_the_real_turn_id() {
+        let (dir, adapter) = fake_adapter().await;
+        adapter.start_turn("thread", "matching").await.unwrap();
+        wait_for(|| adapter.started.borrow().is_some()).await;
+        adapter.interrupt("thread", "active-turn").await.unwrap();
+        let log = std::fs::read_to_string(dir.path().join("interrupts.log")).unwrap();
+        assert_eq!(log, "active-turn\n");
+        adapter.shutdown().await.unwrap();
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn transport_correlates_reversed_responses_and_reports_eof() {

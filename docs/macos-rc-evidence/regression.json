@@ -1,6 +1,8 @@
 {
-  "date": "2026-10-17",
+  "date": "2026-10-18",
   "platform": "macOS 26.6.2 arm64",
+  "final_binary_sha256": "769a2ed28dac3726d74a7846f2bf787fd943b1ea28c9d979cff2f88f12585c73",
+  "previous_evidence_binary_sha256": "e757121da74fc95a7382c2f6cc5c5b1bfb7e81c8e9800f916727d8a12b51f029",
   "commands": {
     "format": "cargo fmt --manifest-path src-tauri/Cargo.toml --check",
     "version_consistency": "bash scripts/check-version-consistency.sh",
@@ -8,27 +10,32 @@
     "full_lib": "cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features cli --lib",
     "mcp_ipc": "cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features cli --test agent_gateway_mcp_ipc --test agent_gateway_phase_three_cli",
     "live_codex_claude": "AGENTGATE_CODEX_BIN=/opt/homebrew/bin/codex cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features cli --test agent_gateway_phase_two_live -- --ignored --nocapture --test-threads=1",
-    "live_codex_library": "AGENTGATE_CODEX_BIN=/opt/homebrew/bin/codex cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features cli --test agent_gateway_codex_live -- --ignored --nocapture",
+    "live_codex_normal": "AGENTGATE_CODEX_BIN=/opt/homebrew/bin/codex cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features cli --test agent_gateway_codex_live real_codex_read_only_audit_continue_cancel -- --ignored --nocapture",
+    "live_codex_startup_interrupt": "AGENTGATE_CODEX_BIN=/opt/homebrew/bin/codex cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features cli --test agent_gateway_codex_live real_interrupt_immediately_after_turn_start_is_cancelable -- --ignored --nocapture",
+    "codeleveler_iserror": "cargo test --release -p leveler-tools --test mcp_tool_error (in CodeLeveler)",
     "protocol_fixture": "cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features cli --test protocol_fixture",
     "clippy_lib": "cargo clippy --manifest-path src-tauri/Cargo.toml --no-default-features --features cli --lib -- -D warnings",
     "clippy_lib_tests": "cargo clippy --manifest-path src-tauri/Cargo.toml --no-default-features --features cli --lib --tests -- -D warnings",
-    "lifecycle": "AGENTGATE_CODEX_BIN=/opt/homebrew/bin/codex python3 scripts/verify-agent-gateway-lifecycle.py --binary /tmp/muxlayer-rc-20261017/install/bin/agentgate-serve --codex /opt/homebrew/bin/codex --output /tmp/muxlayer-rc-20261017/lifecycle",
-    "installed_rc": "python3 scripts/verify-agent-gateway-rc.py --binary /tmp/muxlayer-rc-20261017/install/bin/agentgate-serve --output /tmp/muxlayer-rc-20261017/evidence-<scenario> --scenario <install|hangup|codex|claude>"
+    "lifecycle": "AGENTGATE_CODEX_BIN=/opt/homebrew/bin/codex python3 scripts/verify-agent-gateway-lifecycle.py --binary /tmp/agentgate-final2-20261018/install/bin/agentgate-serve --codex /opt/homebrew/bin/codex --output /tmp/agentgate-final2-20261018/lifecycle",
+    "installed_rc": "python3 scripts/verify-agent-gateway-rc.py --binary /tmp/agentgate-final2-20261018/install/bin/agentgate-serve --output /tmp/agentgate-final2-20261018/evidence-<scenario> --scenario <install|hangup|cancel-start>"
   },
   "results": {
     "format": "PASS",
     "version_consistency": "PASS (2.0.8)",
-    "agent_gateway_unit": "75 passed / 0 failed / 3 ignored",
-    "full_lib": "1440 passed / 0 failed / 3 ignored",
+    "agent_gateway_unit": "82 passed / 0 failed / 3 ignored",
+    "full_lib": "1447 passed / 0 failed / 3 ignored (3 consecutive clean runs; one transient failure occurred in the first run while clippy --lib --tests was compiling concurrently, not reproducible in 4 subsequent runs)",
     "mcp_ipc": "9 passed / 0 failed",
     "phase_three_cli": "1 passed / 0 failed",
-    "live_codex_claude": "4 passed / 0 failed (50.68s)",
-    "live_codex_library": "1 passed / 0 failed (64.27s)",
+    "live_codex_claude": "4 passed / 0 failed (48.61s)",
+    "live_codex_normal": "1 passed / 0 failed (95.91s)",
+    "live_codex_startup_interrupt": "1 passed / 0 failed (4.04s, final binary)",
+    "codeleveler_iserror": "current source 1.0.18: 1 passed / 0 failed; installed 1.0.16: is_error=false (downstream defect)",
     "protocol_fixture": "38 passed / 2 failed (known baseline: metrics_requires_token_only_and_health_does_not, unauthenticated_request_is_rejected_before_body_is_read)",
     "clippy_lib": "PASS",
     "clippy_lib_tests": "3 known baseline CLI lints only: print_literal (serve.rs:867), unnecessary_map_or (serve.rs:872), too_many_arguments (serve.rs:958)",
-    "lifecycle": "A-H 8/8 PASS; survivors empty for every scenario; all unrelated sentinels alive",
-    "installed_rc": "install PASS, hangup PASS, codex PASS, claude PASS"
+    "lifecycle": "A-H 8/8 PASS on final binary; survivors empty; sentinels alive; no leftover services",
+    "installed_rc": "install PASS (2 clients -> 1 service), hangup PASS (SIGINT+SIGHUP, service group isolated), cancel-start PASS (3/3 immediate cancels), all on final binary"
   },
+  "evidence_reuse": "Full Codex/Claude run/continue/pagination/read-only evidence (codex.json, claude.json) was collected on e757. Final binary 769a differs by the cancel/signal fixes; install, hangup, cancel-start, A-H, and the real startup interrupt test were re-run on 769a.",
   "baseline_note": "The two protocol_fixture failures and three CLI lints predate this round and were not modified or marked ignored."
 }

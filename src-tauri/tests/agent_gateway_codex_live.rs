@@ -2,8 +2,8 @@
 //! Run with AGENTGATE_CODEX_BIN=/path/to/codex cargo test ... --test
 //! agent_gateway_codex_live -- --ignored --nocapture. No credentials are read by this test.
 use agentgate_lib::agent_gateway::{
-    codex::CodexFactory, AgentService, ContinueRequest, PermissionMode, RunRequest, TaskRecord,
-    TaskState,
+    codex::CodexFactory, AdapterEvent, AdapterFactory, AgentService, ContinueRequest,
+    PermissionMode, RunRequest, TaskRecord, TaskState, TurnOutcome,
 };
 use serde_json::json;
 use std::{path::PathBuf, sync::Arc, time::Duration};
@@ -30,6 +30,56 @@ fn completed(task: &TaskRecord) -> &str {
     let answer = task.final_answer.as_deref().expect("missing final answer");
     assert!(!answer.trim().is_empty());
     answer
+}
+
+#[tokio::test]
+#[ignore = "requires public Codex CLI, ChatGPT login and real model requests"]
+async fn real_interrupt_immediately_after_turn_start_is_cancelable() {
+    #[cfg(target_os = "macos")]
+    std::env::set_var(
+        "AGENTGATE_PROCESS_OWNER_BIN",
+        env!("CARGO_BIN_EXE_agentgate-serve"),
+    );
+    let executable = std::env::var_os("AGENTGATE_CODEX_BIN").map(PathBuf::from);
+    let factory = CodexFactory::discover(executable).await.unwrap();
+    let adapter = factory.connect().await.unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    let thread = adapter.start_thread(repo.path()).await.unwrap();
+    let turn = adapter
+        .start_turn(
+            &thread,
+            "Run exactly this command with exec_command and wait for it: sleep 120. \
+             This is a startup interrupt acceptance test. Do not modify files.",
+        )
+        .await
+        .unwrap();
+    // This is the turn-start window: interrupt before any turn/started event
+    // has been processed by this test.
+    adapter
+        .interrupt(&thread, &turn)
+        .await
+        .expect("startup interrupt must not race turn/start");
+    let outcome = tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            match adapter.next_event().await.unwrap() {
+                AdapterEvent::TurnFinished {
+                    thread_id,
+                    turn_id,
+                    outcome,
+                    ..
+                } if thread_id == thread && turn_id == turn => return outcome,
+                AdapterEvent::ProcessExited { message } => {
+                    panic!("app-server exited before interrupt terminal: {message}")
+                }
+                _ => continue,
+            }
+        }
+    })
+    .await
+    .expect("interrupted turn did not reach a terminal state");
+    assert_eq!(outcome, TurnOutcome::Interrupted);
+    adapter.shutdown().await.unwrap();
+    println!("Startup interrupt acceptance passed: thread={thread} turn={turn}");
 }
 
 #[tokio::test]

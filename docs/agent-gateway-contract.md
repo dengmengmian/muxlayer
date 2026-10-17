@@ -241,6 +241,7 @@ MCP stdio Server 只做请求解析、参数校验、调用 Agent Service（经 
 - MCP 传输断开只重试 `agent_list` / `agent_status`；变更请求不自动重放，明确报告结果未知，避免重复执行。
 - macOS Adapter 通过同一应用内部 native owner 管理寿命FD与root退出事件：出生gate前同步隔离root PGID并捕获内核uniqueid，退出时有界证明父实例链、audit token原子信号，并确认已登记进程退出。不使用名称/PID文本/PGID判断归属；不保证首次发现前已丢失身份链的后代。其他Unix保留原进程组guardian，Windows当前仍为单Child控制。
 - 取消真实终局之后，Service先确认整个Adapter scope关闭再发布`cancelled`；释放运行时Adapter缓存，续会通过新连接官方resume原Thread。清理失败保存Session错误并阻止继续。
+- Codex 在 `turn/start` 已返回 turn ID、但 provider 尚未进入 active/interruptible 状态时，会先有界等待真实 `turn/started`；若仍未启动，使用官方 `turnId=""` startup interrupt。取消 RPC 成功不等于终态，仍以 `turn/completed` 裁决；已完成或已退出不再发无效 interrupt，不重新提交 `turn/start`，不无限重试。
 - macOS library嵌入方须让main调用内部owner分流，或通过`AGENTGATE_PROCESS_OWNER_BIN`指定配套CLI；本应用CLI/桌面自身已处理入口。
 - 优雅关闭失败会使宿主返回真实错误，不输出假成功。
 - IPC 层不重新定义 Task 语义，也不复制状态机。
@@ -308,6 +309,6 @@ AGENTGATE_CODEX_BIN=/opt/homebrew/bin/codex cargo test \
 3. CodeLeveler / Pi 常规 run / status / continue、完整结果已真实通过；CodeLeveler 显式取消、Pi Unicode 分页、Pi → Claude Code 亦已通过；全部异常退出及原生聊天取消联动语义未穷尽。
 4. Claude Code 实际推理来源为用户既有 DeepSeek 配置；未宣称官方 Anthropic 模型验收。
 5. 长期容量管理与 UI 均未扩展。
-6. macOS RC 为 **CONDITIONAL_PASS**：headless CLI 真实安装、MCP、Codex、Claude Code、CodeLeveler、Pi 与 A–H 已验收；Service 终端组信号和 MCP `isError` 已修复。仍保留 turn-start 窗口取消竞态、CodeLeveler 1.0.16 客户端版本条件和 Windows 未验收，见 [macOS RC 报告](agent-gateway-macos-rc.md)。
+6. macOS RC 为 **CONDITIONAL_PASS**：headless CLI 真实安装、MCP、Codex、Claude Code、CodeLeveler、Pi 与 A–H 已验收；Service 终端组信号、MCP `isError` 和 turn-start 取消竞态均已修复。唯一集成条件是 CodeLeveler 发布包含 `e4510fa` 的版本；Windows 未验收，正式发布未执行，见 [macOS RC 报告](agent-gateway-macos-rc.md)。
 
 完整证据、Commit SHA 与未解决风险见 [第三阶段验收报告](agent-gateway-phase-three-verification.md) 和 [macOS RC 报告](agent-gateway-macos-rc.md)。改变核心接口前仍需具体复现与兼容方案。

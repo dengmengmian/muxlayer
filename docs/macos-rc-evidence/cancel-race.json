@@ -1,16 +1,36 @@
 {
-  "verdict": "KNOWN_RACE",
-  "task": {
+  "status": "FIXED",
+  "original_failure": {
     "task_id": "b19cb7aa-c5ec-4789-a245-8fb7d2a00f4b",
     "session_id": "942271d3-05a2-49a0-9a74-e2353a135256",
-    "state": "queued"
+    "observed_state": "queued",
+    "error": "turn/interrupt: Codex RPC rejected request (code -32600)",
+    "context": "Pi client exited; an immediate agent_cancel landed while the turn was starting"
   },
-  "error": "AssertionError({'error': {'code': 'protocol', 'message': 'turn/interrupt: Codex RPC rejected request (code -32600)'}})",
-  "note": "First cancel ran during the turn-start window and returned a Codex -32600 protocol error. The task stayed running with cancel_requested=true; a subsequent cancel succeeded and reached cancelled. No false terminal state was reported.",
-  "retry": {
-    "task_id": "b19cb7aa-c5ec-4789-a245-8fb7d2a00f4b",
-    "state": "cancelled",
-    "cancel_requested": true,
-    "error": null
+  "root_cause": {
+    "provider": "Codex app-server rust-v0.162.1",
+    "source": "codex-rs/app-server/src/request_processors/turn_processor.rs::turn_interrupt_inner",
+    "condition": "turn/start returns a turn id before thread_state.active_turn_id is set; a non-empty turnId is rejected with invalid_request ('no active turn to interrupt' or 'expected active turn id ... but found ...')",
+    "provider_documented_startup_path": "turnId=\"\" is treated as a startup interrupt, submits Op::Interrupt, and is acknowledged immediately"
+  },
+  "protocol_probe": {
+    "evidence": "cancel-protocol.json",
+    "attempts": 3,
+    "real_interrupt_errors": 3,
+    "startup_interrupt_ok": 3,
+    "terminal_statuses": ["interrupted", "interrupted", "interrupted"]
+  },
+  "fix": {
+    "file": "src-tauri/src/agent_gateway/codex.rs",
+    "behavior": "interrupt waits for the real turn/started event (bounded), uses the real turn id once started, returns without RPC if the turn is already terminal, returns ProcessExited if the app-server exits, and otherwise uses the provider's startup interrupt (turnId=\"\") after the bounded wait",
+    "no_turn_resubmission": true,
+    "no_unbounded_retry": true,
+    "no_fixed_sleep_retry": true
+  },
+  "verification": {
+    "unit_tests": "5 interrupt tests + shutdown startup test passed; red before fix for never-started, terminal, and shutdown-startup cases",
+    "real_adapter_test": "cancel-startup-live.json (1 passed / 0 failed)",
+    "service_immediate_cancel": "cancel-start.json (3/3 queued -> cancelled, no cancel error)",
+    "lifecycle": "A-H 8/8 PASS, survivors empty"
   }
 }

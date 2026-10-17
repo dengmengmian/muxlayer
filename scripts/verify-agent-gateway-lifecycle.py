@@ -305,10 +305,15 @@ def run(binary, codex, root, selected):
                     result["sentinels_alive"] = len(surviving(sentinels)) == 2
                     result["pass"] &= result["sentinels_alive"]
                     if client:
-                        try:
-                            result["task_state"] = client.tool("agent_status", {"task_id": task["task_id"]})["state"]
-                        except Exception:
-                            pass  # Service exit is an explicit scenario; process checks remain authoritative.
+                        # Do not query after an explicit service exit: agent_status
+                        # would auto-start a fresh service and leave it behind.
+                        if service and service.poll() is None \
+                                and (db / "agent-service/agent-service.sock").exists():
+                            try:
+                                result["task_state"] = client.tool(
+                                    "agent_status", {"task_id": task["task_id"]})["state"]
+                            except Exception:
+                                pass
                         client.close()
                     if service and service.poll() is None:
                         try:
