@@ -16,6 +16,7 @@ import {
   Plug,
   BookOpen,
   MessageCircle,
+  Bot,
 } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import logo from "@/assets/logo.svg";
@@ -49,6 +50,7 @@ const navGroups = [
       { to: "/tools", labelKey: "nav.clients", icon: Monitor },
       { to: "/instructions", labelKey: "nav.instructions", icon: FileText },
       { to: "/mcp", labelKey: "nav.mcp", icon: Plug },
+      { to: "/agent-gateway", labelKey: "nav.agent_gateway", icon: Bot },
       { to: "/skills", labelKey: "nav.skills", icon: BookOpen },
       { to: "/pet-chat", labelKey: "nav.pet_chat", icon: MessageCircle },
     ],

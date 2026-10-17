@@ -40,6 +40,9 @@ const Instructions = lazy(() =>
   import("@/pages/Instructions").then((m) => ({ default: m.Instructions }))
 );
 const Mcp = lazy(() => import("@/pages/Mcp").then((m) => ({ default: m.Mcp })));
+const AgentGateway = lazy(() =>
+  import("@/pages/AgentGateway").then((m) => ({ default: m.AgentGateway }))
+);
 const Skills = lazy(() =>
   import("@/pages/Skills").then((m) => ({ default: m.Skills }))
 );
@@ -85,6 +88,7 @@ export function App() {
             <Route path="/diagnostics" element={<Diagnostics />} />
             <Route path="/instructions" element={<Instructions />} />
             <Route path="/mcp" element={<Mcp />} />
+            <Route path="/agent-gateway" element={<AgentGateway />} />
             <Route path="/skills" element={<Skills />} />
             <Route path="/pet-chat" element={<PetChat />} />
             <Route path="/settings" element={<Settings />} />

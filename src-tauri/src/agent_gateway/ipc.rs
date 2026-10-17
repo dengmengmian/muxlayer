@@ -83,6 +83,12 @@ fn short_hash(text: &str) -> String {
 }
 
 impl ServicePaths {
+    /// True when something is actually accepting connections on the service socket.
+    /// A leftover socket file after shutdown must not be reported as a service error.
+    pub(crate) fn is_live(&self) -> bool {
+        transport::probe(&self.socket)
+    }
+
     pub fn new(db_dir: &Path) -> Self {
         let dir = db_dir.join("agent-service");
         let identity = dir.to_string_lossy().to_string();

@@ -101,3 +101,69 @@ async fn rejected_second_service_does_not_recover_the_owners_running_tasks() {
         .unwrap()
         .unwrap();
 }
+
+/// The Desktop writes CLI overrides into the CLI database. The headless
+/// service must read that same database before discovery. An invalid explicit
+/// Codex path must suppress the otherwise-available real Codex CLI; this proves
+/// the setting is actually applied rather than silently ignored.
+#[tokio::test]
+async fn agent_service_uses_saved_cli_path_overrides() {
+    use agentgate_lib::agent_gateway::settings::{set_bin, CLAUDE_BIN_KEY, CODEX_BIN_KEY};
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let claude = dir.path().join("claude-discovery-fixture");
+    std::fs::write(
+        &claude,
+        "#!/bin/sh\n[ \"$1\" = --version ] || exit 1\necho '2.1.999 (Claude Code)'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let missing_codex = dir.path().join("missing-codex");
+    set_bin(dir.path(), CODEX_BIN_KEY, Some(&missing_codex)).unwrap();
+    set_bin(dir.path(), CLAUDE_BIN_KEY, Some(&claude)).unwrap();
+
+    let paths = ServicePaths::new(dir.path());
+    let mut service = tokio::process::Command::new(env!("CARGO_BIN_EXE_agentgate-serve"))
+        .args(["agent-service", "--db-path"])
+        .arg(dir.path())
+        .env_remove("AGENTGATE_CODEX_BIN")
+        .env_remove("AGENTGATE_CLAUDE_BIN")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut client = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if let Ok(client) = IpcClient::connect(&paths).await {
+                break client;
+            }
+            assert!(
+                service.try_wait().unwrap().is_none(),
+                "service exited before listening"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let status = client
+        .call("service_status", json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    let agents: Vec<&str> = status["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|agent| agent["id"].as_str())
+        .collect();
+    assert!(agents.contains(&"claude-code"), "{status}");
+    assert!(
+        !agents.contains(&"codex-native"),
+        "invalid saved Codex path must override auto-discovery: {status}"
+    );
+    let _ = client.call("service_shutdown", json!({})).await;
+    let _ = tokio::time::timeout(Duration::from_secs(10), service.wait()).await;
+}

@@ -954,6 +954,110 @@ async importMcpServers(payload: string, targetClients: string[]) : Promise<Resul
     else return { status: "error", error: e  as any };
 }
 },
+async getAgentGatewayOverview() : Promise<Result<AgentGatewayOverview, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_agent_gateway_overview") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async setAgentGatewayAgentPath(agentId: string, path: string | null) : Promise<Result<AgentGatewayPathResult, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_agent_gateway_agent_path", { agentId, path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async setAgentGatewayServePath(path: string | null) : Promise<Result<AgentGatewayCliStatus, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_agent_gateway_serve_path", { path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async testAgentGatewayAgent(agentId: string, confirmed: boolean) : Promise<Result<AgentGatewayTestResult, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("test_agent_gateway_agent", { agentId, confirmed }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getAgentGatewayServiceStatus() : Promise<Result<AgentGatewayServiceStatus, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_agent_gateway_service_status") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async startAgentGatewayService() : Promise<Result<AgentGatewayServiceStatus, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("start_agent_gateway_service") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async stopAgentGatewayService(force: boolean) : Promise<Result<AgentGatewayServiceStatus, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("stop_agent_gateway_service", { force }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async restartAgentGatewayService(force: boolean) : Promise<Result<AgentGatewayServiceStatus, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("restart_agent_gateway_service", { force }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async configureAgentGatewayMcp(client: string, confirmed: boolean) : Promise<Result<AgentGatewayMcpResult, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("configure_agent_gateway_mcp", { client, confirmed }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async removeAgentGatewayMcp(client: string, confirmed: boolean) : Promise<Result<AgentGatewayMcpResult, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("remove_agent_gateway_mcp", { client, confirmed }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getAgentGatewayMcpCopy(client: string) : Promise<Result<AgentGatewayMcpCopy, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_agent_gateway_mcp_copy", { client }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getAgentGatewayDiagnostics() : Promise<Result<string, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_agent_gateway_diagnostics") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async openAgentGatewayDataDir() : Promise<Result<boolean, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("open_agent_gateway_data_dir") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 /**
  * 回滚到某条历史记录所代表的盘上状态。snapshot 反序列化后按 file 写回原
  * absolute_path（不存在的文件被删除）。回滚本身**不**
@@ -1606,6 +1710,16 @@ petSettingsChanged: "pet-settings-changed"
 /** user-defined types **/
 
 export type AddProviderToRouteInput = { priority: number | null; model_override: string | null; cooldown_seconds: number | null; failover_on_status_codes: string | null; failover_on_error_keywords: string | null; routing_conditions: string | null }
+export type AgentGatewayAgentStatus = { id: string; name: string; installed: boolean; executable: string | null; version: string | null; state: string; available: boolean; auth_state: string; auth_detail: string; source: string; model: string | null; config_path: string | null; configured_path: string | null; detection: string; warnings: string[]; error: string | null }
+export type AgentGatewayCliStatus = { installed: boolean; path: string | null; version: string | null; detection: string; error: string | null; install_hint: string; download_url: string }
+export type AgentGatewayClientStatus = { id: string; name: string; installed: boolean; version: string | null; executable: string | null; config_path: string; config_exists: boolean; mcp_name: string; config_status: string; configured: boolean; matching: boolean; command: string | null; args: string[]; copy_command: string; copy_args: string[]; copy_json: string; copy_toml: string; compatibility: string; requires_upgrade: boolean; warning: string | null; error: string | null; live_status_available: boolean; live_status_note: string }
+export type AgentGatewayMcpCopy = { name: string; command: string; args: string[]; json: string; toml: string; note: string }
+export type AgentGatewayMcpResult = { status: AgentGatewayClientStatus; message: string }
+export type AgentGatewayOverview = { cli: AgentGatewayCliStatus; data_dir: string; agents: AgentGatewayAgentStatus[]; service: AgentGatewayServiceStatus; clients: AgentGatewayClientStatus[] }
+export type AgentGatewayPathResult = { status: AgentGatewayAgentStatus; requires_service_restart: boolean }
+export type AgentGatewayServiceAgent = { id: string; name: string; permissions: string[] }
+export type AgentGatewayServiceStatus = { installed: boolean; cli_path: string | null; cli_version: string | null; data_dir: string; running: boolean; service_version: string | null; running_tasks: string[]; agents: AgentGatewayServiceAgent[]; last_error: string | null; error: string | null; install_hint: string; download_url: string }
+export type AgentGatewayTestResult = { success: boolean; agent: string; state: string; task_id: string | null; session_id: string | null; final_answer: string | null; error: string | null; duration_ms: number; started_service: boolean }
 export type AppError = { code: string; message: string; detail: string | null; suggestion: string | null }
 export type AtomCodeApplyConfigResult = { success: boolean; config_path: string; changed_keys: string[]; warnings: string[] }
 export type AtomCodeConfigStatus = { config_path: string; exists: boolean; has_agentgate: boolean; current_model: string | null; has_saved_official: boolean }

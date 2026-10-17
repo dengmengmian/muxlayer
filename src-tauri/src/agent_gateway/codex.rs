@@ -172,22 +172,10 @@ impl CodexFactory {
         ))
     }
 }
-async fn discover(explicit: Option<&Path>) -> Result<PathBuf, AgentError> {
-    let mut candidates = Vec::new();
-    if let Some(p) = explicit {
-        candidates.push(p.to_owned());
-    } else {
-        if let Some(p) = std::env::var_os("AGENTGATE_CODEX_BIN") {
-            candidates.push(p.into());
-        }
-        if let Some(path) = std::env::var_os("PATH") {
-            for dir in std::env::split_paths(&path) {
-                candidates.push(dir.join(if cfg!(windows) { "codex.exe" } else { "codex" }));
-            }
-        }
-    }
-    for p in candidates {
-        if p.to_string_lossy().contains(".app/Contents/") {
+pub(crate) async fn discover(explicit: Option<&Path>) -> Result<PathBuf, AgentError> {
+    let binary = if cfg!(windows) { "codex.exe" } else { "codex" };
+    for p in super::discovery::candidate_paths(explicit, Some("AGENTGATE_CODEX_BIN"), binary) {
+        if super::discovery::is_app_bundle(&p) {
             continue;
         }
         let output = tokio::time::timeout(

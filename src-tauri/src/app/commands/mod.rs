@@ -1,6 +1,7 @@
 use crate::errors::AppError;
 use crate::storage;
 
+pub mod agent_gateway;
 pub mod clients;
 pub mod config;
 pub mod diagnostics;
@@ -12,6 +13,7 @@ pub mod pricing;
 pub mod providers;
 pub mod route_profiles;
 
+pub use agent_gateway::*;
 pub use clients::*;
 pub use config::*;
 pub use diagnostics::*;

@@ -115,26 +115,14 @@ impl AdapterFactory for ClaudeFactory {
     }
 }
 
-async fn discover(explicit: Option<&Path>) -> Result<PathBuf, AgentError> {
-    let mut candidates = Vec::new();
-    if let Some(p) = explicit {
-        candidates.push(p.to_owned());
+pub(crate) async fn discover(explicit: Option<&Path>) -> Result<PathBuf, AgentError> {
+    let binary = if cfg!(windows) {
+        "claude.exe"
     } else {
-        if let Some(p) = std::env::var_os("AGENTGATE_CLAUDE_BIN") {
-            candidates.push(p.into());
-        }
-        if let Some(path) = std::env::var_os("PATH") {
-            for dir in std::env::split_paths(&path) {
-                candidates.push(dir.join(if cfg!(windows) {
-                    "claude.exe"
-                } else {
-                    "claude"
-                }));
-            }
-        }
-    }
-    for p in candidates {
-        if p.to_string_lossy().contains(".app/Contents/") {
+        "claude"
+    };
+    for p in super::discovery::candidate_paths(explicit, Some("AGENTGATE_CLAUDE_BIN"), binary) {
+        if super::discovery::is_app_bundle(&p) {
             continue;
         }
         let output = tokio::time::timeout(

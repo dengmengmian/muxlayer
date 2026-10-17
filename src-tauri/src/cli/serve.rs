@@ -511,13 +511,20 @@ async fn cmd_agent_service(cli: &Cli, idle_timeout: u64) {
             std::process::exit(1);
         }
     };
+    let configured = match agentgate_lib::agent_gateway::settings::load(&db_dir) {
+        Ok(paths) => paths,
+        Err(e) => {
+            eprintln!("Failed to load Agent Gateway settings: {}", e.message);
+            std::process::exit(1);
+        }
+    };
     let mut codex: Option<Arc<dyn agentgate_lib::agent_gateway::AdapterFactory>> = None;
     let mut claude: Option<Arc<dyn agentgate_lib::agent_gateway::AdapterFactory>> = None;
-    match CodexFactory::discover(None).await {
+    match CodexFactory::discover(configured.codex_bin.clone()).await {
         Ok(factory) => codex = Some(Arc::new(factory)),
         Err(e) => eprintln!("Codex agent unavailable: {}", e.message),
     }
-    match ClaudeFactory::discover(None).await {
+    match ClaudeFactory::discover(configured.claude_bin.clone()).await {
         Ok(factory) => claude = Some(Arc::new(factory)),
         Err(e) => eprintln!("Claude Code agent unavailable: {}", e.message),
     }

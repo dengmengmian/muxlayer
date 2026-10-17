@@ -24,6 +24,7 @@ export function Topbar({ onOpenCmdK }: { onOpenCmdK?: () => void }) {
     "/diagnostics": "nav.diagnostics",
     "/instructions": "nav.instructions",
     "/mcp": "nav.mcp",
+    "/agent-gateway": "nav.agent_gateway",
     "/skills": "nav.skills",
     "/pet-chat": "nav.pet_chat",
     "/settings": "nav.settings",

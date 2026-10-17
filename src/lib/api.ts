@@ -719,3 +719,53 @@ export const importConfigJson = (json: string) =>
 
 // re-export narrow union types for downstream consumers
 export type { PetType, PetState, PetGatewayInfo };
+
+// ── Agent Gateway Desktop ──────────────────────────────────────
+
+export type {
+  AgentGatewayAgentStatus,
+  AgentGatewayCliStatus,
+  AgentGatewayClientStatus,
+  AgentGatewayMcpCopy,
+  AgentGatewayMcpResult,
+  AgentGatewayOverview,
+  AgentGatewayPathResult,
+  AgentGatewayServiceAgent,
+  AgentGatewayServiceStatus,
+  AgentGatewayTestResult,
+} from "./bindings";
+
+export const getAgentGatewayOverview = () =>
+  unwrap(bindings.getAgentGatewayOverview());
+export const setAgentGatewayAgentPath = (
+  agentId: string,
+  path: string | null
+) => unwrap(bindings.setAgentGatewayAgentPath(agentId, path));
+export const setAgentGatewayServePath = (path: string | null) =>
+  unwrap(bindings.setAgentGatewayServePath(path));
+export const testAgentGatewayAgent = (
+  agentId: string,
+  confirmed: boolean
+) => unwrap(bindings.testAgentGatewayAgent(agentId, confirmed));
+export const getAgentGatewayServiceStatus = () =>
+  unwrap(bindings.getAgentGatewayServiceStatus());
+export const startAgentGatewayService = () =>
+  unwrap(bindings.startAgentGatewayService());
+export const stopAgentGatewayService = (force: boolean) =>
+  unwrap(bindings.stopAgentGatewayService(force));
+export const restartAgentGatewayService = (force: boolean) =>
+  unwrap(bindings.restartAgentGatewayService(force));
+export const configureAgentGatewayMcp = (
+  client: string,
+  confirmed: boolean
+) => unwrap(bindings.configureAgentGatewayMcp(client, confirmed));
+export const removeAgentGatewayMcp = (
+  client: string,
+  confirmed: boolean
+) => unwrap(bindings.removeAgentGatewayMcp(client, confirmed));
+export const getAgentGatewayMcpCopy = (client: string) =>
+  unwrap(bindings.getAgentGatewayMcpCopy(client));
+export const getAgentGatewayDiagnostics = () =>
+  unwrap(bindings.getAgentGatewayDiagnostics());
+export const openAgentGatewayDataDir = () =>
+  unwrap(bindings.openAgentGatewayDataDir());
