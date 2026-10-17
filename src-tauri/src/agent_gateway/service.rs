@@ -865,6 +865,35 @@ async fn execute(
                         Some(error(ErrorCode::Protocol, "unknown turn outcome")),
                     ),
                 };
+                if status == TaskState::Cancelled {
+                    // Provider interruption can leave detached commands alive. Close
+                    // the owned execution scope before publishing cancellation. The
+                    // durable Thread mapping survives; continuation reconnects it.
+                    let cleanup = tokio::time::timeout(Duration::from_secs(5), adapter.shutdown())
+                        .await
+                        .unwrap_or_else(|_| {
+                            Err(error(ErrorCode::Adapter, "cancel scope cleanup timed out"))
+                        });
+                    if let Err(error) = cleanup {
+                        with_state(weak, |_, state| {
+                            let session_id = state.tasks[task_id].session_id.clone();
+                            state.sessions.get_mut(&session_id).unwrap().cleanup_error =
+                                Some(error.clone());
+                        });
+                        return Err(error);
+                    }
+                    with_state(weak, |_, state| {
+                        let session_id = state.tasks[task_id].session_id.clone();
+                        let session = state.sessions.get_mut(&session_id).unwrap();
+                        if session
+                            .adapter
+                            .as_ref()
+                            .is_some_and(|cached| Arc::ptr_eq(cached, &adapter))
+                        {
+                            session.adapter = None;
+                        }
+                    });
+                }
                 with_state(weak, |inner, state| {
                     finish(
                         inner.store.as_ref(),
@@ -894,6 +923,7 @@ mod tests {
         shutdowns: std::sync::atomic::AtomicUsize,
         fail_interrupt: std::sync::atomic::AtomicBool,
         fail_shutdown: std::sync::atomic::AtomicBool,
+        fail_shutdown_once: std::sync::atomic::AtomicBool,
         next_error: Mutex<Option<AgentError>>,
         shutdown_wait: Mutex<Option<Arc<tokio::sync::Notify>>>,
     }
@@ -907,6 +937,7 @@ mod tests {
                 shutdowns: 0.into(),
                 fail_interrupt: false.into(),
                 fail_shutdown: false.into(),
+                fail_shutdown_once: false.into(),
                 next_error: Mutex::new(None),
                 shutdown_wait: Mutex::new(None),
             })
@@ -988,7 +1019,11 @@ mod tests {
                 if let Some(gate) = gate {
                     gate.notified().await;
                 }
-                if self.fail_shutdown.load(std::sync::atomic::Ordering::SeqCst) {
+                if self.fail_shutdown.load(std::sync::atomic::Ordering::SeqCst)
+                    || self
+                        .fail_shutdown_once
+                        .swap(false, std::sync::atomic::Ordering::SeqCst)
+                {
                     Err(error(ErrorCode::Adapter, "cleanup failed"))
                 } else {
                     Ok(())
@@ -1127,6 +1162,87 @@ mod tests {
         assert_eq!(f.adapters.lock().unwrap().len(), 2);
         s.shutdown().await.unwrap();
     }
+    #[tokio::test]
+    async fn cancellation_waits_for_scope_cleanup_then_resumes_the_same_thread_on_a_new_connection()
+    {
+        use std::sync::atomic::Ordering;
+        let (s, factory) = setup();
+        let submitted = s.run(request()).unwrap();
+        running(&s, &submitted.task_id).await;
+        let fake = factory.adapters.lock().unwrap()[0].clone();
+        let gate = Arc::new(tokio::sync::Notify::new());
+        *fake.shutdown_wait.lock().unwrap() = Some(gate.clone());
+        s.cancel(&submitted.task_id).await.unwrap();
+        fake.finish(TurnOutcome::Interrupted, None);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while fake.shutdowns.load(Ordering::SeqCst) == 0
+                && !s.status(&submitted.task_id).unwrap().state.is_terminal()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            !s.status(&submitted.task_id).unwrap().state.is_terminal(),
+            "cancelled must wait for actual scope cleanup"
+        );
+        assert_eq!(
+            s.session(&submitted.session_id)
+                .unwrap()
+                .active_task_id
+                .as_deref(),
+            Some(submitted.task_id.as_str())
+        );
+        assert_eq!(fake.shutdowns.load(Ordering::SeqCst), 1);
+        *fake.shutdown_wait.lock().unwrap() = None;
+        gate.notify_one();
+        assert_eq!(
+            terminal(&s, &submitted.task_id).await.state,
+            TaskState::Cancelled
+        );
+        let continued = s
+            .continue_session(ContinueRequest {
+                session_id: submitted.session_id.clone(),
+                prompt: "continue after cancellation".into(),
+            })
+            .unwrap();
+        running(&s, &continued.task_id).await;
+        let second = factory.adapters.lock().unwrap()[1].clone();
+        assert_eq!(second.calls.lock().unwrap()[0], "resume");
+        assert_eq!(
+            s.status(&continued.task_id).unwrap().thread_id,
+            Some("thread".into())
+        );
+        second.finish(TurnOutcome::Completed, Some("resumed"));
+        assert_eq!(
+            terminal(&s, &continued.task_id).await.state,
+            TaskState::Completed
+        );
+        s.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancellation_cleanup_failure_does_not_claim_cancelled_or_allow_continuation() {
+        let (s, factory) = setup();
+        let submitted = s.run(request()).unwrap();
+        running(&s, &submitted.task_id).await;
+        let fake = factory.adapters.lock().unwrap()[0].clone();
+        fake.fail_shutdown_once
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        s.cancel(&submitted.task_id).await.unwrap();
+        fake.finish(TurnOutcome::Interrupted, None);
+        let task = terminal(&s, &submitted.task_id).await;
+        assert_eq!(task.state, TaskState::Failed);
+        assert!(task.error.unwrap().message.contains("cleanup"));
+        assert!(s
+            .continue_session(ContinueRequest {
+                session_id: submitted.session_id,
+                prompt: "unsafe continuation".into()
+            })
+            .is_err());
+    }
+
     #[tokio::test]
     async fn cancellation_acknowledgement_is_not_terminal_and_completion_wins_race() {
         let (s, f) = setup();

@@ -2,5 +2,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    agentgate_lib::agent_gateway::dispatch_process_owner();
     agentgate_lib::run()
 }

@@ -2,7 +2,7 @@
 
 本文件对应 `src-tauri/src/agent_gateway/`。第二阶段在保留第一阶段语义的前提下补齐：SQLite 持久化、Claude Code Adapter、本地 IPC、MCP stdio Server 五个工具、Agent Service 独立生命周期与重启恢复。第三阶段在这些接口上修复可靠性并完成 CodeLeveler / Pi 联调；桌面管理 UI 与云端能力仍不在范围内。
 
-> 第三阶段总体结论为 **PARTIAL**：常规 MCP / CodeLeveler / Pi 调用、续会、结果与取消已实测；Codex App Server 自身 SIGKILL 后独立 Session 后代仍可能残留，Windows 未完成原生验收。详见 [第三阶段报告](agent-gateway-phase-three-verification.md)。
+> 第三阶段历史结论见 [原报告](agent-gateway-phase-three-verification.md)。后续生命周期验收已修复原始 Codex SIGKILL 残留，真实 A–H 8/8 通过；任意脱链后代仍无绝对回收保证，整体 **PARTIAL**。最新边界见 [生命周期最终报告](agent-gateway-lifecycle-final.md)。
 
 ## 1. 架构与职责
 
@@ -238,7 +238,9 @@ MCP stdio Server 只做请求解析、参数校验、调用 Agent Service（经 
 - 连接之间互不阻塞（每个连接独立任务）。
 - 单实例所有权：CLI 在打开数据库、恢复任务前获取 OS 文件锁，失败返回 `busy`；PID 文本不参与裁决。锁文件永久保留，退出只释放句柄，避免 unlink 造成 inode 分裂。socket probe 仅用于兼容发现已有旧服务。
 - MCP 传输断开只重试 `agent_list` / `agent_status`；变更请求不自动重放，明确报告结果未知，避免重复执行。
-- Unix Adapter 额外持有私有寿命管道，EOF / CLI 退出触发 guardian 清理其专属进程组；不覆盖 CLI 自行 `setsid()` 的后代。Windows 当前仍为单 Child 控制。
+- macOS Adapter 通过同一应用内部 native owner 管理寿命FD与root退出事件：出生gate前同步隔离root PGID并捕获内核uniqueid，退出时有界证明父实例链、audit token原子信号，并确认已登记进程退出。不使用名称/PID文本/PGID判断归属；不保证首次发现前已丢失身份链的后代。其他Unix保留原进程组guardian，Windows当前仍为单Child控制。
+- 取消真实终局之后，Service先确认整个Adapter scope关闭再发布`cancelled`；释放运行时Adapter缓存，续会通过新连接官方resume原Thread。清理失败保存Session错误并阻止继续。
+- macOS library嵌入方须让main调用内部owner分流，或通过`AGENTGATE_PROCESS_OWNER_BIN`指定配套CLI；本应用CLI/桌面自身已处理入口。
 - 优雅关闭失败会使宿主返回真实错误，不输出假成功。
 - IPC 层不重新定义 Task 语义，也不复制状态机。
 
@@ -300,7 +302,7 @@ AGENTGATE_CODEX_BIN=/opt/homebrew/bin/codex cargo test \
 
 ## 12. 第三阶段后尚未收口的边界
 
-1. **核心未解决**：macOS Codex App Server 自身 SIGKILL 后的独立 Session 后代回收；第三阶段整体 PARTIAL。
+1. 原始macOS Codex App Server SIGKILL独立Session后代残留已通过新native owner修复，真实A–H全通过。首次发现前祖先退出/孤儿exec脱链仍无法绝对回收；最新生命周期结论PARTIAL，见[最终报告](agent-gateway-lifecycle-final.md)。
 2. Windows 原生编译、Named Pipe 权限、进程树所有权及端到端验收；交叉检查被缺失 Windows SDK 阻塞。
 3. CodeLeveler / Pi 常规 run / status / continue、完整结果已真实通过；CodeLeveler 显式取消、Pi Unicode 分页、Pi → Claude Code 亦已通过；全部异常退出及原生聊天取消联动语义未穷尽。
 4. Claude Code 实际推理来源为用户既有 DeepSeek 配置；未宣称官方 Anthropic 模型验收。

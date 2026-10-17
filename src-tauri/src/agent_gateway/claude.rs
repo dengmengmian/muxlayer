@@ -661,18 +661,25 @@ impl AgentAdapter for ClaudeAdapter {
             if let Some(turn) = self.turn.lock().await.clone() {
                 *self.interrupt_requested.lock().await = Some(turn);
             }
-            if let Some(child) = self.child.lock().await.as_mut() {
+            let mut owned = self.child.lock().await;
+            if let Some(child) = owned.as_mut() {
                 let _ = child.start_kill();
-            }
-            let child = self.child.lock().await.take();
-            if let Some(mut child) = child {
-                if tokio::time::timeout(Duration::from_secs(5), child.wait())
-                    .await
-                    .is_err()
-                {
-                    return Err(protocol("Claude Code did not exit after termination"));
+                match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(error)) => {
+                        return Err(protocol(format!(
+                            "Claude Code process cleanup failed: {error}"
+                        )));
+                    }
+                    Err(_) => {
+                        return Err(protocol("Claude Code did not exit after termination"));
+                    }
                 }
+                // Keep the handle if waiting fails or this future is cancelled,
+                // so another shutdown still has to verify the same owner.
+                owned.take();
             }
+            drop(owned);
             if let Some(reader) = self.reader.lock().await.take() {
                 reader.abort();
             }
@@ -817,6 +824,45 @@ printf '{"type":"result","subtype":"success","is_error":false,"result":"FINAL AN
             interrupt_requested: Mutex::new(None),
             resume_next: AtomicBool::new(false),
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn shutdown_reports_process_owner_cleanup_failure() {
+        let adapter = fake_adapter();
+        *adapter.child.lock().await = Some(super::super::process::failed_owner_for_test());
+        let result = adapter.shutdown().await;
+        assert!(
+            result.is_err(),
+            "owner cleanup failure must not be reported as successful shutdown"
+        );
+        assert!(
+            adapter.shutdown().await.is_err(),
+            "a retry must retain and report the failed owner handle"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn cancelled_shutdown_future_retains_the_owner_for_a_later_wait() {
+        let adapter = fake_adapter();
+        *adapter.child.lock().await = Some(super::super::process::pending_owner_for_test());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), adapter.shutdown())
+                .await
+                .is_err()
+        );
+        let mut owned = adapter.child.lock().await;
+        let child = owned
+            .as_mut()
+            .expect("cancelled shutdown must keep the owner handle");
+        // Only terminate this fixture's retained, unreaped direct Child handle.
+        tokio::process::Child::kill(child).await.unwrap();
+        drop(owned);
+        assert!(
+            adapter.shutdown().await.is_err(),
+            "later shutdown must verify the actual owner exit status"
+        );
     }
 
     #[test]

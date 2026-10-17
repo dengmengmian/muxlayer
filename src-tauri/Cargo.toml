@@ -39,6 +39,7 @@ path = "src/cli/serve.rs"
 required-features = ["cli"]
 
 [build-dependencies]
+cc = "1"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]

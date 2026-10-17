@@ -1,0 +1,1156 @@
+[
+  {
+    "mode": "A",
+    "pass": true,
+    "task": {
+      "session_id": "c17d0c17-acf3-49b3-9284-2bff061fd5bb",
+      "task_id": "51bc4e42-cc89-49ff-802a-81bcbedb6d61"
+    },
+    "service": {
+      "pid": 61701,
+      "parent": 61675,
+      "group": 61675,
+      "state": "S",
+      "command": "/Users/mengmian/Develop/app/dengmengmian/AgentGate/src-tauri/target/debug/agentgate-serve",
+      "started": "Fri Oct 16 16:12:34 2026",
+      "sid": 61675,
+      "unique": 134601118,
+      "parent_unique": 134601093,
+      "version": 210811184
+    },
+    "before": [
+      {
+        "pid": 61747,
+        "parent": 61701,
+        "group": 61747,
+        "state": "S",
+        "command": "/Users/mengmian/Develop/app/dengmengmian/AgentGate/src-tauri/target/debug/agentgate-serve",
+        "started": "Fri Oct 16 16:12:35 2026",
+        "sid": 61675,
+        "unique": 134601164,
+        "parent_unique": 134601118,
+        "version": 210811248
+      },
+      {
+        "pid": 61748,
+        "parent": 61747,
+        "group": 61748,
+        "state": "S",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Fri Oct 16 16:12:35 2026",
+        "sid": 61675,
+        "unique": 134601165,
+        "parent_unique": 134601164,
+        "version": 210811250
+      },
+      {
+        "pid": 62441,
+        "parent": 61748,
+        "group": 62441,
+        "state": "S",
+        "command": "/opt/homebrew/Caskroom/codex/0.162.1/bin/codex-code-mode-host",
+        "started": "Fri Oct 16 16:12:42 2026",
+        "sid": 61675,
+        "unique": 134601847,
+        "parent_unique": 134601165,
+        "version": 210812228
+      },
+      {
+        "pid": 62443,
+        "parent": 61748,
+        "group": 62443,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Fri Oct 16 16:12:43 2026",
+        "sid": 62443,
+        "unique": 134601849,
+        "parent_unique": 134601165,
+        "version": 210812235
+      },
+      {
+        "pid": 62454,
+        "parent": 61701,
+        "group": 62454,
+        "state": "S",
+        "command": "/Users/mengmian/Develop/app/dengmengmian/AgentGate/src-tauri/target/debug/agentgate-serve",
+        "started": "Fri Oct 16 16:12:43 2026",
+        "sid": 61675,
+        "unique": 134601860,
+        "parent_unique": 134601118,
+        "version": 210812255
+      },
+      {
+        "pid": 62455,
+        "parent": 62454,
+        "group": 62455,
+        "state": "S",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Fri Oct 16 16:12:43 2026",
+        "sid": 61675,
+        "unique": 134601861,
+        "parent_unique": 134601860,
+        "version": 210812257
+      }
+    ],
+    "appserver": {
+      "pid": 61748,
+      "parent": 61747,
+      "group": 61748,
+      "state": "S",
+      "command": "/opt/homebrew/bin/codex",
+      "started": "Fri Oct 16 16:12:35 2026",
+      "sid": 61675,
+      "unique": 134601165,
+      "parent_unique": 134601164,
+      "version": 210811250
+    },
+    "independent_shells": [
+      {
+        "pid": 62443,
+        "parent": 61748,
+        "group": 62443,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Fri Oct 16 16:12:43 2026",
+        "sid": 62443,
+        "unique": 134601849,
+        "parent_unique": 134601165,
+        "version": 210812235
+      }
+    ],
+    "survivors": [],
+    "cancel_state": "cancelled",
+    "continued_task": {
+      "session_id": "c17d0c17-acf3-49b3-9284-2bff061fd5bb",
+      "task_id": "417dd9ae-e211-4482-861f-15bd9ce9ebd3"
+    },
+    "continued_thread": "01a143c5-28da-7d23-86e8-c8a2621af111",
+    "resumed_provider": {
+      "pid": 62455,
+      "parent": 62454,
+      "group": 62455,
+      "state": "S",
+      "command": "/opt/homebrew/bin/codex",
+      "started": "Fri Oct 16 16:12:43 2026",
+      "sid": 61675,
+      "unique": 134601861,
+      "parent_unique": 134601860,
+      "version": 210812257
+    },
+    "resumed_scope": [
+      {
+        "pid": 62454,
+        "parent": 61701,
+        "group": 62454,
+        "state": "S",
+        "command": "/Users/mengmian/Develop/app/dengmengmian/AgentGate/src-tauri/target/debug/agentgate-serve",
+        "started": "Fri Oct 16 16:12:43 2026",
+        "sid": 61675,
+        "unique": 134601860,
+        "parent_unique": 134601118,
+        "version": 210812255
+      },
+      {
+        "pid": 62455,
+        "parent": 62454,
+        "group": 62455,
+        "state": "S",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Fri Oct 16 16:12:43 2026",
+        "sid": 61675,
+        "unique": 134601861,
+        "parent_unique": 134601860,
+        "version": 210812257
+      }
+    ],
+    "after_shutdown_survivors": [],
+    "sentinels_before": [
+      {
+        "pid": 61687,
+        "parent": 61675,
+        "group": 61687,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Fri Oct 16 16:12:34 2026",
+        "sid": 61687,
+        "unique": 134601105,
+        "parent_unique": 134601093,
+        "version": 210811161
+      },
+      {
+        "pid": 61688,
+        "parent": 61675,
+        "group": 61688,
+        "state": "Rs",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Fri Oct 16 16:12:34 2026",
+        "sid": 61688,
+        "unique": 134601106,
+        "parent_unique": 134601093,
+        "version": 210811162
+      }
+    ],
+    "sentinels_alive": true,
+    "task_state": "cancelled"
+  },
+  {
+    "mode": "B_appserver_eof",
+    "pass": true,
+    "before": [
+      {
+        "pid": 63088,
+        "parent": 63087,
+        "group": 63088,
+        "state": "R",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Fri Oct 16 16:12:49 2026",
+        "sid": 61675,
+        "unique": 134602493,
+        "parent_unique": 134602492,
+        "version": 210813197
+      },
+      {
+        "pid": 63090,
+        "parent": 63088,
+        "group": 63090,
+        "state": "Rs",
+        "command": "/bin/sleep",
+        "started": "Fri Oct 16 16:12:49 2026",
+        "sid": 63090,
+        "unique": 134602495,
+        "parent_unique": 134602493,
+        "version": 210813202
+      }
+    ],
+    "survivors": [],
+    "appserver": {
+      "pid": 63088,
+      "parent": 63087,
+      "group": 63088,
+      "state": "R",
+      "command": "/opt/homebrew/bin/codex",
+      "started": "Fri Oct 16 16:12:49 2026",
+      "sid": 61675,
+      "unique": 134602493,
+      "parent_unique": 134602492,
+      "version": 210813197
+    },
+    "guardian_exit": 0,
+    "appserver_raw_exit_status": 0,
+    "sentinels_before": [
+      {
+        "pid": 61687,
+        "parent": 61675,
+        "group": 61687,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Fri Oct 16 16:12:34 2026",
+        "sid": 61687,
+        "unique": 134601105,
+        "parent_unique": 134601093,
+        "version": 210811161
+      },
+      {
+        "pid": 61688,
+        "parent": 61675,
+        "group": 61688,
+        "state": "Rs",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Fri Oct 16 16:12:34 2026",
+        "sid": 61688,
+        "unique": 134601106,
+        "parent_unique": 134601093,
+        "version": 210811162
+      }
+    ],
+    "sentinels_alive": true
+  },
+  {
+    "mode": "C",
+    "pass": true,
+    "task": {
+      "session_id": "71df53e6-d410-422c-bb05-5152800ddfc9",
+      "task_id": "02d07e2e-1e9d-4688-98a9-26d7840f8ff5"
+    },
+    "service": {
+      "pid": 63103,
+      "parent": 61675,
+      "group": 61675,
+      "state": "S",
+      "command": "/Users/mengmian/Develop/app/dengmengmian/AgentGate/src-tauri/target/debug/agentgate-serve",
+      "started": "Fri Oct 16 16:12:50 2026",
+      "sid": 61675,
+      "unique": 134602504,
+      "parent_unique": 134601093,
+      "version": 210813219
+    },
+    "before": [
+      {
+        "pid": 63142,
+        "parent": 63103,
+        "group": 63142,
+        "state": "S",
+        "command": "/Users/mengmian/Develop/app/dengmengmian/AgentGate/src-tauri/target/debug/agentgate-serve",
+        "started": "Fri Oct 16 16:12:50 2026",
+        "sid": 61675,
+        "unique": 134602541,
+        "parent_unique": 134602504,
+        "version": 210813275
+      },
+      {
+        "pid": 63143,
+        "parent": 63142,
+        "group": 63143,
+        "state": "S",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Fri Oct 16 16:12:50 2026",
+        "sid": 61675,
+        "unique": 134602542,
+        "parent_unique": 134602541,
+        "version": 210813277
+      },
+      {
+        "pid": 63777,
+        "parent": 63143,
+        "group": 63777,
+        "state": "S",
+        "command": "/opt/homebrew/Caskroom/codex/0.162.1/bin/codex-code-mode-host",
+        "started": "Fri Oct 16 16:12:57 2026",
+        "sid": 61675,
+        "unique": 134603172,
+        "parent_unique": 134602542,
+        "version": 210814225
+      },
+      {
+        "pid": 63778,
+        "parent": 63143,
+        "group": 63778,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Fri Oct 16 16:12:57 2026",
+        "sid": 63778,
+        "unique": 134603173,
+        "parent_unique": 134602542,
+        "version": 210814230
+      }
+    ],
+    "appserver": {
+      "pid": 63143,
+      "parent": 63142,
+      "group": 63143,
+      "state": "S",
+      "command": "/opt/homebrew/bin/codex",
+      "started": "Fri Oct 16 16:12:50 2026",
+      "sid": 61675,
+      "unique": 134602542,
+      "parent_unique": 134602541,
+      "version": 210813277
+    },
+    "independent_shells": [
+      {
+        "pid": 63778,
+        "parent": 63143,
+        "group": 63778,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Fri Oct 16 16:12:57 2026",
+        "sid": 63778,
+        "unique": 134603173,
+        "parent_unique": 134602542,
+        "version": 210814230
+      }
+    ],
+    "survivors": [],
+    "sentinels_before": [
+      {
+        "pid": 61687,
+        "parent": 61675,
+        "group": 61687,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Fri Oct 16 16:12:34 2026",
+        "sid": 61687,
+        "unique": 134601105,
+        "parent_unique": 134601093,
+        "version": 210811161
+      },
+      {
+        "pid": 61688,
+        "parent": 61675,
+        "group": 61688,
+        "state": "Rs",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Fri Oct 16 16:12:34 2026",
+        "sid": 61688,
+        "unique": 134601106,
+        "parent_unique": 134601093,
+        "version": 210811162
+      }
+    ],
+    "sentinels_alive": true
+  },
+  {
+    "mode": "D",
+    "pass": true,
+    "task": {
+      "session_id": "c726f9d1-e523-49e3-8f55-b6eca6db2ad9",
+      "task_id": "f37ed026-a220-4d8f-842b-ed3934ebfe29"
+    },
+    "service": {
+      "pid": 63808,
+      "parent": 61675,
+      "group": 61675,
+      "state": "S",
+      "command": "/Users/mengmian/Develop/app/dengmengmian/AgentGate/src-tauri/target/debug/agentgate-serve",
+      "started": "Fri Oct 16 16:12:57 2026",
+      "sid": 61675,
+      "unique": 134603203,
+      "parent_unique": 134601093,
+      "version": 210814274
+    },
+    "before": [
+      {
+        "pid": 63833,
+        "parent": 63808,
+        "group": 63833,
+        "state": "S",
+        "command": "/Users/mengmian/Develop/app/dengmengmian/AgentGate/src-tauri/target/debug/agentgate-serve",
+        "started": "Fri Oct 16 16:12:58 2026",
+        "sid": 61675,
+        "unique": 134603228,
+        "parent_unique": 134603203,
+        "version": 210814315
+      },
+      {
+        "pid": 63834,
+        "parent": 63833,
+        "group": 63834,
+        "state": "S",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Fri Oct 16 16:12:58 2026",
+        "sid": 61675,
+        "unique": 134603229,
+        "parent_unique": 134603228,
+        "version": 210814317
+      },
+      {
+        "pid": 64527,
+        "parent": 63834,
+        "group": 64527,
+        "state": "S",
+        "command": "/opt/homebrew/Caskroom/codex/0.162.1/bin/codex-code-mode-host",
+        "started": "Fri Oct 16 16:13:05 2026",
+        "sid": 61675,
+        "unique": 134603920,
+        "parent_unique": 134603229,
+        "version": 210815324
+      },
+      {
+        "pid": 64528,
+        "parent": 63834,
+        "group": 64528,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Fri Oct 16 16:13:05 2026",
+        "sid": 64528,
+        "unique": 134603921,
+        "parent_unique": 134603229,
+        "version": 210815329
+      }
+    ],
+    "appserver": {
+      "pid": 63834,
+      "parent": 63833,
+      "group": 63834,
+      "state": "S",
+      "command": "/opt/homebrew/bin/codex",
+      "started": "Fri Oct 16 16:12:58 2026",
+      "sid": 61675,
+      "unique": 134603229,
+      "parent_unique": 134603228,
+      "version": 210814317
+    },
+    "independent_shells": [
+      {
+        "pid": 64528,
+        "parent": 63834,
+        "group": 64528,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Fri Oct 16 16:13:05 2026",
+        "sid": 64528,
+        "unique": 134603921,
+        "parent_unique": 134603229,
+        "version": 210815329
+      }
+    ],
+    "survivors": [],
+    "sentinels_before": [
+      {
+        "pid": 61687,
+        "parent": 61675,
+        "group": 61687,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Fri Oct 16 16:12:34 2026",
+        "sid": 61687,
+        "unique": 134601105,
+        "parent_unique": 134601093,
+        "version": 210811161
+      },
+      {
+        "pid": 61688,
+        "parent": 61675,
+        "group": 61688,
+        "state": "Rs",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Fri Oct 16 16:12:34 2026",
+        "sid": 61688,
+        "unique": 134601106,
+        "parent_unique": 134601093,
+        "version": 210811162
+      }
+    ],
+    "sentinels_alive": true
+  },
+  {
+    "mode": "E",
+    "pass": true,
+    "task": {
+      "session_id": "59119417-cc1a-4795-9c8d-2c961ffc6d3f",
+      "task_id": "6e5cfd64-8c31-4ffb-9b38-03263378435d"
+    },
+    "service": {
+      "pid": 64551,
+      "parent": 61675,
+      "group": 61675,
+      "state": "S",
+      "command": "/Users/mengmian/Develop/app/dengmengmian/AgentGate/src-tauri/target/debug/agentgate-serve",
+      "started": "Fri Oct 16 16:13:05 2026",
+      "sid": 61675,
+      "unique": 134603944,
+      "parent_unique": 134601093,
+      "version": 210815369
+    },
+    "before": [
+      {
+        "pid": 64577,
+        "parent": 64551,
+        "group": 64577,
+        "state": "S",
+        "command": "/Users/mengmian/Develop/app/dengmengmian/AgentGate/src-tauri/target/debug/agentgate-serve",
+        "started": "Fri Oct 16 16:13:06 2026",
+        "sid": 61675,
+        "unique": 134603970,
+        "parent_unique": 134603944,
+        "version": 210815412
+      },
+      {
+        "pid": 64578,
+        "parent": 64577,
+        "group": 64578,
+        "state": "S",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Fri Oct 16 16:13:06 2026",
+        "sid": 61675,
+        "unique": 134603971,
+        "parent_unique": 134603970,
+        "version": 210815414
+      },
+      {
+        "pid": 65327,
+        "parent": 64578,
+        "group": 65327,
+        "state": "S",
+        "command": "/opt/homebrew/Caskroom/codex/0.162.1/bin/codex-code-mode-host",
+        "started": "Fri Oct 16 16:13:16 2026",
+        "sid": 61675,
+        "unique": 134604718,
+        "parent_unique": 134603971,
+        "version": 210816480
+      },
+      {
+        "pid": 65330,
+        "parent": 64578,
+        "group": 65330,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Fri Oct 16 16:13:16 2026",
+        "sid": 65330,
+        "unique": 134604721,
+        "parent_unique": 134603971,
+        "version": 210816488
+      }
+    ],
+    "appserver": {
+      "pid": 64578,
+      "parent": 64577,
+      "group": 64578,
+      "state": "S",
+      "command": "/opt/homebrew/bin/codex",
+      "started": "Fri Oct 16 16:13:06 2026",
+      "sid": 61675,
+      "unique": 134603971,
+      "parent_unique": 134603970,
+      "version": 210815414
+    },
+    "independent_shells": [
+      {
+        "pid": 65330,
+        "parent": 64578,
+        "group": 65330,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Fri Oct 16 16:13:16 2026",
+        "sid": 65330,
+        "unique": 134604721,
+        "parent_unique": 134603971,
+        "version": 210816488
+      }
+    ],
+    "guardian_exit_events": [
+      {
+        "pid": 64577,
+        "flags": 2214592512,
+        "raw_status": 0
+      }
+    ],
+    "survivors": [],
+    "sentinels_before": [
+      {
+        "pid": 61687,
+        "parent": 61675,
+        "group": 61687,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Fri Oct 16 16:12:34 2026",
+        "sid": 61687,
+        "unique": 134601105,
+        "parent_unique": 134601093,
+        "version": 210811161
+      },
+      {
+        "pid": 61688,
+        "parent": 61675,
+        "group": 61688,
+        "state": "Rs",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Fri Oct 16 16:12:34 2026",
+        "sid": 61688,
+        "unique": 134601106,
+        "parent_unique": 134601093,
+        "version": 210811162
+      }
+    ],
+    "sentinels_alive": true,
+    "task_state": "interrupted"
+  },
+  {
+    "mode": "F",
+    "pass": true,
+    "task": {
+      "session_id": "b812e01f-6d3d-4ab3-96c8-96f3fa50017a",
+      "task_id": "34caa91e-746e-4521-a26c-0ff5fa9182b5"
+    },
+    "service": {
+      "pid": 65369,
+      "parent": 61675,
+      "group": 61675,
+      "state": "S",
+      "command": "/Users/mengmian/Develop/app/dengmengmian/AgentGate/src-tauri/target/debug/agentgate-serve",
+      "started": "Fri Oct 16 16:13:17 2026",
+      "sid": 61675,
+      "unique": 134604760,
+      "parent_unique": 134601093,
+      "version": 210816554
+    },
+    "before": [
+      {
+        "pid": 65399,
+        "parent": 65369,
+        "group": 65399,
+        "state": "S",
+        "command": "/Users/mengmian/Develop/app/dengmengmian/AgentGate/src-tauri/target/debug/agentgate-serve",
+        "started": "Fri Oct 16 16:13:17 2026",
+        "sid": 61675,
+        "unique": 134604790,
+        "parent_unique": 134604760,
+        "version": 210816596
+      },
+      {
+        "pid": 65400,
+        "parent": 65399,
+        "group": 65400,
+        "state": "S",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Fri Oct 16 16:13:17 2026",
+        "sid": 61675,
+        "unique": 134604791,
+        "parent_unique": 134604790,
+        "version": 210816598
+      },
+      {
+        "pid": 66072,
+        "parent": 65400,
+        "group": 66072,
+        "state": "S",
+        "command": "/opt/homebrew/Caskroom/codex/0.162.1/bin/codex-code-mode-host",
+        "started": "Fri Oct 16 16:13:24 2026",
+        "sid": 61675,
+        "unique": 134605459,
+        "parent_unique": 134604791,
+        "version": 210817574
+      },
+      {
+        "pid": 66074,
+        "parent": 65400,
+        "group": 66074,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Fri Oct 16 16:13:24 2026",
+        "sid": 66074,
+        "unique": 134605461,
+        "parent_unique": 134604791,
+        "version": 210817581
+      }
+    ],
+    "appserver": {
+      "pid": 65400,
+      "parent": 65399,
+      "group": 65400,
+      "state": "S",
+      "command": "/opt/homebrew/bin/codex",
+      "started": "Fri Oct 16 16:13:17 2026",
+      "sid": 61675,
+      "unique": 134604791,
+      "parent_unique": 134604790,
+      "version": 210816598
+    },
+    "independent_shells": [
+      {
+        "pid": 66074,
+        "parent": 65400,
+        "group": 66074,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Fri Oct 16 16:13:24 2026",
+        "sid": 66074,
+        "unique": 134605461,
+        "parent_unique": 134604791,
+        "version": 210817581
+      }
+    ],
+    "disconnect_preserved_processes": true,
+    "survivors": [],
+    "cancel_state": "cancelled",
+    "after_shutdown_survivors": [],
+    "sentinels_before": [
+      {
+        "pid": 61687,
+        "parent": 61675,
+        "group": 61687,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Fri Oct 16 16:12:34 2026",
+        "sid": 61687,
+        "unique": 134601105,
+        "parent_unique": 134601093,
+        "version": 210811161
+      },
+      {
+        "pid": 61688,
+        "parent": 61675,
+        "group": 61688,
+        "state": "Rs",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Fri Oct 16 16:12:34 2026",
+        "sid": 61688,
+        "unique": 134601106,
+        "parent_unique": 134601093,
+        "version": 210811162
+      }
+    ],
+    "sentinels_alive": true,
+    "task_state": "cancelled"
+  },
+  {
+    "mode": "G",
+    "pass": true,
+    "task": {
+      "session_id": "f3bf7910-c6f5-47d0-8c22-4f8f67d0db94",
+      "task_id": "76a0c259-edb7-40d9-8d56-1dd3454b1e8f"
+    },
+    "service": {
+      "pid": 66157,
+      "parent": 61675,
+      "group": 61675,
+      "state": "S",
+      "command": "/Users/mengmian/Develop/app/dengmengmian/AgentGate/src-tauri/target/debug/agentgate-serve",
+      "started": "Fri Oct 16 16:13:26 2026",
+      "sid": 61675,
+      "unique": 134605542,
+      "parent_unique": 134601093,
+      "version": 210817712
+    },
+    "before": [
+      {
+        "pid": 66181,
+        "parent": 66157,
+        "group": 66181,
+        "state": "S",
+        "command": "/Users/mengmian/Develop/app/dengmengmian/AgentGate/src-tauri/target/debug/agentgate-serve",
+        "started": "Fri Oct 16 16:13:26 2026",
+        "sid": 61675,
+        "unique": 134605566,
+        "parent_unique": 134605542,
+        "version": 210817753
+      },
+      {
+        "pid": 66182,
+        "parent": 66181,
+        "group": 66182,
+        "state": "S",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Fri Oct 16 16:13:26 2026",
+        "sid": 61675,
+        "unique": 134605567,
+        "parent_unique": 134605566,
+        "version": 210817755
+      },
+      {
+        "pid": 66836,
+        "parent": 66182,
+        "group": 66836,
+        "state": "S",
+        "command": "/opt/homebrew/Caskroom/codex/0.162.1/bin/codex-code-mode-host",
+        "started": "Fri Oct 16 16:13:33 2026",
+        "sid": 61675,
+        "unique": 134606214,
+        "parent_unique": 134605567,
+        "version": 210818667
+      },
+      {
+        "pid": 66838,
+        "parent": 66182,
+        "group": 66838,
+        "state": "Ss",
+        "command": "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python",
+        "started": "Fri Oct 16 16:13:33 2026",
+        "sid": 66838,
+        "unique": 134606216,
+        "parent_unique": 134605567,
+        "version": 210818903
+      },
+      {
+        "pid": 66971,
+        "parent": 66838,
+        "group": 66971,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Fri Oct 16 16:13:36 2026",
+        "sid": 66971,
+        "unique": 134606349,
+        "parent_unique": 134606216,
+        "version": 210818907
+      }
+    ],
+    "appserver": {
+      "pid": 66182,
+      "parent": 66181,
+      "group": 66182,
+      "state": "S",
+      "command": "/opt/homebrew/bin/codex",
+      "started": "Fri Oct 16 16:13:26 2026",
+      "sid": 61675,
+      "unique": 134605567,
+      "parent_unique": 134605566,
+      "version": 210817755
+    },
+    "independent_shells": [
+      {
+        "pid": 66971,
+        "parent": 66838,
+        "group": 66971,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Fri Oct 16 16:13:36 2026",
+        "sid": 66971,
+        "unique": 134606349,
+        "parent_unique": 134606216,
+        "version": 210818907
+      }
+    ],
+    "nested_independent_shells": [
+      {
+        "pid": 66971,
+        "parent": 66838,
+        "group": 66971,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Fri Oct 16 16:13:36 2026",
+        "sid": 66971,
+        "unique": 134606349,
+        "parent_unique": 134606216,
+        "version": 210818907
+      }
+    ],
+    "survivors": [],
+    "sentinels_before": [
+      {
+        "pid": 61687,
+        "parent": 61675,
+        "group": 61687,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Fri Oct 16 16:12:34 2026",
+        "sid": 61687,
+        "unique": 134601105,
+        "parent_unique": 134601093,
+        "version": 210811161
+      },
+      {
+        "pid": 61688,
+        "parent": 61675,
+        "group": 61688,
+        "state": "Rs",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Fri Oct 16 16:12:34 2026",
+        "sid": 61688,
+        "unique": 134601106,
+        "parent_unique": 134601093,
+        "version": 210811162
+      }
+    ],
+    "sentinels_alive": true
+  },
+  {
+    "mode": "H",
+    "pass": true,
+    "task": {
+      "session_id": "acab32e8-807c-4cca-acb8-a07e00caa04f",
+      "task_id": "6abea418-1d1c-40fc-bf01-00e22685507f"
+    },
+    "service": {
+      "pid": 66989,
+      "parent": 61675,
+      "group": 61675,
+      "state": "S",
+      "command": "/Users/mengmian/Develop/app/dengmengmian/AgentGate/src-tauri/target/debug/agentgate-serve",
+      "started": "Fri Oct 16 16:13:36 2026",
+      "sid": 61675,
+      "unique": 134606367,
+      "parent_unique": 134601093,
+      "version": 210818939
+    },
+    "before": [
+      {
+        "pid": 67028,
+        "parent": 66989,
+        "group": 67028,
+        "state": "S",
+        "command": "/Users/mengmian/Develop/app/dengmengmian/AgentGate/src-tauri/target/debug/agentgate-serve",
+        "started": "Fri Oct 16 16:13:37 2026",
+        "sid": 61675,
+        "unique": 134606406,
+        "parent_unique": 134606367,
+        "version": 210819004
+      },
+      {
+        "pid": 67029,
+        "parent": 67028,
+        "group": 67029,
+        "state": "S",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Fri Oct 16 16:13:37 2026",
+        "sid": 61675,
+        "unique": 134606407,
+        "parent_unique": 134606406,
+        "version": 210819006
+      },
+      {
+        "pid": 67657,
+        "parent": 67029,
+        "group": 67657,
+        "state": "S",
+        "command": "/opt/homebrew/Caskroom/codex/0.162.1/bin/codex-code-mode-host",
+        "started": "Fri Oct 16 16:13:43 2026",
+        "sid": 61675,
+        "unique": 134607035,
+        "parent_unique": 134606407,
+        "version": 210819900
+      },
+      {
+        "pid": 67658,
+        "parent": 67029,
+        "group": 67658,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Fri Oct 16 16:13:43 2026",
+        "sid": 67658,
+        "unique": 134607036,
+        "parent_unique": 134606407,
+        "version": 210819905
+      },
+      {
+        "pid": 67662,
+        "parent": 66989,
+        "group": 67662,
+        "state": "S",
+        "command": "/Users/mengmian/Develop/app/dengmengmian/AgentGate/src-tauri/target/debug/agentgate-serve",
+        "started": "Fri Oct 16 16:13:43 2026",
+        "sid": 61675,
+        "unique": 134607040,
+        "parent_unique": 134606367,
+        "version": 210819913
+      },
+      {
+        "pid": 67665,
+        "parent": 67662,
+        "group": 67665,
+        "state": "S",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Fri Oct 16 16:13:43 2026",
+        "sid": 61675,
+        "unique": 134607043,
+        "parent_unique": 134607040,
+        "version": 210819918
+      },
+      {
+        "pid": 68520,
+        "parent": 67665,
+        "group": 68520,
+        "state": "S",
+        "command": "/opt/homebrew/Caskroom/codex/0.162.1/bin/codex-code-mode-host",
+        "started": "Fri Oct 16 16:13:54 2026",
+        "sid": 61675,
+        "unique": 134607888,
+        "parent_unique": 134607043,
+        "version": 210821202
+      },
+      {
+        "pid": 68521,
+        "parent": 67665,
+        "group": 68521,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Fri Oct 16 16:13:54 2026",
+        "sid": 68521,
+        "unique": 134607889,
+        "parent_unique": 134607043,
+        "version": 210821216
+      }
+    ],
+    "appserver": {
+      "pid": 67029,
+      "parent": 67028,
+      "group": 67029,
+      "state": "S",
+      "command": "/opt/homebrew/bin/codex",
+      "started": "Fri Oct 16 16:13:37 2026",
+      "sid": 61675,
+      "unique": 134606407,
+      "parent_unique": 134606406,
+      "version": 210819006
+    },
+    "independent_shells": [
+      {
+        "pid": 67658,
+        "parent": 67029,
+        "group": 67658,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Fri Oct 16 16:13:43 2026",
+        "sid": 67658,
+        "unique": 134607036,
+        "parent_unique": 134606407,
+        "version": 210819905
+      }
+    ],
+    "second_task": {
+      "session_id": "196059bd-488f-457d-abdf-b794aa0b9cb3",
+      "task_id": "4dd8195e-1dcb-44ff-acbf-e5b9d27dba91"
+    },
+    "second_before": [
+      {
+        "pid": 67662,
+        "parent": 66989,
+        "group": 67662,
+        "state": "S",
+        "command": "/Users/mengmian/Develop/app/dengmengmian/AgentGate/src-tauri/target/debug/agentgate-serve",
+        "started": "Fri Oct 16 16:13:43 2026",
+        "sid": 61675,
+        "unique": 134607040,
+        "parent_unique": 134606367,
+        "version": 210819913
+      },
+      {
+        "pid": 67665,
+        "parent": 67662,
+        "group": 67665,
+        "state": "S",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Fri Oct 16 16:13:43 2026",
+        "sid": 61675,
+        "unique": 134607043,
+        "parent_unique": 134607040,
+        "version": 210819918
+      },
+      {
+        "pid": 68520,
+        "parent": 67665,
+        "group": 68520,
+        "state": "S",
+        "command": "/opt/homebrew/Caskroom/codex/0.162.1/bin/codex-code-mode-host",
+        "started": "Fri Oct 16 16:13:54 2026",
+        "sid": 61675,
+        "unique": 134607888,
+        "parent_unique": 134607043,
+        "version": 210821202
+      },
+      {
+        "pid": 68521,
+        "parent": 67665,
+        "group": 68521,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Fri Oct 16 16:13:54 2026",
+        "sid": 68521,
+        "unique": 134607889,
+        "parent_unique": 134607043,
+        "version": 210821216
+      }
+    ],
+    "survivors": [],
+    "concurrent_session_preserved": true,
+    "second_survivors": [],
+    "cancel_state": "cancelled",
+    "after_shutdown_survivors": [],
+    "sentinels_before": [
+      {
+        "pid": 61687,
+        "parent": 61675,
+        "group": 61687,
+        "state": "Ss",
+        "command": "sleep",
+        "started": "Fri Oct 16 16:12:34 2026",
+        "sid": 61687,
+        "unique": 134601105,
+        "parent_unique": 134601093,
+        "version": 210811161
+      },
+      {
+        "pid": 61688,
+        "parent": 61675,
+        "group": 61688,
+        "state": "Rs",
+        "command": "/opt/homebrew/bin/codex",
+        "started": "Fri Oct 16 16:12:34 2026",
+        "sid": 61688,
+        "unique": 134601106,
+        "parent_unique": 134601093,
+        "version": 210811162
+      }
+    ],
+    "sentinels_alive": true
+  }
+]

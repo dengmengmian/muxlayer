@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Opt-in real Codex MCP crash acceptance. Uses native auth; never reads credentials."""
 import argparse
+import ctypes
 import json
 import os
 from pathlib import Path
@@ -13,13 +14,14 @@ import time
 def process_table():
     output = subprocess.check_output(["ps", "-axo", "pid=,ppid=,pgid=,stat=,lstart=,comm="], text=True)
     table = {}
+    libc = ctypes.CDLL(None, use_errno=True)
     for line in output.splitlines():
         parts = line.split(None, 9)
         if len(parts) == 10:
             pid, parent, group, state = parts[:4]
             started, command = " ".join(parts[4:9]), parts[9]
             table[int(pid)] = {"pid": int(pid), "parent": int(parent), "group": int(group),
-                               "state": state, "command": command, "started": started}
+                               "state": state, "command": command, "started": started, "sid": libc.getsid(int(pid))}
     return table
 
 

@@ -9,3 +9,5 @@ pub mod store;
 pub use protocol::*;
 pub use service::AgentService;
 pub use store::{MemoryStore, SqliteStore, TaskStore};
+
+pub use process::dispatch_process_owner;

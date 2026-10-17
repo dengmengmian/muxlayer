@@ -35,6 +35,13 @@ fn completed(task: &TaskRecord) -> &str {
 #[tokio::test]
 #[ignore = "requires public Codex CLI, ChatGPT login and real model requests"]
 async fn real_codex_read_only_audit_continue_cancel() {
+    // This integration harness is not the application executable hosting the
+    // private macOS owner entry point. Use Cargo's actual CLI artifact explicitly.
+    #[cfg(target_os = "macos")]
+    std::env::set_var(
+        "AGENTGATE_PROCESS_OWNER_BIN",
+        env!("CARGO_BIN_EXE_agentgate-serve"),
+    );
     let executable = std::env::var_os("AGENTGATE_CODEX_BIN").map(PathBuf::from);
     let factory = CodexFactory::discover(executable).await.unwrap();
     let service = AgentService::new(vec![Arc::new(factory)]).unwrap();

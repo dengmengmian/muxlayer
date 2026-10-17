@@ -346,8 +346,14 @@ fn init_tracing(to_stderr: bool) {
     }
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    agentgate_lib::agent_gateway::dispatch_process_owner();
+    tokio::runtime::Runtime::new()
+        .expect("Tokio runtime")
+        .block_on(async_main());
+}
+
+async fn async_main() {
     // mcp-agent 的 stdout 是 MCP 协议流，日志必须先于解析切到 stderr。
     let mcp_mode = std::env::args().any(|arg| arg == "mcp-agent");
     init_tracing(mcp_mode);

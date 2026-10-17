@@ -2,6 +2,8 @@
 
 日期：2026-10-16。Verdict：**PARTIAL**，不满足整体稳定交付标准。
 
+> 本文保留第三阶段历史。后续已修复原始SIGKILL残留并完成真实A–H验收；最新保证范围与剩余风险见[生命周期最终报告](agent-gateway-lifecycle-final.md)。
+
 真实外部 Agent、CodeLeveler 和 Pi 的常规链路、完整结果、连续会话、取消与结果恢复已通过。仍有一项已确认核心生命周期缺陷：**macOS 上 Codex App Server 自身被 SIGKILL 后，其独立 Session 中的 shell 后代可能残留**。Windows 原生编译与运行也未完成，不能给整体 PASS。
 
 ## 1. 起始状态与范围
