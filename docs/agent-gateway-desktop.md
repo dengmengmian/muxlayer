@@ -5,6 +5,7 @@
 - Phase 5：`43c4e888519563f2151e9a303c4493f98b817c5a`
 - Phase 6 异常修复：`5259efa51bb9ed8e195c475fb6dab653af030271`
 - Phase 6 统一启动与内置 CLI：`d6dab0f648000320525fce0f197ba322714ae58a`
+- Phase 6 启动状态与错误：`5881b5e3c1a7bcf055cc7ef3d0b4ea32d1cdd285`
 
 本轮增加 Desktop 统一启动管理、内置 CLI 和稳定 MCP 路径；未改动 Model Gateway 业务、Codex / Claude Adapter、Agent Service 任务语义或 MCP 协议。
 
