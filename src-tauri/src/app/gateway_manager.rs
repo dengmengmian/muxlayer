@@ -5,6 +5,9 @@
 //! its own single-instance lock. This module only sequences startup and reports
 //! status; it does not merge their business logic or lifecycles.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+
 use serde::Serialize;
 use tauri::Manager;
 
@@ -17,12 +20,31 @@ use crate::storage::db::DbPool;
 
 pub const AGENT_AUTO_START_SETTING: &str = "agent_gateway.auto_start";
 
+static MODEL_STARTING: AtomicBool = AtomicBool::new(false);
+static AGENT_STARTING: AtomicBool = AtomicBool::new(false);
+static MODEL_START_ERROR: Mutex<Option<String>> = Mutex::new(None);
+static AGENT_START_ERROR: Mutex<Option<String>> = Mutex::new(None);
+
+fn set_error(slot: &Mutex<Option<String>>, value: Option<String>) {
+    *slot.lock().unwrap_or_else(|error| error.into_inner()) = value;
+}
+
+fn get_error(slot: &Mutex<Option<String>>) -> Option<String> {
+    slot.lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+}
+
 #[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct GatewayManagerStatus {
     pub model: Option<GatewayStatus>,
     pub model_error: Option<String>,
+    pub model_start_error: Option<String>,
+    pub model_starting: bool,
     pub model_auto_start: bool,
     pub agent: management::AgentGatewayServiceStatus,
+    pub agent_start_error: Option<String>,
+    pub agent_starting: bool,
     pub agent_auto_start: bool,
     pub bundled_cli: Option<String>,
 }
@@ -91,11 +113,26 @@ pub async fn manager_status(app_handle: tauri::AppHandle) -> GatewayManagerStatu
         .filter(|path| path.is_file())
         .map(|path| path.to_string_lossy().to_string());
 
+    let model_running = model.as_ref().is_some_and(|status| status.running);
+    let model_start_error = if model_running {
+        None
+    } else {
+        get_error(&MODEL_START_ERROR)
+    };
+    let agent_start_error = if agent.running {
+        None
+    } else {
+        get_error(&AGENT_START_ERROR)
+    };
     GatewayManagerStatus {
         model,
         model_error,
+        model_start_error,
+        model_starting: MODEL_STARTING.load(Ordering::SeqCst),
         model_auto_start,
         agent,
+        agent_start_error,
+        agent_starting: AGENT_STARTING.load(Ordering::SeqCst),
         agent_auto_start,
         bundled_cli,
     }
@@ -125,13 +162,21 @@ pub async fn start_enabled(app_handle: tauri::AppHandle) {
     if model_auto_start(&state.db) {
         let already_running = gateway_status(&state).map(|s| s.running).unwrap_or(false);
         if !already_running {
+            MODEL_STARTING.store(true, Ordering::SeqCst);
             match start_gateway_inner(&app_handle, &state).await {
-                Ok(_) => eprintln!("[gateway-manager] Model Gateway started"),
-                Err(error) => eprintln!(
-                    "[gateway-manager] Model Gateway start failed: {}",
-                    error.message
-                ),
+                Ok(_) => {
+                    set_error(&MODEL_START_ERROR, None);
+                    eprintln!("[gateway-manager] Model Gateway started")
+                }
+                Err(error) => {
+                    set_error(&MODEL_START_ERROR, Some(error.message.clone()));
+                    eprintln!(
+                        "[gateway-manager] Model Gateway start failed: {}",
+                        error.message
+                    )
+                }
             }
+            MODEL_STARTING.store(false, Ordering::SeqCst);
         }
     }
 
@@ -151,17 +196,27 @@ pub async fn start_enabled(app_handle: tauri::AppHandle) {
     };
     let serve = management::load_serve_setting(&state.db).ok().flatten();
     let cli = management::probe_serve(serve.as_deref()).await;
+    AGENT_STARTING.store(true, Ordering::SeqCst);
     match management::start_service(&dir, &cli).await {
         Ok(status) if status.running => {
+            set_error(&AGENT_START_ERROR, None);
             eprintln!(
                 "[gateway-manager] Agent Gateway ready ({})",
                 status.service_version.as_deref().unwrap_or("unknown")
             )
         }
-        Ok(_) => eprintln!("[gateway-manager] Agent Gateway did not become ready"),
-        Err(error) => eprintln!(
-            "[gateway-manager] Agent Gateway start failed: {}",
-            error.message
-        ),
+        Ok(_) => {
+            let message = "Agent Gateway did not become ready".to_string();
+            set_error(&AGENT_START_ERROR, Some(message.clone()));
+            eprintln!("[gateway-manager] {message}")
+        }
+        Err(error) => {
+            set_error(&AGENT_START_ERROR, Some(error.message.clone()));
+            eprintln!(
+                "[gateway-manager] Agent Gateway start failed: {}",
+                error.message
+            )
+        }
     }
+    AGENT_STARTING.store(false, Ordering::SeqCst);
 }

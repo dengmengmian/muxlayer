@@ -554,25 +554,34 @@ export function AgentGateway() {
                 </span>
                 <StatusBadge
                   variant={
-                    manager.model?.running
-                      ? "success"
-                      : manager.model_error
-                        ? "error"
-                        : "muted"
+                    manager.model_starting
+                      ? "warning"
+                      : manager.model?.running
+                        ? "success"
+                        : manager.model_error || manager.model_start_error
+                          ? "error"
+                          : "muted"
                   }
                 >
-                  {manager.model?.running
-                    ? t("agw.service.running")
-                    : manager.model_error
-                      ? t("agw.service.error")
-                      : t("agw.service.stopped")}
+                  {manager.model_starting
+                    ? t("agw.service.starting")
+                    : manager.model?.running
+                      ? t("agw.service.running")
+                      : manager.model_error || manager.model_start_error
+                        ? t("agw.service.error")
+                        : t("agw.service.stopped")}
                 </StatusBadge>
               </div>
               <p className="mt-2 font-mono text-[11px] text-text-muted">
                 {manager.model
                   ? `${manager.model.host}:${manager.model.port}`
-                  : manager.model_error ?? t("agw.common.none")}
+                  : t("agw.common.none")}
               </p>
+              {(manager.model_start_error || manager.model_error) && (
+                <p className="mt-1 text-xs text-error">
+                  {manager.model_start_error || manager.model_error}
+                </p>
+              )}
               <div className="mt-3 flex flex-wrap gap-2">
                 {!manager.model?.running && (
                   <button
@@ -607,25 +616,32 @@ export function AgentGateway() {
                 </span>
                 <StatusBadge
                   variant={
-                    manager.agent.running
-                      ? "success"
-                      : manager.agent.error
-                        ? "error"
-                        : "muted"
+                    manager.agent_starting
+                      ? "warning"
+                      : manager.agent.running
+                        ? "success"
+                        : manager.agent.error || manager.agent_start_error
+                          ? "error"
+                          : "muted"
                   }
                 >
-                  {manager.agent.running
-                    ? t("agw.service.running")
-                    : manager.agent.error
-                      ? t("agw.service.error")
-                      : t("agw.service.stopped")}
+                  {manager.agent_starting
+                    ? t("agw.service.starting")
+                    : manager.agent.running
+                      ? t("agw.service.running")
+                      : manager.agent.error || manager.agent_start_error
+                        ? t("agw.service.error")
+                        : t("agw.service.stopped")}
                 </StatusBadge>
               </div>
               <p className="mt-2 font-mono text-[11px] text-text-muted">
-                {manager.agent.service_version ??
-                  manager.agent.error ??
-                  t("agw.common.none")}
+                {manager.agent.service_version ?? t("agw.common.none")}
               </p>
+              {(manager.agent_start_error || manager.agent.error) && (
+                <p className="mt-1 text-xs text-error">
+                  {manager.agent_start_error || manager.agent.error}
+                </p>
+              )}
               <label className="mt-2 flex items-center gap-2 text-xs text-text-secondary">
                 <input
                   type="checkbox"

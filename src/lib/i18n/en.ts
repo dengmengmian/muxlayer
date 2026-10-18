@@ -1537,6 +1537,7 @@ export const en = {
   "agw.settings.title": "Agent Service",
   "agw.settings.desc": "The service is the only task owner. Desktop only queries and controls it through the existing IPC contract.",
   "agw.service.running": "Running",
+  "agw.service.starting": "Starting",
   "agw.service.stopped": "Stopped",
   "agw.service.error": "Error",
   "agw.service.start": "Start service",

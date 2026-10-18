@@ -119,8 +119,12 @@ describe("AgentGateway", () => {
     vi.mocked(api.getGatewayManagerStatus).mockResolvedValue({
       model: null,
       model_error: null,
+      model_start_error: null,
+      model_starting: false,
       model_auto_start: true,
       agent: overview().service,
+      agent_start_error: null,
+      agent_starting: false,
       agent_auto_start: true,
       bundled_cli: "/Users/me/.muxlayer/bin/agentgate-serve",
     });
@@ -252,12 +256,16 @@ describe("AgentGateway", () => {
         started_at: "2026-10-18T00:00:00Z",
       },
       model_error: null,
+      model_start_error: null,
+      model_starting: false,
       model_auto_start: true,
       agent: {
         ...overview().service,
         running: true,
         error: null,
       },
+      agent_start_error: null,
+      agent_starting: false,
       agent_auto_start: false,
       bundled_cli: "/Users/me/.muxlayer/bin/agentgate-serve",
     });

@@ -1485,6 +1485,7 @@ export const zh: Record<TranslationKey, string> = {
   "agw.settings.title": "Agent Service",
   "agw.settings.desc": "Service 是唯一任务 Owner；Desktop 只通过现有 IPC 契约查询和控制它。",
   "agw.service.running": "运行中",
+  "agw.service.starting": "启动中",
   "agw.service.stopped": "已停止",
   "agw.service.error": "错误",
   "agw.service.start": "启动服务",

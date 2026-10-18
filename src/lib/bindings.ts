@@ -1835,7 +1835,7 @@ export type DeepSeekHarnessConfigStatus = { config_path: string; exists: boolean
 export type ExportResult = { success: boolean; path: string; files: string[]; warnings: string[] }
 export type FullSelfTestReport = { overall_status: string; reports: CheckReport[]; summary: string; created_at: string }
 export type GatewayAuthSettings = { gateway_auth_enabled: boolean; auth_mode: string; token_path: string; masked_token: string; codex_auth_type: string; claude_code_auth_type: string }
-export type GatewayManagerStatus = { model: GatewayStatus | null; model_error: string | null; model_auto_start: boolean; agent: AgentGatewayServiceStatus; agent_auto_start: boolean; bundled_cli: string | null }
+export type GatewayManagerStatus = { model: GatewayStatus | null; model_error: string | null; model_start_error: string | null; model_starting: boolean; model_auto_start: boolean; agent: AgentGatewayServiceStatus; agent_start_error: string | null; agent_starting: boolean; agent_auto_start: boolean; bundled_cli: string | null }
 export type GatewaySettings = { id: number; host: string; port: number; active_provider_id: string | null; input_protocol: string; output_protocol: string; auto_start: boolean; log_retention_days: number; 
 /**
  * Global master switches for the refiner pipeline. When off, every
