@@ -6,20 +6,67 @@
 - Phase 6 异常修复：`5259efa51bb9ed8e195c475fb6dab653af030271`
 - Phase 6 统一启动与内置 CLI：`d6dab0f648000320525fce0f197ba322714ae58a`
 - Phase 6 启动状态与错误：`5881b5e3c1a7bcf055cc7ef3d0b4ea32d1cdd285`
+- 产品交互重构：`8e93eebca582a80b8a53eb7d852276fcaa15a27a`
 
 本轮增加 Desktop 统一启动管理、内置 CLI 和稳定 MCP 路径；未改动 Model Gateway 业务、Codex / Claude Adapter、Agent Service 任务语义或 MCP 协议。
 
 ## 页面结构
 
-侧边栏「工具 → Agent Gateway」新增一个页面，复用现有 React / Tauri / 设计系统，不引入新框架。
+侧边栏「工具 → Agent Gateway」页面按普通用户的实际操作顺序组织，不再以 Agents / Connections / Settings 三个独立 Tab 作为主入口：
 
-| Tab | 内容 |
+| 区域 | 内容 |
 | --- | --- |
-| Agents | Codex、Claude Code 的真实检测状态、版本、路径、认证、模型来源、模型、配置文件、发现方式、错误；配置路径；测试连接 |
-| Connections | CodeLeveler、Pi Agent 的安装、配置、命令、兼容性；配置 / 移除 MCP；复制 TOML / JSON；自定义 MCP 客户端配置 |
-| Settings | Agent Service 运行状态、版本、CLI、数据目录、运行任务、最近错误、启停重启、打开数据目录、复制诊断信息、Agent Gateway CLI 路径 |
+| 页头 | 产品用途说明、Agent Service 健康摘要、重新检测 |
+| ① 选择可用 Agent | Codex / Claude Code 的名称、模型来源、可用状态、测试连接、详细信息和路径编辑 |
+| ② 连接到你的应用 | CodeLeveler / Pi 的配置状态、兼容性提醒、配置 / 移除 MCP、详细信息 |
+| ③ 开始使用 | 根据可用 Agent 和已配置客户端生成可复制的真实指令 |
+| 高级设置与诊断 | Agent Service 启停、自动启动、CLI 路径、数据目录、运行任务、历史错误、诊断信息、原始 MCP 配置 |
 
-页面标题与侧边栏走既有路由 / i18n，`/agent-gateway` 单独懒加载。
+路径、CLI 版本、配置文件、Provider ID 等默认收进「详细信息」；主页面只保留名称、模型来源、状态和下一步操作。
+
+## 产品交互与状态语义
+
+用户目标被明确为三步：
+
+1. 确认 Codex 或 Claude Code 能真实执行；
+2. 把 MCP 配置写入 CodeLeveler 或 Pi；
+3. 打开客户端，用自然语言指令调用 Agent。
+
+Agent 状态：
+
+- 未安装
+- 未配置
+- 需要验证（检测到 CLI，但认证/模型配置无法确认）
+- 可用
+- 测试未通过
+- 当前不可用
+
+真实测试失败会显示「测试未通过」，并把原始错误放进可展开的「技术详情」。401 的默认文案为认证未通过，同时明确提示「这不代表账号一定失效，可能是当前环境没有提供有效凭据」，不把隔离环境的错误误判为用户账号问题。
+
+客户端状态：
+
+- 未安装
+- 未配置
+- 已配置（配置文件存在不等于在线）
+- 需要更新（旧 CLI 路径）
+- 同名冲突
+- 客户端不可用（例如 Pi 缺少 Node）
+
+只有真实客户端调用成功才属于「验证成功」；当前主界面不会把「已配置」写成「已连接」。
+
+首次使用：
+
+- 没有 Agent：显示安装 Codex / Claude Code 的入口和重新检测；
+- 有 Agent 但没有客户端：第③步引导先完成第②步；
+- Agent 不可用或客户端配置过期：不显示可直接使用的成功态。
+
+错误与诊断：
+
+- 主界面使用中文、可操作的错误说明；
+- 原始错误、日志、命令输出只在「技术详情 / 诊断信息」中展示；
+- Token、Authorization、API Key 等在展示前脱敏；
+- Service 健康时主页面显示「Agent 服务运行正常」，历史错误只出现在高级设置中，不把历史错误当成当前故障。
+- 顶部全局状态现在明确写着「模型网关运行中 / 模型网关未启动」，不再用含糊的「运行中 / 已停止」让用户误以为 Agent Gateway 也停止。
 
 ## Agent 检测
 
@@ -225,6 +272,17 @@ CLI 发现优先级：
 | 手动设置 Agent Gateway CLI | PASS：保存后显示版本与绝对路径 |
 | Codex 状态 | PASS：`codex-cli 0.162.1`，`/opt/homebrew/bin/codex`，ChatGPT 登录，OpenAI Native，`gpt-6.1-sol` |
 | Codex 认证无法确认 | PASS：显示「需验证」，不伪装成「可用」，测试连接仍可用 |
+| 新首页用途与步骤 | PASS：真实 `.app` 首屏直接说明用途，并显示「① 选择可用 Agent / ② 连接到你的应用 / ③ 开始使用」 |
+| 技术信息层级 | PASS：版本、路径、配置文件默认不显示，展开「详细信息」才出现 |
+| Codex 认证未知 | PASS：显示「需要验证」并引导测试；测试成功后才提升为可用 |
+| 真实 401 | PASS：显示「测试未通过」和中文认证说明，原始 401 只在「技术详情」 |
+| Claude 模型来源 | PASS：显示 DeepSeek，不显示 Anthropic 官方 |
+| CodeLeveler 旧版本 | PASS：主文案只提示升级，不再暴露 `e4510fa / UNTRUSTED / dirty` |
+| 开始使用指令 | PASS：有可用 Agent + 已配置客户端时显示可复制指令；缺少条件时只显示下一步 |
+| 高级设置 | PASS：默认折叠；服务、CLI、数据目录、历史错误、诊断和原始 MCP 配置在内部 |
+| 窄窗口 | PASS：960×600 下状态、按钮和文案不横向溢出 |
+| Model Gateway 停止 | PASS：顶部显示「模型网关未启动」，Agent 服务仍显示正常，不混淆 |
+| Desktop 重启恢复 | PASS：重建并重开 `.app` 后页面恢复真实 Agent / 客户端 / Service 状态 |
 | Claude 认证缺失 | PASS：显示「未配置」、来源 Unknown，并提示配置 Claude Code 或测试真实请求 |
 | Claude 状态 | PASS：`2.1.302`，第三方 token 已配置，DeepSeek，`deepseek-flash[1m]`；未显示 Token |
 | 测试 Codex 连接 | PASS：确认费用提示后真实执行，`AGENTGATE_OK`，约 6.6s |
@@ -284,7 +342,7 @@ CLI 发现优先级：
 | `cargo check --features desktop` | PASS |
 | `cargo clippy --features desktop --lib` | 无 warning |
 | `tsc --noEmit` | PASS |
-| `vitest run` | 62 files / 490 tests passed |
+| `vitest run` | 62 files / 495 tests passed |
 | `tauri build --bundles app --target aarch64-apple-darwin` | PASS，`.app` 内含 `Contents/MacOS/agentgate-serve` |
 | `vite build` | PASS |
 
