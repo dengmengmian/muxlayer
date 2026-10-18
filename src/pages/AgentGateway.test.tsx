@@ -62,9 +62,10 @@ function client(
     args: [],
     copy_command: "/opt/homebrew/bin/agentgate-serve",
     copy_args: ["mcp-agent"],
-    copy_json: '{"mcpServers":{"muxlayer":{"command":"/opt/homebrew/bin/agentgate-serve","args":["mcp-agent"]}}}',
+    copy_json:
+      '{"mcpServers":{"muxlayer":{"command":"/opt/homebrew/bin/agentgate-serve","args":["mcp-agent"]}}}',
     copy_toml: '[[mcp_servers]]\nname = "muxlayer"',
-    compatibility: "old",
+    compatibility: "Compatibility details",
     requires_upgrade: id === "codeleveler",
     warning:
       id === "codeleveler"
@@ -97,8 +98,8 @@ function overview(
       cli_path: "/opt/homebrew/bin/agentgate-serve",
       cli_version: "agentgate 2.0.8",
       data_dir: "/Users/me/.muxlayer",
-      running: false,
-      service_version: null,
+      running: true,
+      service_version: "2.0.8",
       running_tasks: [],
       agents: [],
       last_error: null,
@@ -111,30 +112,35 @@ function overview(
   };
 }
 
-describe("AgentGateway", () => {
+function manager(
+  overrides: Partial<api.GatewayManagerStatus> = {}
+): api.GatewayManagerStatus {
+  return {
+    model: null,
+    model_error: null,
+    model_start_error: null,
+    model_starting: false,
+    model_auto_start: true,
+    agent: overview().service,
+    agent_start_error: null,
+    agent_starting: false,
+    agent_auto_start: true,
+    bundled_cli: "/Users/me/.muxlayer/bin/agentgate-serve",
+    ...overrides,
+  };
+}
+
+describe("AgentGateway product flow", () => {
   beforeEach(() => {
     localStorage.clear();
     localStorage.setItem("agentgate_locale", "en");
     vi.mocked(api.getAgentGatewayOverview).mockResolvedValue(overview());
-    vi.mocked(api.getGatewayManagerStatus).mockResolvedValue({
-      model: null,
-      model_error: null,
-      model_start_error: null,
-      model_starting: false,
-      model_auto_start: true,
-      agent: overview().service,
-      agent_start_error: null,
-      agent_starting: false,
-      agent_auto_start: true,
-      bundled_cli: "/Users/me/.muxlayer/bin/agentgate-serve",
-    });
+    vi.mocked(api.getGatewayManagerStatus).mockResolvedValue(manager());
     vi.mocked(api.setAgentGatewayAgentPath).mockResolvedValue({
       status: agent("codex-native", { configured_path: "/new/codex" }),
       requires_service_restart: false,
     });
-    vi.mocked(api.setAgentGatewayServePath).mockResolvedValue(
-      overview().cli
-    );
+    vi.mocked(api.setAgentGatewayServePath).mockResolvedValue(overview().cli);
     vi.mocked(api.setAgentGatewayAutoStart).mockResolvedValue(true);
     vi.mocked(api.testAgentGatewayAgent).mockResolvedValue({
       success: true,
@@ -160,7 +166,12 @@ describe("AgentGateway", () => {
       overview().service
     );
     vi.mocked(api.configureAgentGatewayMcp).mockResolvedValue({
-      status: client("codeleveler", { config_status: "configured", matching: true }),
+      status: client("codeleveler", {
+        config_status: "configured",
+        configured: true,
+        managed: true,
+        matching: true,
+      }),
       message: "saved",
     });
     vi.mocked(api.removeAgentGatewayMcp).mockResolvedValue({
@@ -171,48 +182,73 @@ describe("AgentGateway", () => {
     vi.mocked(api.openAgentGatewayDataDir).mockResolvedValue(true);
   });
 
-  it("renders real agent and client status", async () => {
+  it("explains the purpose and shows the three-step flow", async () => {
     renderWithProviders(<AgentGateway />, { route: "/agent-gateway" });
 
-    await waitFor(() =>
-      expect(api.getAgentGatewayOverview).toHaveBeenCalled()
-    );
-    expect((await screen.findAllByText("Codex")).length).toBeGreaterThan(0);
-    expect(screen.getByText("codex-cli 0.162.1")).toBeInTheDocument();
-    expect(screen.getByText("OpenAI Native")).toBeInTheDocument();
-    expect(screen.getByText("DeepSeek")).toBeInTheDocument();
-    expect(screen.getByText("deepseek-flash[1m]")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Let your AI assistant use Codex and Claude Code")
+    ).toBeInTheDocument();
+    expect(screen.getByText("① Choose an available Agent")).toBeInTheDocument();
+    expect(screen.getByText("② Connect your app")).toBeInTheDocument();
+    expect(screen.getByText("③ Start using it")).toBeInTheDocument();
+    expect(screen.getByText(/OpenAI Native/)).toBeInTheDocument();
+    expect(screen.getByText(/DeepSeek/)).toBeInTheDocument();
+    expect(screen.queryByText("codex-cli 0.162.1")).not.toBeInTheDocument();
   });
 
-  it("shows install guidance when the Agent Gateway CLI is missing", async () => {
+  it("shows first-use guidance when no Agent is installed", async () => {
     vi.mocked(api.getAgentGatewayOverview).mockResolvedValue(
       overview({
-        cli: {
-          installed: false,
-          path: null,
-          version: null,
-          detection: "auto",
-          error: "not found",
-          install_hint: "Download the CLI",
-          download_url: "https://example.test",
-        },
+        agents: [
+          agent("codex-native", {
+            installed: false,
+            state: "not_installed",
+            available: false,
+            version: null,
+            executable: null,
+            source: "Unknown",
+            model: null,
+          }),
+          agent("claude-code", {
+            installed: false,
+            state: "not_installed",
+            available: false,
+            version: null,
+            executable: null,
+            source: "Unknown",
+            model: null,
+          }),
+        ],
       })
     );
 
     renderWithProviders(<AgentGateway />, { route: "/agent-gateway" });
 
     expect(
-      (await screen.findAllByText("Agent Gateway CLI not found")).length
-    ).toBeGreaterThan(0);
-    expect(screen.getByText("Download the CLI")).toBeInTheDocument();
+      await screen.findByText("No usable Agent detected yet")
+    ).toBeInTheDocument();
+    expect(screen.getByText("Install Codex")).toBeInTheDocument();
+    expect(screen.getByText("Install Claude Code")).toBeInTheDocument();
   });
 
-  it("saves a manual agent path", async () => {
+  it("reveals versions and paths only in details", async () => {
     renderWithProviders(<AgentGateway />, { route: "/agent-gateway" });
 
-    await screen.findByText("codex-cli 0.162.1");
+    await screen.findByText("Codex");
+    expect(screen.queryByText("codex-cli 0.162.1")).not.toBeInTheDocument();
+    fireEvent.click(screen.getAllByText("Details")[0]);
+    expect(await screen.findByText("codex-cli 0.162.1")).toBeInTheDocument();
+    expect(screen.getAllByText("/opt/homebrew/bin/codex").length).toBeGreaterThan(0);
+  });
+
+  it("saves a manual agent path from details", async () => {
+    renderWithProviders(<AgentGateway />, { route: "/agent-gateway" });
+
+    await screen.findByText("Codex");
     fireEvent.click(screen.getAllByText("Edit path")[0]);
-    const input = screen.getByPlaceholderText("Absolute path to the CLI (empty = auto-detect)");
+    const input = screen.getByPlaceholderText(
+      "Absolute path to the CLI (empty = auto-detect)"
+    );
     fireEvent.change(input, { target: { value: "/new/codex" } });
     fireEvent.click(screen.getByText("Save path"));
 
@@ -227,12 +263,9 @@ describe("AgentGateway", () => {
   it("configures CodeLeveler after confirmation", async () => {
     renderWithProviders(<AgentGateway />, { route: "/agent-gateway" });
 
-    await screen.findByText("codex-cli 0.162.1");
-    fireEvent.click(screen.getByText("Connections"));
+    await screen.findByText("CodeLeveler");
     fireEvent.click(screen.getAllByText("Configure MCP")[0]);
-    await waitFor(() =>
-      expect(screen.getByText("Configure MCP?")).toBeInTheDocument()
-    );
+    await screen.findByText("Configure MCP?");
     const buttons = screen.getAllByText("Configure MCP");
     fireEvent.click(buttons[buttons.length - 1]);
 
@@ -241,48 +274,6 @@ describe("AgentGateway", () => {
         "codeleveler",
         true
       )
-    );
-  });
-
-  it("shows Model Gateway and Agent Gateway status independently", async () => {
-    vi.mocked(api.getGatewayManagerStatus).mockResolvedValue({
-      model: {
-        running: true,
-        host: "127.0.0.1",
-        port: 9090,
-        active_provider: "DeepSeek",
-        input_protocol: "responses",
-        output_protocol: "chat",
-        started_at: "2026-10-18T00:00:00Z",
-      },
-      model_error: null,
-      model_start_error: null,
-      model_starting: false,
-      model_auto_start: true,
-      agent: {
-        ...overview().service,
-        running: true,
-        error: null,
-      },
-      agent_start_error: null,
-      agent_starting: false,
-      agent_auto_start: false,
-      bundled_cli: "/Users/me/.muxlayer/bin/agentgate-serve",
-    });
-
-    renderWithProviders(<AgentGateway />, { route: "/agent-gateway" });
-
-    expect(await screen.findByText("Gateway")).toBeInTheDocument();
-    expect(screen.getByText("Model Gateway")).toBeInTheDocument();
-    expect(screen.getAllByText("Agent Gateway").length).toBeGreaterThan(0);
-    expect(screen.getByText("127.0.0.1:9090")).toBeInTheDocument();
-    const autoStart = screen.getByLabelText(
-      "Start Agent Gateway with Desktop"
-    );
-    expect(autoStart).not.toBeChecked();
-    fireEvent.click(autoStart);
-    await waitFor(() =>
-      expect(api.setAgentGatewayAutoStart).toHaveBeenCalledWith(true)
     );
   });
 
@@ -303,21 +294,79 @@ describe("AgentGateway", () => {
 
     renderWithProviders(<AgentGateway />, { route: "/agent-gateway" });
 
-    expect(
-      await screen.findByText("Verification required")
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Verification required")).toBeInTheDocument();
     expect(screen.getAllByText("Test connection")[0]).toBeEnabled();
   });
 
-  it("distinguishes an installed but non-executable client", async () => {
+  it("promotes an unverified Agent after a real successful test", async () => {
+    vi.mocked(api.getAgentGatewayOverview).mockResolvedValue(
+      overview({
+        agents: [
+          agent("codex-native", {
+            state: "unverified",
+            available: true,
+            auth_state: "unknown",
+            auth_detail: "",
+          }),
+          agent("claude-code"),
+        ],
+      })
+    );
+
+    renderWithProviders(<AgentGateway />, { route: "/agent-gateway" });
+
+    await screen.findByText("Verification required");
+    fireEvent.click(screen.getAllByText("Test connection")[0]);
+    await screen.findByText("Test this agent?");
+    const buttons = screen.getAllByText("Test connection");
+    fireEvent.click(buttons[buttons.length - 1]);
+
+    expect(
+      await screen.findByText("A real call passed; this Agent is ready to use.")
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("Available").length).toBeGreaterThan(0);
+  });
+
+  it("turns a 401 into a user-facing failure while keeping raw details", async () => {
+    vi.mocked(api.testAgentGatewayAgent).mockResolvedValue({
+      success: false,
+      agent: "codex-native",
+      state: "failed",
+      task_id: "task-401",
+      session_id: "session-401",
+      final_answer: null,
+      error: "unexpected status 401 Unauthorized",
+      duration_ms: 100,
+      started_service: false,
+    });
+
+    renderWithProviders(<AgentGateway />, { route: "/agent-gateway" });
+
+    await screen.findByText("Codex");
+    fireEvent.click(screen.getAllByText("Test connection")[0]);
+    await screen.findByText("Test this agent?");
+    const buttons = screen.getAllByText("Test connection");
+    fireEvent.click(buttons[buttons.length - 1]);
+
+    expect(
+      await screen.findByText(
+        "Authentication failed. Check the Codex / Claude Code login and model configuration."
+      )
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/This does not necessarily mean the account is invalid/)
+    ).toBeInTheDocument();
+    expect(screen.getByText("Technical details")).toBeInTheDocument();
+    expect(screen.getAllByText(/unexpected status 401/).length).toBeGreaterThan(0);
+  });
+
+  it("distinguishes a configured client from a client that cannot run", async () => {
     vi.mocked(api.getAgentGatewayOverview).mockResolvedValue(
       overview({
         clients: [
           client("codeleveler"),
           client("pi", {
-            installed: false,
-            version: null,
-            executable: "/Users/me/.nvm/versions/node/v25.2.1/bin/pi",
+            config_status: "unavailable",
             error: "env: node: No such file or directory",
           }),
         ],
@@ -326,14 +375,18 @@ describe("AgentGateway", () => {
 
     renderWithProviders(<AgentGateway />, { route: "/agent-gateway" });
 
-    await screen.findByText("codex-cli 0.162.1");
-    fireEvent.click(screen.getByText("Connections"));
-
-    expect(await screen.findByText("Client unavailable")).toBeInTheDocument();
+    await screen.findByText("Pi Agent");
+    expect(screen.getByText("Client unavailable")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Pi was detected, but Node.js is not available in this environment. Make sure Node is installed and resolvable, or set a manual path."
+      )
+    ).toBeInTheDocument();
+    const detailsButtons = screen.getAllByText("Details");
+    fireEvent.click(detailsButtons[detailsButtons.length - 1]);
     expect(
       screen.getByText("env: node: No such file or directory")
     ).toBeInTheDocument();
-    expect(screen.queryByText("Client not installed")).not.toBeInTheDocument();
   });
 
   it("allows updating and removing a stale managed MCP entry", async () => {
@@ -347,8 +400,6 @@ describe("AgentGateway", () => {
             managed: true,
             matching: false,
             command: "/old/agentgate-serve",
-            warning:
-              "This MuxLayer entry points to a different agentgate-serve path.",
           }),
         ],
       })
@@ -356,26 +407,37 @@ describe("AgentGateway", () => {
 
     renderWithProviders(<AgentGateway />, { route: "/agent-gateway" });
 
-    await screen.findByText("codex-cli 0.162.1");
-    fireEvent.click(screen.getByText("Connections"));
-
-    expect(await screen.findByText("Update required")).toBeInTheDocument();
+    await screen.findByText("Pi Agent");
+    expect(screen.getByText("Update required")).toBeInTheDocument();
     const removeButtons = screen.getAllByText("Remove MCP");
     expect(removeButtons[removeButtons.length - 1]).not.toBeDisabled();
-    const configureButtons = screen.getAllByText("Configure MCP");
+    const configureButtons = screen.getAllByText("Reconfigure");
     expect(configureButtons[configureButtons.length - 1]).not.toBeDisabled();
   });
 
-  it("refreshes service status and warns before stopping running tasks", async () => {
+  it("keeps historical service errors out of the healthy summary", async () => {
     vi.mocked(api.getAgentGatewayOverview).mockResolvedValue(
       overview({
         service: {
           ...overview().service,
           running: true,
-          service_version: "2.0.8",
+          last_error: "ERROR: database is locked",
         },
       })
     );
+
+    renderWithProviders(<AgentGateway />, { route: "/agent-gateway" });
+
+    expect(await screen.findByText("Agent service is healthy")).toBeInTheDocument();
+    expect(screen.queryByText("ERROR: database is locked")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("Advanced settings and diagnostics"));
+    expect(
+      screen.getByText("Historical error (current status above takes precedence)")
+    ).toBeInTheDocument();
+    expect(screen.getByText("ERROR: database is locked")).toBeInTheDocument();
+  });
+
+  it("warns before stopping a service with running tasks", async () => {
     vi.mocked(api.getAgentGatewayServiceStatus).mockResolvedValue({
       ...overview().service,
       running: true,
@@ -385,11 +447,8 @@ describe("AgentGateway", () => {
 
     renderWithProviders(<AgentGateway />, { route: "/agent-gateway" });
 
-    await screen.findByText("codex-cli 0.162.1");
-    fireEvent.click(screen.getByText("Settings"));
-    await waitFor(() =>
-      expect(api.getAgentGatewayServiceStatus).toHaveBeenCalled()
-    );
+    await screen.findByText("Codex");
+    fireEvent.click(screen.getByText("Advanced settings and diagnostics"));
     fireEvent.click(screen.getByText("Stop service"));
     expect(
       await screen.findByText(/1 task\(s\) are currently running/)
@@ -399,6 +458,48 @@ describe("AgentGateway", () => {
 
     await waitFor(() =>
       expect(api.stopAgentGatewayService).toHaveBeenCalledWith(true)
+    );
+  });
+
+  it("offers a copyable instruction only when an Agent and client are ready", async () => {
+    vi.mocked(api.getAgentGatewayOverview).mockResolvedValue(
+      overview({
+        clients: [
+          client("codeleveler", {
+            config_status: "configured",
+            configured: true,
+            managed: true,
+            matching: true,
+          }),
+        ],
+      })
+    );
+
+    renderWithProviders(<AgentGateway />, { route: "/agent-gateway" });
+
+    expect(
+      await screen.findByText(
+        "You can now use Agent Gateway from CodeLeveler or Pi. Open the client and enter:"
+      )
+    ).toBeInTheDocument();
+    expect(screen.getByText("Copy instruction")).toBeInTheDocument();
+    expect(screen.getAllByText(/agent_run/).length).toBeGreaterThan(0);
+  });
+
+  it("toggles Agent auto-start from advanced settings", async () => {
+    vi.mocked(api.getGatewayManagerStatus).mockResolvedValue(
+      manager({ agent_auto_start: false })
+    );
+
+    renderWithProviders(<AgentGateway />, { route: "/agent-gateway" });
+
+    await screen.findByText("Codex");
+    fireEvent.click(screen.getByText("Advanced settings and diagnostics"));
+    const autoStart = screen.getByLabelText("Start Agent Gateway with Desktop");
+    expect(autoStart).not.toBeChecked();
+    fireEvent.click(autoStart);
+    await waitFor(() =>
+      expect(api.setAgentGatewayAutoStart).toHaveBeenCalledWith(true)
     );
   });
 });

@@ -43,7 +43,7 @@ describe("Topbar", () => {
     renderWithProviders(<Topbar />, { route: "/providers" });
 
     expect(await screen.findByText("Providers")).toBeInTheDocument();
-    expect(screen.getByText("Running")).toBeInTheDocument();
+    expect(screen.getByText("Model Gateway running")).toBeInTheDocument();
     expect(screen.getByText("127.0.0.1:8080")).toBeInTheDocument();
   });
 
@@ -82,7 +82,7 @@ describe("Topbar", () => {
 
     renderWithProviders(<Topbar />, { route: "/" });
 
-    const indicator = await screen.findByRole("status", { name: "Running" });
+    const indicator = await screen.findByRole("status", { name: "Model Gateway running" });
     expect(indicator).toHaveClass("text-info");
     expect(indicator).not.toHaveClass("text-success");
   });
@@ -99,7 +99,7 @@ describe("Topbar", () => {
 
     renderWithProviders(<Topbar />, { route: "/" });
 
-    expect(await screen.findByText("Stopped")).toBeInTheDocument();
+    expect(await screen.findByText("Model Gateway not started")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /Diagnostics/i })
     ).toBeInTheDocument();

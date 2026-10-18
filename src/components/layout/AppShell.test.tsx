@@ -64,7 +64,7 @@ describe("AppShell", () => {
       screen.getByRole("heading", { name: "Overview" })
     ).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Overview" })).toBeInTheDocument();
-    expect(await screen.findByText("Running")).toBeInTheDocument();
+    expect(await screen.findByText("Model Gateway running")).toBeInTheDocument();
   });
 
   it("keeps command palette closed by default", async () => {
