@@ -2,6 +2,8 @@
 
 候选提交：`17af05c59ff026d3eb0c4d3185240e3cccca6ed3`
 
+正式发布：`v2.0.9`，tag `b2403be6fde64a7c0efa4be55f33d5afbf4b68df`，Agent Gateway 标注为测试性功能（Beta）。
+
 本轮只做 macOS Release Acceptance，不创建 Release、不签名、不公证、不 push、不打 Tag。
 
 ## 构建产物
@@ -87,6 +89,8 @@ spctl --assess --type execute MuxLayer.app
 
 ## 验收 Gate
 
+> 下表是本地验收时的状态；CI 发布后的最终结果见「正式发布结果」。
+
 | Gate | 状态 | 证据 |
 | --- | --- | --- |
 | BUILD | PASS | 真实 DMG 构建成功，arm64 |
@@ -118,14 +122,19 @@ spctl --assess --type execute MuxLayer.app
 
 ## 已知基线问题
 
-- `protocol_fixture` 仍有 2 个已知失败：
-  - `unauthenticated_request_is_rejected_before_body_is_read`
-  - `metrics_requires_token_only_and_health_does_not`
-  真实 socket 探针显示未认证 partial body 会在 1ms 内返回 401，evil Host + 正确 token 返回 500 而不是成功，未观察到对应绕过；这两个失败是已知测试基线问题，不属于本轮新增回归。
+- `protocol_fixture` 原有的 2 个失败已在 `5c485ea` 修复：测试改用原始 TCP 请求验证流式 body 提前拒绝和 Host 边界，当前 40/40 通过。真实产品行为未发现认证绕过。
 - CLI clippy 仍有 3 个已知 lint（`print_literal`、`unnecessary_map_or`、`too_many_arguments`），未修改。
 - CodeLeveler 1.0.16 / 1.0.17 仍不包含 `e4510fa`；UI 保留升级提醒。最低兼容版本应为第一个包含该修复的正式发布。
 - 没有旧版 DMG，真实升级路径未验收。
 
+## 正式发布结果
+
+`v2.0.9` 已通过 GitHub Actions Release workflow 发布：
+
+- preflight、macOS arm64/x64、Windows、Linux 桌面构建全部通过
+- 四个平台的 CLI 资产、`latest.json`、发布和 Homebrew cask 更新全部完成
+- Release 说明明确标注 Agent Gateway 仍是测试性功能
+
 ## 结论
 
-功能实现和本地 macOS DMG 安装/运行满足发布候选条件；正式发布仍被签名、公证和真实 CI 执行阻塞。不能把本地 ad-hoc DMG 报告为正式公证安装包。
+功能实现和本地 macOS DMG 安装/运行满足发布候选条件；正式发布已由 CI 完成签名构建与发布。本地 ad-hoc DMG 不能作为正式公证安装包，签名/公证结论以 CI 发布产物为准。
