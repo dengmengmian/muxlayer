@@ -183,6 +183,7 @@ Pi 通过 nvm 安装时，`pi` 是指向 JS 文件的软链，shebang 为 `#!/us
 | Desktop 重启后 Service 状态 | PASS：终止 Desktop 后 Service 继续运行，重开后显示「运行中」 |
 | CodeLeveler MCP 配置 | PASS：`leveler mcp list` 显示 `muxlayer`；旧版兼容性警告存在 |
 | CodeLeveler MCP 移除 | PASS：只删除托管条目，状态回到未配置 |
+| Phase 6 staging 写入 | PASS：CodeLeveler 配置 / 移除均通过 staging + 原子安装；`leveler mcp list` 结果与 UI 一致 |
 | CodeLeveler MCP 端到端 | PASS（Phase 6 复验）：真实 `leveler run` 调用 `mcp__muxlayer__agent_list` 并返回两个 Agent |
 | 托管条目指向旧 CLI | PASS：显示「需要更新」，可直接重新配置或移除，不再误判为冲突 |
 | MCP 同名冲突 | PASS：`/bin/echo` 同名条目显示「同名冲突」，原配置未覆盖 |
