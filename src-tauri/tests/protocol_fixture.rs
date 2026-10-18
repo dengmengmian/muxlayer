@@ -991,31 +991,47 @@ async fn messages_anthropic_pass_through_error_frame_fails_over() {
 
 // ── L8: 入口鉴权 ─────────────────────────────────────────────────────────
 
+/// 直接走 TCP 发原始 HTTP。reqwest 会等请求 body 写完才返回响应，也会把手写的
+/// Host 覆盖成 URL 里的地址，以下两个安全断言必须绕过它。
+async fn raw_http(harness: &GatewayHarness, request: &str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let addr = harness.gateway_url.trim_start_matches("http://");
+    let mut stream = tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("connect gateway");
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("write request");
+    let mut buf = vec![0u8; 8192];
+    let n = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        stream.read(&mut buf),
+    )
+    .await
+    .expect("gateway must answer without waiting for the request body")
+    .expect("read response");
+    String::from_utf8_lossy(&buf[..n]).into_owned()
+}
+
 #[tokio::test]
 async fn unauthenticated_request_is_rejected_before_body_is_read() {
     // body 先发 1KB 然后永远不结束:鉴权如果排在读 body 之后,请求会一直挂住,
     // 未鉴权客户端就能让网关替它缓冲请求体。
-    use futures::StreamExt;
     let mock = MockUpstream::start().await;
     let harness = GatewayHarness::start(ProviderSpec::chat_only("custom", "m"), &mock).await;
-    let body = futures::stream::once(async {
-        Ok::<_, std::io::Error>(bytes::Bytes::from(vec![b'x'; 1024]))
-    })
-    .chain(futures::stream::pending());
+    let addr = harness.gateway_url.trim_start_matches("http://");
+    let request = format!(
+        "POST /v1/responses HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\n\
+         Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n400\r\n{}\r\n",
+        "x".repeat(1024)
+    );
 
-    let res = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        harness
-            .client()
-            .post(harness.url("/v1/responses"))
-            .header("content-type", "application/json")
-            .body(reqwest::Body::wrap_stream(body))
-            .send(),
-    )
-    .await
-    .expect("gateway must answer 401 without waiting for the request body")
-    .expect("send");
-    assert_eq!(res.status().as_u16(), 401);
+    let response = raw_http(&harness, &request).await;
+    assert!(
+        response.starts_with("HTTP/1.1 401"),
+        "gateway must reject before reading the body: {response}"
+    );
     assert!(mock.received().await.is_empty());
 
     harness.shutdown().await;
@@ -1065,17 +1081,22 @@ async fn metrics_requires_token_only_and_health_does_not() {
         .unwrap();
     assert_eq!(anonymous_service_host.status().as_u16(), 401);
 
-    let rebinding = client
-        .get(harness.url("/v1/models"))
-        .bearer_auth(&harness.token)
-        .header("host", "evil.example.com")
-        .send()
-        .await
-        .unwrap();
+    let rebinding = raw_http(
+        &harness,
+        &format!(
+            "GET /v1/models HTTP/1.1\r\nHost: evil.example.com\r\n\
+             Authorization: Bearer {}\r\nConnection: close\r\n\r\n",
+            harness.token
+        ),
+    )
+    .await;
     assert!(
-        !rebinding.status().is_success(),
-        "other routes must still enforce the Host boundary, got {}",
-        rebinding.status()
+        !rebinding.starts_with("HTTP/1.1 2"),
+        "other routes must still enforce the Host boundary, got {rebinding}"
+    );
+    assert!(
+        rebinding.contains("GATEWAY_HOST_REJECTED"),
+        "rebinding must be rejected by the Host boundary: {rebinding}"
     );
 
     let health = client.get(harness.url("/health")).send().await.unwrap();
