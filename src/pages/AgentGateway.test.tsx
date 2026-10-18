@@ -477,6 +477,12 @@ describe("AgentGateway product flow", () => {
 
     renderWithProviders(<AgentGateway />, { route: "/agent-gateway" });
 
+    await screen.findByText("Codex");
+    fireEvent.click(screen.getAllByText("Test connection")[0]);
+    await screen.findByText("Test this agent?");
+    const testButtons = screen.getAllByText("Test connection");
+    fireEvent.click(testButtons[testButtons.length - 1]);
+
     expect(
       await screen.findByText(
         "You can now use Agent Gateway from CodeLeveler or Pi. Open the client and enter:"

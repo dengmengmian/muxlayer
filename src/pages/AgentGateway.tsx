@@ -201,6 +201,7 @@ export function AgentGateway() {
   const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set());
   const [expandedClients, setExpandedClients] = useState<Set<string>>(new Set());
   const [exampleAgent, setExampleAgent] = useState("codex-native");
+  const [verifiedAgents, setVerifiedAgents] = useState<Set<string>>(new Set());
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -298,6 +299,12 @@ export function AgentGateway() {
         try {
           const result = await api.testAgentGatewayAgent(agent.id, true);
           setTestResult(result);
+          setVerifiedAgents((previous) => {
+            const next = new Set(previous);
+            if (result.success) next.add(agent.id);
+            else next.delete(agent.id);
+            return next;
+          });
           toast(
             result.success ? "success" : "error",
             result.success
@@ -503,10 +510,8 @@ export function AgentGateway() {
   const serviceError = manager?.agent_start_error ?? service.error;
   const serviceHealthy = service.running && !serviceError;
 
-  const usableAgents = overview.agents.filter(
-    (agent) =>
-      agent.state === "available" ||
-      (testResult?.agent === agent.id && testResult.success)
+  const usableAgents = overview.agents.filter((agent) =>
+    verifiedAgents.has(agent.id)
   );
   const readyClients = overview.clients.filter(
     (client) => client.config_status === "configured"
@@ -678,21 +683,29 @@ export function AgentGateway() {
                 testResult?.agent === agent.id && !testResult.success;
               const verified =
                 testResult?.agent === agent.id && testResult.success;
+              const configured =
+                !verified && agent.state === "available";
               const state = failed
                 ? "test_failed"
                 : verified
                   ? "available"
-                  : agent.state;
+                  : configured
+                    ? "configured"
+                    : agent.state;
               const variant = failed
                 ? "error"
                 : verified
                   ? "success"
-                  : agentVariant(agent.state);
+                  : configured
+                    ? "warning"
+                    : agentVariant(agent.state);
               const hint = failed
                 ? t("agw.ux.agent.test_failed_hint")
                 : verified
                   ? t("agw.ux.agent.verified_hint")
-                  : agent.state === "available"
+                  : configured
+                    ? t("agw.ux.agent.configured_hint")
+                    : agent.state === "available"
                   ? t("agw.ux.agent.available_hint")
                   : agent.state === "unverified"
                     ? t("agw.ux.agent.unverified_hint")
