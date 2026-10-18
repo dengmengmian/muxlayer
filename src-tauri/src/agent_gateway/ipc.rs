@@ -339,11 +339,16 @@ mod transport {
 
     pub async fn connect(path: &Path) -> Result<Stream, AgentError> {
         let name = pipe_name(path);
-        tokio::time::timeout(CONNECT_TIMEOUT, ClientOptions::new().open(&name))
-            .await
-            .map_err(|_| AgentError::new(ErrorCode::Adapter, "connect timed out"))?
-            .map(Stream::Client)
-            .map_err(|e| AgentError::new(ErrorCode::Adapter, format!("connect failed: {e}")))
+        // Windows 的命名管道 open 是同步调用，放进 blocking 线程里保留超时语义。
+        tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            tokio::task::spawn_blocking(move || ClientOptions::new().open(&name)),
+        )
+        .await
+        .map_err(|_| AgentError::new(ErrorCode::Adapter, "connect timed out"))?
+        .map_err(|e| AgentError::new(ErrorCode::Adapter, format!("connect task failed: {e}")))?
+        .map(Stream::Client)
+        .map_err(|e| AgentError::new(ErrorCode::Adapter, format!("connect failed: {e}")))
     }
 
     pub fn probe(path: &Path) -> bool {
