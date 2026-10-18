@@ -65,7 +65,7 @@ function InfoRow({
 
 function agentVariant(state: string): "success" | "warning" | "error" | "muted" {
   if (state === "available") return "success";
-  if (state === "not_configured") return "warning";
+  if (state === "unverified" || state === "not_configured") return "warning";
   if (state === "not_installed") return "muted";
   return "error";
 }
@@ -793,7 +793,7 @@ export function AgentGateway() {
                   <button
                     className="btn-secondary"
                     onClick={() => askRemove(client)}
-                    disabled={busy !== null || !client.matching}
+                    disabled={busy !== null || !client.managed}
                   >
                     {t("agw.connections.remove")}
                   </button>

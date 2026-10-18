@@ -58,6 +58,7 @@ specta-typescript = { version = "0.0.9", optional = true }
 tauri-specta = { version = "=2.0.0-rc.21", features = ["derive", "typescript"], optional = true }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
+tempfile = "3"
 # gzip/brotli/zstd 让 reqwest 自动解压上游响应——若上游返回压缩 SSE 流
 # （即便我们没显式发 Accept-Encoding），bytes_stream/text 拿到的是明文。
 # 否则 pass-through 会把压缩字节原样转给客户端，导致 SSE 帧解析失败。
@@ -129,7 +130,6 @@ strip = true
 # 离线 fixture 测试用：本地起 mock 上游，断言 AgentGate 转换后的请求体。
 # 不依赖真实 provider key、不依赖网络。
 wiremock = "0.6"
-tempfile = "3"
 # Codex CLI 用的同款 SSE parser,集成测试拿它解析我们返给 Codex 的 SSE,
 # 验证 wire-level 真正兼容(不是只字符串断言)。
 eventsource-stream = "0.2"

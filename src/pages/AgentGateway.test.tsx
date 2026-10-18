@@ -56,6 +56,7 @@ function client(
     mcp_name: "muxlayer",
     config_status: "not_configured",
     configured: false,
+    managed: false,
     matching: false,
     command: null,
     args: [],
@@ -230,6 +231,29 @@ describe("AgentGateway", () => {
     );
   });
 
+  it("shows unverified Codex auth without claiming it is available", async () => {
+    vi.mocked(api.getAgentGatewayOverview).mockResolvedValue(
+      overview({
+        agents: [
+          agent("codex-native", {
+            state: "unverified",
+            available: true,
+            auth_state: "unknown",
+            auth_detail: "",
+          }),
+          agent("claude-code"),
+        ],
+      })
+    );
+
+    renderWithProviders(<AgentGateway />, { route: "/agent-gateway" });
+
+    expect(
+      await screen.findByText("Verification required")
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("Test connection")[0]).toBeEnabled();
+  });
+
   it("distinguishes an installed but non-executable client", async () => {
     vi.mocked(api.getAgentGatewayOverview).mockResolvedValue(
       overview({
@@ -255,6 +279,36 @@ describe("AgentGateway", () => {
       screen.getByText("env: node: No such file or directory")
     ).toBeInTheDocument();
     expect(screen.queryByText("Client not installed")).not.toBeInTheDocument();
+  });
+
+  it("allows updating and removing a stale managed MCP entry", async () => {
+    vi.mocked(api.getAgentGatewayOverview).mockResolvedValue(
+      overview({
+        clients: [
+          client("codeleveler"),
+          client("pi", {
+            config_status: "stale",
+            configured: true,
+            managed: true,
+            matching: false,
+            command: "/old/agentgate-serve",
+            warning:
+              "This MuxLayer entry points to a different agentgate-serve path.",
+          }),
+        ],
+      })
+    );
+
+    renderWithProviders(<AgentGateway />, { route: "/agent-gateway" });
+
+    await screen.findByText("codex-cli 0.162.1");
+    fireEvent.click(screen.getByText("Connections"));
+
+    expect(await screen.findByText("Update required")).toBeInTheDocument();
+    const removeButtons = screen.getAllByText("Remove MCP");
+    expect(removeButtons[removeButtons.length - 1]).not.toBeDisabled();
+    const configureButtons = screen.getAllByText("Configure MCP");
+    expect(configureButtons[configureButtons.length - 1]).not.toBeDisabled();
   });
 
   it("refreshes service status and warns before stopping running tasks", async () => {

@@ -5,6 +5,7 @@
 //! CodeLeveler / Pi MCP configuration entries. It does not implement a second
 //! task manager or execute coding agents itself.
 
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -100,6 +101,7 @@ pub struct AgentGatewayClientStatus {
     pub mcp_name: String,
     pub config_status: String,
     pub configured: bool,
+    pub managed: bool,
     pub matching: bool,
     pub command: Option<String>,
     pub args: Vec<String>,
@@ -190,12 +192,32 @@ pub fn install_hint() -> String {
 
 pub const DOWNLOAD_URL: &str = "https://github.com/dengmengmian/muxlayer/releases";
 
+/// Node-based CLIs installed by nvm live next to their `node` binary and use
+/// `#!/usr/bin/env node`. Add the program's own directory to the child PATH so
+/// Finder-launched Desktop can execute them without changing the global PATH.
+fn path_with_program_dir(program: &Path, base: Option<&OsStr>) -> OsString {
+    let mut dirs = Vec::new();
+    if let Some(parent) = program.parent() {
+        dirs.push(parent.to_path_buf());
+    }
+    if let Some(base) = base {
+        dirs.extend(std::env::split_paths(base));
+    }
+    std::env::join_paths(dirs).unwrap_or_else(|_| base.unwrap_or_default().to_os_string())
+}
+
+fn apply_program_path(command: &mut tokio::process::Command, program: &Path) {
+    let base = std::env::var_os("PATH");
+    command.env("PATH", path_with_program_dir(program, base.as_deref()));
+}
+
 async fn run_capture(
     program: &Path,
     args: &[&str],
     timeout: Duration,
 ) -> Result<std::process::Output, String> {
     let mut command = tokio::process::Command::new(program);
+    apply_program_path(&mut command, program);
     command.args(args).stdin(Stdio::null()).kill_on_drop(true);
     match tokio::time::timeout(timeout, command.output()).await {
         Ok(Ok(output)) => Ok(output),
@@ -461,11 +483,18 @@ async fn codex_agent(
                 .into(),
         );
     }
-    status.available = status.auth_state != "not_configured";
-    if !status.available {
-        status.state = "not_configured".into();
-    }
+    let (state, available) = codex_auth_state(&status.auth_state);
+    status.state = state.into();
+    status.available = available;
     status
+}
+
+fn codex_auth_state(auth_state: &str) -> (&'static str, bool) {
+    match auth_state {
+        "not_configured" => ("not_configured", false),
+        "unknown" => ("unverified", true),
+        _ => ("available", true),
+    }
 }
 
 fn claude_settings() -> (Option<String>, Option<String>, bool, Option<String>) {
@@ -824,6 +853,12 @@ fn args_match(args: &[String], expected: &[String]) -> bool {
     args == expected
 }
 
+fn entry_managed(entry: &McpEntry) -> bool {
+    let name = entry.command.rsplit(['/', '\\']).next().unwrap_or_default();
+    (name == "agentgate-serve" || name == "agentgate-serve.exe")
+        && args_match(&entry.args, &["mcp-agent".to_string()])
+}
+
 fn entry_matches(entry: &McpEntry, serve: Option<&Path>) -> bool {
     let command = Path::new(&entry.command);
     let expected = serve.map(normalize_path);
@@ -1015,6 +1050,7 @@ fn client_status_from_parts(
     serve: Option<&Path>,
 ) -> AgentGatewayClientStatus {
     let (command, args, json, toml_values) = copy_payloads(id, serve);
+    let managed = entry.is_some_and(entry_managed);
     let matching = entry.is_some_and(|entry| entry_matches(entry, serve));
     let configured = entry.is_some();
     let (requires_upgrade, compatibility) = if id == "codeleveler" {
@@ -1031,7 +1067,12 @@ fn client_status_from_parts(
                 .into(),
         )
     } else if entry.is_some() {
-        if !matching {
+        if !matching && managed {
+            Some(
+                "This MuxLayer entry points to a different agentgate-serve path. Configure it again to use the current CLI, or remove it."
+                    .into(),
+            )
+        } else if !matching {
             Some(format!(
                 "An MCP server named `{}` already exists with a different command. Remove it in the client before configuring MuxLayer.",
                 MCP_SERVER_NAME
@@ -1050,10 +1091,14 @@ fn client_status_from_parts(
     };
     let config_status = if !probe.installed {
         "not_installed"
+    } else if probe.version.is_none() {
+        "unavailable"
     } else if entry.is_none() {
         "not_configured"
     } else if matching {
         "configured"
+    } else if managed {
+        "stale"
     } else {
         "conflict"
     };
@@ -1068,6 +1113,7 @@ fn client_status_from_parts(
         mcp_name: MCP_SERVER_NAME.into(),
         config_status: config_status.into(),
         configured,
+        managed,
         matching,
         command: entry.map(|e| e.command.clone()),
         args: entry.map(|e| e.args.clone()).unwrap_or_default(),
@@ -1145,6 +1191,7 @@ pub(crate) async fn detect_clients(serve: Option<&Path>) -> Vec<AgentGatewayClie
                 mcp_name: MCP_SERVER_NAME.into(),
                 config_status: "error".into(),
                 configured: false,
+                managed: false,
                 matching: false,
                 command: None,
                 args: Vec::new(),
@@ -1197,8 +1244,86 @@ fn restore_config(path: &Path, before: Option<&[u8]>) -> Result<(), AppError> {
     }
 }
 
-async fn run_client_cli(executable: &Path, args: &[String]) -> Result<String, AppError> {
+fn stage_mcp_config(
+    id: &str,
+    root: &Path,
+    before: Option<&[u8]>,
+) -> Result<(PathBuf, (&'static str, OsString)), AppError> {
+    let (config, key, value) = match id {
+        "codeleveler" => (
+            root.join("config.toml"),
+            "LEVELER_HOME",
+            root.as_os_str().to_os_string(),
+        ),
+        "pi" => {
+            let agent = root.join("agent");
+            std::fs::create_dir_all(&agent).map_err(|error| {
+                AppError::new(
+                    codes::AGENT_GATEWAY_MCP_WRITE_FAILED,
+                    format!("Cannot create staging directory: {error}"),
+                )
+            })?;
+            (
+                agent.join("mcp.json"),
+                "PI_CODING_AGENT_DIR",
+                agent.into_os_string(),
+            )
+        }
+        _ => {
+            return Err(AppError::new(
+                codes::AGENT_GATEWAY_AGENT_NOT_FOUND,
+                format!("unknown MCP client: {id}"),
+            ));
+        }
+    };
+    if let Some(before) = before {
+        std::fs::write(&config, before).map_err(|error| {
+            AppError::new(
+                codes::AGENT_GATEWAY_MCP_WRITE_FAILED,
+                format!("Cannot stage {}: {error}", config.display()),
+            )
+        })?;
+    }
+    Ok((config, (key, value)))
+}
+
+/// Install a config produced in a staging directory. The real file is only
+/// replaced when it still matches the bytes we read before invoking the client.
+/// `fsutil::atomic_write` uses a same-directory temp file and rename, so a
+/// crash cannot leave a partially written config.
+fn commit_staged_config(path: &Path, before: Option<&[u8]>, staged: &[u8]) -> Result<(), AppError> {
+    if read_bytes(path)?.as_deref() != before {
+        return Err(AppError::new(
+            codes::AGENT_GATEWAY_MCP_CONFLICT,
+            "The client configuration changed while MuxLayer was updating it; refusing to overwrite it.",
+        )
+        .with_suggestion("Re-open the page and retry after the other change is finished."));
+    }
+    let mode = if before.is_some() { None } else { Some(0o600) };
+    crate::fsutil::atomic_write(path, staged, mode).map_err(|error| {
+        AppError::new(
+            codes::AGENT_GATEWAY_MCP_WRITE_FAILED,
+            format!("Failed to write {}: {error}", path.display()),
+        )
+    })?;
+    if read_bytes(path)?.as_deref() != Some(staged) {
+        let _ = restore_config(path, before);
+        return Err(AppError::new(
+            codes::AGENT_GATEWAY_MCP_WRITE_FAILED,
+            "The staged MCP configuration could not be verified after writing; the original file was restored.",
+        ));
+    }
+    Ok(())
+}
+
+async fn run_client_cli(
+    executable: &Path,
+    args: &[String],
+    envs: &[(&str, OsString)],
+) -> Result<String, AppError> {
     let mut command = tokio::process::Command::new(executable);
+    apply_program_path(&mut command, executable);
+    command.envs(envs.iter().map(|(key, value)| (*key, value)));
     command.args(args).stdin(Stdio::null()).kill_on_drop(true);
     match tokio::time::timeout(CLI_WRITE_TIMEOUT, command.output()).await {
         Ok(Ok(output)) if output.status.success() => Ok(text(&output)),
@@ -1227,13 +1352,13 @@ fn mcp_mutation(status: &AgentGatewayClientStatus, remove: bool) -> Result<McpMu
         if !status.configured {
             return Ok(McpMutation::Noop("MuxLayer MCP is already absent."));
         }
-        if !status.matching {
+        if !status.managed {
             return Err(AppError::new(
                 codes::AGENT_GATEWAY_MCP_CONFLICT,
                 "The existing `muxlayer` MCP entry is not managed by this app; refusing to remove it.",
             ));
         }
-    } else if status.configured && !status.matching {
+    } else if status.configured && !status.managed {
         return Err(AppError::new(
             codes::AGENT_GATEWAY_MCP_CONFLICT,
             "An MCP server named `muxlayer` already exists with a different command.",
@@ -1290,6 +1415,13 @@ async fn mutate_mcp(
     let serve_path = serve.expect("checked above");
     let config = PathBuf::from(&status.config_path);
     let before = read_bytes(&config)?;
+    let staging = tempfile::tempdir().map_err(|error| {
+        AppError::new(
+            codes::AGENT_GATEWAY_MCP_WRITE_FAILED,
+            format!("Cannot create a staging directory: {error}"),
+        )
+    })?;
+    let (staged_config, env) = stage_mcp_config(id, staging.path(), before.as_deref())?;
     let mut args: Vec<String> = vec!["mcp".into()];
     if remove {
         args.extend(["remove".into(), MCP_SERVER_NAME.into()]);
@@ -1302,30 +1434,35 @@ async fn mutate_mcp(
             "mcp-agent".into(),
         ]);
     }
-    let run = run_client_cli(&executable, &args).await;
-    let after = match &run {
-        Ok(_) => detect_client(id, serve).await,
-        Err(error) => Err(error.clone()),
+    run_client_cli(&executable, &args, &[env]).await?;
+    let staged_entry = match id {
+        "codeleveler" => codeleveler_entry(&staged_config, MCP_SERVER_NAME)?,
+        "pi" => pi_entry(&staged_config, MCP_SERVER_NAME)?,
+        _ => None,
     };
-    let verified = after.as_ref().ok().is_some_and(|next| {
-        if remove {
-            !next.configured
-        } else {
-            next.matching
-        }
-    });
-    if run.is_err() || !verified {
-        let _ = restore_config(&config, before.as_deref());
-        return Err(match run {
-            Err(error) => error,
-            Ok(_) => AppError::new(
-                codes::AGENT_GATEWAY_MCP_WRITE_FAILED,
-                "The client CLI did not produce the expected MCP configuration; the original file was restored.",
-            ),
-        });
+    let staged_ok = if remove {
+        staged_entry.is_none()
+    } else {
+        staged_entry
+            .as_ref()
+            .is_some_and(|entry| entry_matches(entry, serve))
+    };
+    if !staged_ok {
+        return Err(AppError::new(
+            codes::AGENT_GATEWAY_MCP_WRITE_FAILED,
+            "The client CLI did not produce the expected MCP configuration; the real client configuration was not changed.",
+        ));
     }
+    let staged = read_bytes(&staged_config)?.ok_or_else(|| {
+        AppError::new(
+            codes::AGENT_GATEWAY_MCP_WRITE_FAILED,
+            "The client CLI removed its staged configuration unexpectedly.",
+        )
+    })?;
+    commit_staged_config(&config, before.as_deref(), &staged)?;
+    let after = detect_client(id, serve).await?;
     Ok(AgentGatewayMcpResult {
-        status: after.expect("verified"),
+        status: after,
         message: if remove {
             "MuxLayer MCP configuration removed.".into()
         } else {
@@ -1671,6 +1808,11 @@ mod tests {
             args: vec!["mcp-agent".into()],
         };
         assert!(!entry_matches(&wrong, Some(serve)));
+        let windows = McpEntry {
+            command: r"C:\Tools\agentgate-serve.exe".into(),
+            args: vec!["mcp-agent".into()],
+        };
+        assert!(entry_managed(&windows));
     }
 
     #[test]
@@ -1773,6 +1915,28 @@ mod tests {
     }
 
     #[test]
+    fn stale_managed_entry_is_updated_or_removed_instead_of_conflicting() {
+        let serve = Path::new("/new/agentgate-serve");
+        let stale = McpEntry {
+            command: "/old/agentgate-serve".into(),
+            args: vec!["mcp-agent".into()],
+        };
+        let status = status_with_entry(Some(stale), Some(serve));
+
+        assert!(status.managed);
+        assert!(!status.matching);
+        assert_eq!(status.config_status, "stale");
+        assert!(matches!(
+            mcp_mutation(&status, false),
+            Ok(McpMutation::Proceed)
+        ));
+        assert!(matches!(
+            mcp_mutation(&status, true),
+            Ok(McpMutation::Proceed)
+        ));
+    }
+
+    #[test]
     fn mcp_mutation_refuses_conflicts_and_skips_unchanged_entries() {
         let serve = Path::new("/tmp/agentgate-serve");
         let matching = McpEntry {
@@ -1809,6 +1973,106 @@ mod tests {
         )
         .is_err());
         assert!(mcp_mutation(&status_with_entry(Some(conflicting), Some(serve)), true).is_err());
+    }
+
+    #[test]
+    fn command_path_includes_the_program_runtime_directory() {
+        let program = Path::new("/Users/me/.nvm/versions/node/v25.2.1/bin/pi");
+        let base = std::env::join_paths(["/usr/bin", "/bin"]).unwrap();
+        let path = path_with_program_dir(program, Some(base.as_os_str()));
+        let parts: Vec<PathBuf> = std::env::split_paths(&path).collect();
+        assert_eq!(
+            parts.first(),
+            Some(&PathBuf::from("/Users/me/.nvm/versions/node/v25.2.1/bin"))
+        );
+        assert!(parts.contains(&PathBuf::from("/usr/bin")));
+    }
+
+    #[test]
+    fn unknown_codex_auth_is_unverified_but_still_testable() {
+        assert_eq!(codex_auth_state("unknown"), ("unverified", true));
+        assert_eq!(codex_auth_state("authenticated"), ("available", true));
+        assert_eq!(
+            codex_auth_state("not_configured"),
+            ("not_configured", false)
+        );
+    }
+
+    #[test]
+    fn non_executable_client_is_reported_as_unavailable() {
+        let probe = CliProbe {
+            installed: true,
+            path: Some(PathBuf::from("/tmp/pi")),
+            version: None,
+            detection: "common".into(),
+            error: Some("Permission denied".into()),
+        };
+        let status = client_status_from_parts(
+            "pi",
+            "Pi Agent",
+            &probe,
+            Path::new("/tmp/mcp.json"),
+            None,
+            Some(Path::new("/tmp/agentgate-serve")),
+        );
+
+        assert!(!status.installed);
+        assert_eq!(status.config_status, "unavailable");
+    }
+
+    #[test]
+    fn staging_layout_matches_each_client_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let (pi_path, (pi_key, _)) =
+            stage_mcp_config("pi", dir.path(), Some(b"{\"mcpServers\":{}}")).unwrap();
+        assert_eq!(pi_key, "PI_CODING_AGENT_DIR");
+        assert!(pi_path.ends_with("agent/mcp.json"));
+        assert_eq!(
+            std::fs::read_to_string(&pi_path).unwrap(),
+            "{\"mcpServers\":{}}"
+        );
+
+        let (leveler_path, (leveler_key, _)) =
+            stage_mcp_config("codeleveler", dir.path(), Some(b"")).unwrap();
+        assert_eq!(leveler_key, "LEVELER_HOME");
+        assert!(leveler_path.ends_with("config.toml"));
+    }
+
+    #[test]
+    fn staged_config_refuses_to_overwrite_an_external_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, "external update").unwrap();
+
+        let error = commit_staged_config(&path, Some(b"original"), b"staged").unwrap_err();
+
+        assert_eq!(error.code, codes::AGENT_GATEWAY_MCP_CONFLICT);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "external update");
+    }
+
+    #[test]
+    fn staged_config_is_installed_when_the_original_is_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, "original").unwrap();
+
+        commit_staged_config(&path, Some(b"original"), b"staged").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "staged");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staged_config_new_file_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        commit_staged_config(&path, None, b"staged").unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 
     #[cfg(unix)]
