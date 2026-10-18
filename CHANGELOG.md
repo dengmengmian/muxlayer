@@ -1,5 +1,18 @@
 # Changelog / 更新日志
 
+## [2.0.9] - 2026-10-19
+
+### Added / 新增
+
+- **Agent Gateway (Beta) / Agent Gateway（测试性功能）** —— MuxLayer can now connect Codex and Claude Code to MCP-capable clients. The desktop app includes `agentgate-serve`, so one MuxLayer install is enough; there is no separate CLI download. Supports continuous sessions, task persistence, cancellation, and read-only runs. This is still a test feature: interfaces and behavior may change, and it is not recommended for production-critical workflows. 现在可以把 Codex 和 Claude Code 接到支持 MCP 的客户端。桌面端内置 `agentgate-serve`，装一次 MuxLayer 就能用，不需要单独下载 CLI；支持连续会话、任务持久化、取消和只读执行。本次仍是测试性功能，接口和行为可能调整，不建议用于关键生产流程。
+- **Agent Gateway page / Agent Gateway 页面** —— A three-step flow: choose an Agent, connect an app, start using it. Advanced settings and diagnostics are collapsed by default. 三步完成：选择 Agent、接入应用、开始使用；高级设置和诊断默认收起。
+- **Pi and CodeLeveler / 接入 Pi 与 CodeLeveler** —— Both can connect over MCP. CodeLeveler versions without the `isError` fix show an upgrade warning. 两者都可以通过 MCP 接入；不含 `isError` 修复的 CodeLeveler 版本会显示升级提醒。
+
+### Changed / 变更
+
+- **Unified startup / 统一启动** —— The model gateway and Agent Service start according to settings and fail independently. Closing the desktop window does not stop the Agent Service. 模型网关和 Agent Service 按设置启动，互不影响；关闭桌面窗口不会停掉 Agent Service。
+- **Stable CLI path / CLI 固定路径** —— The bundled CLI is installed at `~/.muxlayer/bin/agentgate-serve`. An existing user-managed binary at that path is never overwritten. 内置 CLI 安装到固定路径；用户自己管理的同名程序不会被覆盖。
+
 ## [2.0.8] - 2026-10-07
 
 ### Added / 新增

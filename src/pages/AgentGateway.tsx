@@ -361,7 +361,7 @@ export function AgentGateway() {
 
   const askService = async (action: "stop" | "restart") => {
     if (!overview) return;
-    let service = overview.service;
+    let service: api.AgentGatewayServiceStatus;
     try {
       service = await refreshService();
     } catch (err) {

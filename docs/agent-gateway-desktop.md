@@ -1,5 +1,7 @@
 # Agent Gateway Desktop 使用说明与验收记录
 
+> Agent Gateway 在 2.0.9 中仍是测试性功能（Beta），接口和行为可能调整，不建议用于关键生产流程。
+
 实现提交：
 
 - Phase 5：`43c4e888519563f2151e9a303c4493f98b817c5a`
