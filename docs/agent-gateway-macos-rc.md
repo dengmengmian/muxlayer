@@ -27,7 +27,9 @@ MuxLayer 当前同时发布两种 macOS 产物：
 | `MuxLayer_<version>_<arch>.dmg` | GitHub Release / Homebrew cask | 桌面应用（Model Gateway UI） |
 | `agentgate-serve-<arch>.tar.gz` | GitHub Release 的独立 `cli` job | Headless CLI，Agent Gateway 的实际交付入口 |
 
-`src-tauri/tauri.conf.json` 没有 `externalBin`；桌面 `.app` 不内置 `agentgate-serve`。`release.yml` 的 `cli` job 单独构建并上传四个平台的 CLI 包，这是现有发行契约，不是本轮遗漏。Agent Gateway 的普通使用方式是下载对应架构的 CLI tarball，而不是依赖 Desktop 安装包。若产品希望“安装 Desktop 即自带 Gateway”，需要单独的产品打包决策，本轮没有擅自改造安装体系。
+> Phase 6 更新：`src-tauri/tauri.conf.json` 已增加 `externalBin`，Desktop 现在内置 `agentgate-serve` 并复制到 `~/.muxlayer/bin`；独立 CLI tarball 仍由 `cli` job 发行，协议与核心实现未变。本 RC 文档下面的验收结论描述的是加入内置 CLI 之前的构建，历史证据保留。
+
+Phase 6 之前，`src-tauri/tauri.conf.json` 没有 `externalBin`，桌面 `.app` 不内置 `agentgate-serve`；`release.yml` 的 `cli` job 单独构建并上传四个平台的 CLI 包。下文验收使用当时的独立 CLI 发行方式，不能作为当前 Desktop 内置 CLI 的验收证据。
 
 本轮验收使用从当前源码构建的正式 release 二进制：
 

@@ -3,9 +3,10 @@
 实现提交：
 
 - Phase 5：`43c4e888519563f2151e9a303c4493f98b817c5a`
-- Phase 6：`5259efa51bb9ed8e195c475fb6dab653af030271`
+- Phase 6 异常修复：`5259efa51bb9ed8e195c475fb6dab653af030271`
+- Phase 6 统一启动与内置 CLI：`d6dab0f648000320525fce0f197ba322714ae58a`
 
-本阶段只增加 Desktop 配置与可视化层，未改动 Model Gateway、Codex / Claude Adapter、Agent Service 任务语义或 MCP 协议。
+本轮增加 Desktop 统一启动管理、内置 CLI 和稳定 MCP 路径；未改动 Model Gateway 业务、Codex / Claude Adapter、Agent Service 任务语义或 MCP 协议。
 
 ## 页面结构
 
@@ -119,6 +120,27 @@ Pi 通过 nvm 安装时，`pi` 是指向 JS 文件的软链，shebang 为 `#!/us
 - 残留 Socket 文件但无进程监听时显示「已停止」，不再显示连接错误
 - 最近一次错误只展示日志级别和 message，不展示 r2d2 / 文件路径等内部元数据
 
+## 统一 Gateway Manager
+
+Desktop 启动后由 `src-tauri/src/app/gateway_manager.rs` 统一协调，但不合并两个 Gateway：
+
+- Model Gateway 仍由 `AppState.gateway_runtime` 持有，是 Tauri 进程内的 HTTP Server
+- Agent Gateway 仍是独立 `agentgate-serve agent-service` 进程，由 IPC / SQLite 锁保证单实例
+- Manager 只做状态查询、按各自配置启动、复用已运行实例和记录启动错误
+- 两个 Gateway 按顺序独立启动；一个失败不会阻止另一个
+- 状态查询只读，不触发启动副作用
+- Model Gateway 继续遵循原有 `gateway_settings.auto_start`
+- Agent Gateway 使用 `agent_gateway.auto_start`（默认 true，可在页面关闭）
+- 已运行的 Agent Service 直接复用，不会创建第二个实例
+- 关闭 Desktop 不停止 Agent Service；运行中的任务继续，Model Gateway 随 Desktop 退出
+
+统一状态入口位于 Agent Gateway 页面顶部：
+
+- Model Gateway：运行中 / 已停止 / 错误、host:port、启动 / 停止
+- Agent Gateway：运行中 / 已停止 / 错误、Service 版本、自动启动开关、启动 / 停止
+- 内置 CLI 路径
+- 状态每 5 秒刷新一次，用户操作后立即刷新
+
 ## Tauri commands
 
 新增命令均位于 `src-tauri/src/app/commands/agent_gateway.rs`：
@@ -136,35 +158,65 @@ Pi 通过 nvm 安装时，`pi` 是指向 JS 文件的软链，shebang 为 `#!/us
 - `get_agent_gateway_mcp_copy`
 - `get_agent_gateway_diagnostics`
 - `open_agent_gateway_data_dir`
+- `get_gateway_manager_status`
+- `set_agent_gateway_auto_start`
 
 前端只做展示、收集输入、复制文本和调用这些命令；没有前端直接改数据库、HTTP Agent API 或任意 shell 执行。
 
-## CLI 安装边界
+## Desktop 内置 CLI
 
-- Desktop 只负责检测、配置路径、启动已有 CLI，不捆绑侧载 CLI
-- 未找到 CLI 时显示安装说明、Releases 下载入口、重新检测、手动设置路径
-- 不显示无效的「启用」按钮，不新增 Tauri sidecar，不修改发布流程
-- 正式形态仍是 Desktop DMG + 独立 headless CLI tarball
+Desktop 现在通过 Tauri `externalBin` 内置 `agentgate-serve`：
 
-## 安装交付方案评估
+- `src-tauri/tauri.conf.json` 的 `bundle.externalBin` 指向 `binaries/agentgate-serve`
+- `scripts/prepare-desktop-cli.sh` 按目标架构构建一份 headless CLI，并放到 Tauri 约定的 `binaries/agentgate-serve-<target>`；产物不入库
+- `release.yml` 的 Desktop 构建、preflight 都在 Tauri 构建前执行该脚本
+- 独立 headless CLI tarball 继续由 `cli` job 发行，未删除、未改协议
+- 仍然只有一份 Agent Gateway 核心实现，没有 Desktop 专用 Agent Gateway
 
-现有 `release.yml` 已经分别构建 Desktop（macOS `.app` / DMG）和 `agentgate-serve` 的独立 tarball；`tauri.conf.json` 没有 `externalBin`。本轮不修改发行体系，只比较两种方案。
+Desktop 首次启动时把内置 sidecar 复制到用户级稳定路径：
 
-| 维度 | A. 独立 CLI（现状） | B. Desktop 内置 CLI（sidecar） |
-| --- | --- | --- |
-| 用户安装 | 需安装 Desktop 并额外下载 CLI；页面有下载、手动路径、重新检测引导 | 安装 Desktop 即得到 CLI，路径由应用控制 |
-| Tauri 打包 | 不改 | 需要 `externalBin`、按 arch 放二进制、签名/公证一起处理 |
-| 现有 release.yml | 已支持，无改动 | 需要改 Desktop 构建矩阵和资产结构 |
-| CLI 独立升级 | 可以单独升级，适合 headless / 终端用户 | 与 Desktop 版本绑定；独立升级会与内置副本冲突 |
-| 可执行文件发现 | 需要 PATH / 常见目录 / 手动路径 | 路径固定，但需要处理 sidecar 版本与安装位置 |
-| Service 生命周期 | 一个独立 CLI，一套 service | 可能出现 Desktop 内置 CLI 与用户 PATH CLI 两个版本，需保证只有一个 Service |
-| 维护成本 | 低，职责清晰 | 高，签名、升级、双版本、调试成本都增加 |
+`~/.muxlayer/bin/agentgate-serve`（Windows 为 `agentgate-serve.exe`）
 
-建议：继续方案 A。现有发行方式没有造成不可接受的交付阻塞，CLI 缺失已有明确引导；本轮不引入 sidecar，也不引入第二套 Agent Service。若未来要求「安装 Desktop 即用」，应单独提案，统一 CLI 版本、签名、升级和 Service 所有权后再改。
+规则：
+
+1. 目录不存在时创建，文件 `0755`，父目录 `0755`
+2. 使用同目录临时文件 + `fsync` + 原子 rename
+3. 写入后执行 `--version` 校验；失败保留旧文件
+4. 写入 `<bin>/.agentgate-serve.managed.json` 记录版本和文件大小
+5. 只有 marker 与目标文件匹配时才更新，视为本应用托管
+6. 目标已存在但没有匹配 marker 时视为用户自行安装，绝不覆盖
+7. 不修改用户 PATH，不覆盖 Homebrew / 用户独立安装
+8. 不把 `.app/Contents` 或 App Translocation 临时路径写入 MCP
+
+MCP 只使用稳定路径；Desktop 更新后路径不变，MCP 配置继续有效。正在运行的 Agent Service 持有旧 inode，替换磁盘文件不会终止运行中任务；新启动的 MCP/Service 使用新文件。
+
+CLI 发现优先级：
+
+1. 用户显式设置
+2. `AGENTGATE_SERVE_BIN`
+3. 进程 PATH / 常见安装目录
+4. Desktop 托管的内置 CLI
+
+显式路径失败时不会回退到内置路径，避免“我设置了一个坏路径，系统却悄悄用另一个”。普通用户不设置路径时，内置 CLI 自动兜底。
+
+## 安装交付方案
+
+最终采用“Desktop 内置 + 独立 CLI 继续发行”的混合方案：
+
+| 维度 | 结果 |
+| --- | --- |
+| 一次安装 | `MuxLayer.dmg` 内含 Agent Gateway CLI |
+| 独立 headless | `agentgate-serve-<arch>.tar.gz` 继续发行 |
+| Service 所有权 | 仍是独立进程 + SQLite 单实例锁 |
+| Desktop 更新 | 只更新稳定路径的托管副本，不删除 SQLite |
+| 用户已有 CLI | 无托管 marker 时不覆盖；显式路径优先 |
+| 签名/公证 | Desktop 与嵌套 sidecar 一起签名；本轮只做本地 ad-hoc 构建验证 |
+
+未新增 `agentgate-serve start`：现有 `serve`、`agent-service`、`mcp-agent` 已分别覆盖 Model Gateway、常驻 Agent Service 和 MCP 自动拉起；新增 `start` 会需要额外的前台/后台 Supervisor 语义，收益不足。Desktop 的统一入口由 Gateway Manager 承担，headless 保持原命令兼容。
 
 ## macOS GUI 验收
 
-环境：isolated Tauri dev build，独立数据目录 `/tmp/agentgate-desktop-accept/db`，临时 `LEVELER_HOME`，未使用生产数据库。真实 Codex / Claude / CodeLeveler / Pi CLI。
+环境：本地真实 release `.app`（ad-hoc，未签名/未公证）从隔离 HOME 启动，`PATH=/usr/bin:/bin` 模拟 Finder；独立 Desktop DB / CLI DB；真实 Codex / Claude / CodeLeveler / Pi CLI。未使用生产数据，未修改真实 MCP 配置。
 
 | 场景 | 结果 |
 | --- | --- |
@@ -181,6 +233,17 @@ Pi 通过 nvm 安装时，`pi` 是指向 JS 文件的软链，shebang 为 `#!/us
 | Service 启动 / 停止 / 重启 | PASS：状态、版本、任务数正确；残留 Socket 显示已停止 |
 | 有运行任务时停止 | PASS：确认框显示 `当前有 1 个任务正在运行`，未静默杀死 |
 | Desktop 重启后 Service 状态 | PASS：终止 Desktop 后 Service 继续运行，重开后显示「运行中」 |
+| 一次安装、无独立 CLI | PASS：release `.app` 内含 sidecar，首次启动复制到 `~/.muxlayer/bin` 并自动启动 Agent Service |
+| 双 Gateway 自动启动 | PASS：Model Gateway 按 auto_start 启动，Agent Gateway 默认启动；两个状态独立显示 |
+| 已运行 Service 复用 | PASS：重开 Desktop 后 Service PID 不变，未创建第二个实例 |
+| 两个 MCP 客户端并发 | PASS：两个客户端都连接同一个 Service PID，工具调用成功 |
+| 关闭 Desktop 后任务持续 | PASS：Desktop 终止后 task 仍 running；新 MCP 客户端可查询并取消 |
+| Model Gateway 启动失败 | PASS：端口被占用时 Agent Gateway 仍启动并 ready |
+| Agent Gateway 启动失败 | PASS：CLI 数据目录不可用时 Model Gateway 仍启动并监听 |
+| 用户已有 CLI | PASS：无托管 marker 的同名文件未被覆盖，校验和不变 |
+| Desktop 更新后 MCP 配置 | PASS：重建 `.app` 后 CodeLeveler 配置仍指向同一稳定 CLI，Service 未重启 |
+| Pi 受限 PATH + nvm | PASS：版本 1.3.0、`pi mcp list` connected / 5 tools、真实 `pi -p` 调用 `agent_list` |
+| CodeLeveler 受限 PATH + 稳定 CLI | PASS：配置写入稳定路径，`leveler mcp list` 正常；真实调用成功 |
 | CodeLeveler MCP 配置 | PASS：`leveler mcp list` 显示 `muxlayer`；旧版兼容性警告存在 |
 | CodeLeveler MCP 移除 | PASS：只删除托管条目，状态回到未配置 |
 | Phase 6 staging 写入 | PASS：CodeLeveler 配置 / 移除均通过 staging + 原子安装；`leveler mcp list` 结果与 UI 一致 |
@@ -203,9 +266,11 @@ Pi 通过 nvm 安装时，`pi` 是指向 JS 文件的软链，shebang 为 `#!/us
 
 - CodeLeveler 当前安装版 1.0.16 不包含 `e4510fa`；1.0.18 源码通过但尚未发布。页面保留升级警告，MCP 协议未做兼容性改写。最低兼容版本应为「第一个包含修复的正式发布」，本阶段没有把尚未发布的 1.0.18 写成正式最低版本。
 - 仅 CodeLeveler 缺失的 GUI 场景未单独测试：本机 CodeLeveler 固定安装在 `/opt/homebrew/bin`，没有在不移动系统安装的前提下可靠隐藏；Pi 缺失场景已通过隔离 HOME 验证。
-- 只验收 macOS；Windows / Linux GUI 未测试。
-- 未生成签名 DMG，未执行公开发布、Tag、推送。
-- Agent Service 启动失败最长等待 20 秒；该路径沿用 Phase 5 的真实 GUI 验收，本轮未改动启动逻辑。
+- 只验收 macOS；Windows / Linux GUI 与 sidecar 打包未测试。
+- 未生成签名 DMG，未执行公开发布、Tag、推送；本轮 `.app` 是 ad-hoc 本地构建。正式发布必须验证嵌套 `agentgate-serve` 的 Developer ID 签名与公证，以及从 `~/.muxlayer/bin` 复制后的 Gatekeeper 行为。
+- Desktop 更新替换稳定 CLI 时，不强制重启正在运行的 Agent Service；旧进程继续持有旧 inode，直到用户主动重启或服务退出。期间 MCP 客户端连接的是旧运行实例，可能出现新 CLI 文件与旧 Service 并存的版本窗口，这是为了不打断运行中任务的有意取舍。
+- 用户自行放置在 `~/.muxlayer/bin/agentgate-serve` 且没有托管 marker 的文件不会被更新；如果版本过旧，页面会显示真实版本和错误，不会静默覆盖。
+- Agent Service 启动失败最长等待 20 秒；已分别验证 Model 失败不影响 Agent、Agent 失败不影响 Model。
 - 最近错误来自 Service 日志；只显示级别和 message，不展示内部模块路径。
 - 外部并发修改检查是「写入前比较 + 原子替换」，覆盖实际竞态窗口；macOS 没有可移植的 compare-and-swap rename，极端毫秒级竞态仍只能通过写入前比较降低，不能数学上消除。
 
@@ -213,14 +278,15 @@ Pi 通过 nvm 安装时，`pi` 是指向 JS 文件的软链，shebang 为 `#!/us
 
 | 项目 | 结果 |
 | --- | --- |
-| `cargo test --features desktop --lib` | 1808 passed / 0 failed / 3 ignored |
+| `cargo test --features desktop --lib` | 1816 passed / 0 failed / 3 ignored |
 | `cargo test --features desktop --test agent_gateway_phase_three_cli` | 2 passed |
 | `cargo check --features desktop` | PASS |
 | `cargo clippy --features desktop --lib` | 无 warning |
 | `tsc --noEmit` | PASS |
-| `vitest run` | 62 files / 489 tests passed |
+| `vitest run` | 62 files / 490 tests passed |
+| `tauri build --bundles app --target aarch64-apple-darwin` | PASS，`.app` 内含 `Contents/MacOS/agentgate-serve` |
 | `vite build` | PASS |
 
-Phase 6 新增覆盖：Node 客户端子进程 PATH、staging 布局、外部并发修改拒绝、原子安装、新配置文件 `0600`、旧托管条目迁移 / 移除、未托管冲突、非可执行客户端、Codex 认证未知状态、前端「需验证」「需要更新」「客户端不可用」交互。
+Phase 6 新增覆盖：Node 客户端子进程 PATH、staging 布局、外部并发修改拒绝、原子安装、新配置文件 `0600`、旧托管条目迁移 / 移除、未托管冲突、非可执行客户端、Codex 认证未知状态、前端「需验证」「需要更新」「客户端不可用」交互；统一启动新增内置 CLI 安装 / 用户安装不覆盖 / marker 更新、显式路径不回退内置 CLI、Agent auto-start 默认值与读写、双 Gateway 状态卡片。
 
 完整测试首轮曾出现两个与并发/环境相关的既有测试波动（`health_check_fails_when_db_lock_unavailable`、`interrupt_after_process_exit_reports_process_exited`），单独复跑和第二次全量跑均通过；本轮没有修改这两个测试。
