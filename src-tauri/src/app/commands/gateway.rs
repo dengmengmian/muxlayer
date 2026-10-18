@@ -10,9 +10,7 @@ use crate::storage;
 
 // ── Gateway Commands ───────────────────────────────────────────
 
-#[tauri::command]
-#[specta::specta]
-pub fn get_gateway_status(state: State<'_, AppState>) -> Result<GatewayStatus, AppError> {
+pub(crate) fn gateway_status(state: &AppState) -> Result<GatewayStatus, AppError> {
     let conn = state
         .db
         .get()
@@ -48,6 +46,12 @@ pub fn get_gateway_status(state: State<'_, AppState>) -> Result<GatewayStatus, A
         output_protocol: settings.output_protocol,
         started_at: runtime.started_at.clone(),
     })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn get_gateway_status(state: State<'_, AppState>) -> Result<GatewayStatus, AppError> {
+    gateway_status(&state)
 }
 
 #[tauri::command]
@@ -102,6 +106,13 @@ pub async fn start_gateway(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<GatewayStatus, AppError> {
+    start_gateway_inner(&app_handle, &state).await
+}
+
+pub(crate) async fn start_gateway_inner(
+    app_handle: &tauri::AppHandle,
+    state: &AppState,
+) -> Result<GatewayStatus, AppError> {
     // Check if already running
     {
         let runtime = state
@@ -150,10 +161,10 @@ pub async fn start_gateway(
         text_zh: Some("网关已启动".into()),
         r#type: "success".into(),
     }
-    .emit(&app_handle);
-    let _ = PetGatewayStateChanged("running".into()).emit(&app_handle);
-    crate::app::tray::refresh_tray_blocking(&app_handle).await;
-    get_gateway_status(state)
+    .emit(app_handle);
+    let _ = PetGatewayStateChanged("running".into()).emit(app_handle);
+    crate::app::tray::refresh_tray_blocking(app_handle).await;
+    gateway_status(state)
 }
 
 #[tauri::command]

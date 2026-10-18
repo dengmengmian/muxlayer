@@ -155,7 +155,7 @@ pub struct AgentGatewayTestResult {
 #[derive(Debug, Clone)]
 pub(crate) struct CliProbe {
     installed: bool,
-    path: Option<PathBuf>,
+    pub(crate) path: Option<PathBuf>,
     version: Option<String>,
     detection: String,
     error: Option<String>,
@@ -256,8 +256,25 @@ async fn probe_cli(
     env_key: &str,
     version_prefix: &str,
 ) -> CliProbe {
+    probe_cli_with_extra(binary, explicit, env_key, version_prefix, None).await
+}
+
+async fn probe_cli_with_extra(
+    binary: &str,
+    explicit: Option<&Path>,
+    env_key: &str,
+    version_prefix: &str,
+    extra: Option<PathBuf>,
+) -> CliProbe {
     let configured = explicit.is_some();
-    let candidates = discovery::candidate_paths(explicit, Some(env_key), binary);
+    let mut candidates = discovery::candidate_paths(explicit, Some(env_key), binary);
+    if explicit.is_none() {
+        if let Some(extra) = extra.as_ref() {
+            if !candidates.contains(extra) {
+                candidates.push(extra.clone());
+            }
+        }
+    }
     let mut first_existing = None;
     let mut last_error = None;
     for path in candidates {
@@ -278,11 +295,16 @@ async fn probe_cli(
             Ok(output) if output.status.success() => {
                 let version = text(&output);
                 if version.starts_with(version_prefix) || version.contains(version_prefix) {
+                    let detection = if extra.as_deref() == Some(path.as_path()) {
+                        "bundled".to_string()
+                    } else {
+                        detection_source(configured, env_key, &path, binary)
+                    };
                     return CliProbe {
                         installed: true,
                         path: Some(path.clone()),
                         version: Some(version),
-                        detection: detection_source(configured, env_key, &path, binary),
+                        detection,
                         error: None,
                     };
                 }
@@ -314,11 +336,12 @@ async fn probe_cli(
 }
 
 pub(crate) async fn probe_serve(explicit: Option<&Path>) -> CliProbe {
-    probe_cli(
+    probe_cli_with_extra(
         "agentgate-serve",
         explicit,
         "AGENTGATE_SERVE_BIN",
         "agentgate ",
+        crate::app::bundled_cli::managed_cli_path(),
     )
     .await
 }
@@ -1299,6 +1322,20 @@ fn commit_staged_config(path: &Path, before: Option<&[u8]>, staged: &[u8]) -> Re
         )
         .with_suggestion("Re-open the page and retry after the other change is finished."));
     }
+    if let Some(parent) = path.parent() {
+        let created = !parent.exists();
+        std::fs::create_dir_all(parent).map_err(|error| {
+            AppError::new(
+                codes::AGENT_GATEWAY_MCP_WRITE_FAILED,
+                format!("Cannot create {}: {error}", parent.display()),
+            )
+        })?;
+        #[cfg(unix)]
+        if created {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+        }
+    }
     let mode = if before.is_some() { None } else { Some(0o600) };
     crate::fsutil::atomic_write(path, staged, mode).map_err(|error| {
         AppError::new(
@@ -1378,14 +1415,18 @@ async fn mutate_mcp(
     if !confirmed {
         return Err(AppError::validation("User confirmation is required"));
     }
-    let status = detect_client(id, serve).await?;
-    let Some(_serve) = serve else {
+    let resolved_serve = match serve {
+        Some(path) => Some(path.to_path_buf()),
+        None => probe_serve(None).await.path,
+    };
+    let Some(serve_path) = resolved_serve else {
         return Err(AppError::new(
             codes::AGENT_GATEWAY_CLI_NOT_FOUND,
             "Agent Gateway CLI is not installed",
         )
         .with_suggestion(install_hint()));
     };
+    let status = detect_client(id, Some(&serve_path)).await?;
     if !status.installed {
         return Err(AppError::new(
             codes::AGENT_GATEWAY_CLIENT_NOT_INSTALLED,
@@ -1412,7 +1453,6 @@ async fn mutate_mcp(
         }
         McpMutation::Proceed => {}
     }
-    let serve_path = serve.expect("checked above");
     let config = PathBuf::from(&status.config_path);
     let before = read_bytes(&config)?;
     let staging = tempfile::tempdir().map_err(|error| {
@@ -1445,7 +1485,7 @@ async fn mutate_mcp(
     } else {
         staged_entry
             .as_ref()
-            .is_some_and(|entry| entry_matches(entry, serve))
+            .is_some_and(|entry| entry_matches(entry, Some(&serve_path)))
     };
     if !staged_ok {
         return Err(AppError::new(
@@ -1460,7 +1500,7 @@ async fn mutate_mcp(
         )
     })?;
     commit_staged_config(&config, before.as_deref(), &staged)?;
-    let after = detect_client(id, serve).await?;
+    let after = detect_client(id, Some(&serve_path)).await?;
     Ok(AgentGatewayMcpResult {
         status: after,
         message: if remove {
@@ -1975,6 +2015,53 @@ mod tests {
         assert!(mcp_mutation(&status_with_entry(Some(conflicting), Some(serve)), true).is_err());
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bundled_cli_is_used_when_no_other_cli_exists() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("agentgate-serve");
+        std::fs::write(&script, "#!/bin/sh\necho 'agentgate 2.0.8'\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let probe = probe_cli_with_extra(
+            "muxlayer-missing-serve-binary",
+            None,
+            "MUXLAYER_TEST_MISSING_BIN",
+            "agentgate ",
+            Some(script.clone()),
+        )
+        .await;
+
+        assert_eq!(probe.path, Some(script));
+        assert_eq!(probe.detection, "bundled");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn explicit_path_does_not_fall_back_to_the_bundled_cli() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let bundled = dir.path().join("agentgate-serve");
+        std::fs::write(&bundled, "#!/bin/sh\necho 'agentgate 2.0.8'\n").unwrap();
+        std::fs::set_permissions(&bundled, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let missing = dir.path().join("missing");
+
+        let probe = probe_cli_with_extra(
+            "muxlayer-missing-serve-binary",
+            Some(&missing),
+            "MUXLAYER_TEST_MISSING_BIN",
+            "agentgate ",
+            Some(bundled),
+        )
+        .await;
+
+        assert!(!probe.installed);
+        assert!(probe.path.is_none());
+    }
+
     #[test]
     fn command_path_includes_the_program_runtime_directory() {
         let program = Path::new("/Users/me/.nvm/versions/node/v25.2.1/bin/pi");
@@ -2036,6 +2123,16 @@ mod tests {
             stage_mcp_config("codeleveler", dir.path(), Some(b"")).unwrap();
         assert_eq!(leveler_key, "LEVELER_HOME");
         assert!(leveler_path.ends_with("config.toml"));
+    }
+
+    #[test]
+    fn staged_config_creates_missing_parent_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".leveler").join("config.toml");
+
+        commit_staged_config(&path, None, b"staged").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "staged");
     }
 
     #[test]

@@ -26,6 +26,9 @@
   },
   "bundle": {
     "active": true,
+    "externalBin": [
+      "binaries/agentgate-serve"
+    ],
     "targets": [
       "dmg",
       "nsis",

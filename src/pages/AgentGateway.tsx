@@ -7,9 +7,11 @@ import {
   Download,
   FolderOpen,
   Loader2,
+  Play,
   Plug,
   RefreshCw,
   Server,
+  Square,
   Settings2,
   Sparkles,
   Terminal,
@@ -165,6 +167,7 @@ export function AgentGateway() {
   const [agentPath, setAgentPath] = useState("");
   const [editingCli, setEditingCli] = useState(false);
   const [cliPath, setCliPath] = useState("");
+  const [manager, setManager] = useState<api.GatewayManagerStatus | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -179,9 +182,23 @@ export function AgentGateway() {
     }
   }, []);
 
+  const loadManager = useCallback(async () => {
+    try {
+      setManager(await api.getGatewayManagerStatus());
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  }, []);
+
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    loadManager();
+    const timer = setInterval(loadManager, 5000);
+    return () => clearInterval(timer);
+  }, [loadManager]);
 
   const refreshService = useCallback(async () => {
     const service = await api.getAgentGatewayServiceStatus();
@@ -349,6 +366,7 @@ export function AgentGateway() {
             } else {
               await api.restartAgentGatewayService(true);
             }
+            await loadManager();
           },
           t(
             action === "stop"
@@ -364,9 +382,42 @@ export function AgentGateway() {
       "service:start",
       async () => {
         await api.startAgentGatewayService();
+        await loadManager();
       },
       t("agw.service.started")
     );
+
+  const startModelGateway = () =>
+    perform(
+      "manager:model:start",
+      async () => {
+        await api.startGateway();
+        await loadManager();
+      },
+      t("agw.gateway.model_started")
+    );
+
+  const stopModelGateway = () =>
+    perform(
+      "manager:model:stop",
+      async () => {
+        await api.stopGateway();
+        await loadManager();
+      },
+      t("agw.gateway.model_stopped")
+    );
+
+  const setAgentAutoStart = async (enabled: boolean) => {
+    setBusy("manager:auto");
+    try {
+      await api.setAgentGatewayAutoStart(enabled);
+      await loadManager();
+    } catch (err) {
+      toast("error", errorMessage(err));
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const saveCliPath = async () => {
     setBusy("cli");
@@ -477,6 +528,143 @@ export function AgentGateway() {
           <span className="font-mono text-text-muted">{overview.data_dir}</span>
         </div>
       </div>
+
+      {manager && (
+        <div className="surface-panel p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-sm font-semibold text-text-primary">
+                {t("agw.gateway.title")}
+              </h2>
+              <p className="mt-1 text-xs text-text-muted">
+                {t("agw.gateway.desc")}
+              </p>
+            </div>
+            <span className="font-mono text-[11px] text-text-muted">
+              {manager.bundled_cli
+                ? `${t("agw.gateway.bundled_cli")}: ${manager.bundled_cli}`
+                : t("agw.gateway.no_bundled_cli")}
+            </span>
+          </div>
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
+            <div className="rounded-lg border border-border bg-card-secondary p-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm font-medium text-text-primary">
+                  {t("agw.gateway.model")}
+                </span>
+                <StatusBadge
+                  variant={
+                    manager.model?.running
+                      ? "success"
+                      : manager.model_error
+                        ? "error"
+                        : "muted"
+                  }
+                >
+                  {manager.model?.running
+                    ? t("agw.service.running")
+                    : manager.model_error
+                      ? t("agw.service.error")
+                      : t("agw.service.stopped")}
+                </StatusBadge>
+              </div>
+              <p className="mt-2 font-mono text-[11px] text-text-muted">
+                {manager.model
+                  ? `${manager.model.host}:${manager.model.port}`
+                  : manager.model_error ?? t("agw.common.none")}
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {!manager.model?.running && (
+                  <button
+                    className="btn-secondary"
+                    onClick={startModelGateway}
+                    disabled={busy !== null}
+                  >
+                    {busy === "manager:model:start" ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Play className="h-3.5 w-3.5" />
+                    )}
+                    {t("agw.service.start")}
+                  </button>
+                )}
+                {manager.model?.running && (
+                  <button
+                    className="btn-secondary"
+                    onClick={stopModelGateway}
+                    disabled={busy !== null}
+                  >
+                    <Square className="h-3.5 w-3.5" />
+                    {t("agw.service.stop")}
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="rounded-lg border border-border bg-card-secondary p-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm font-medium text-text-primary">
+                  {t("agw.gateway.agent")}
+                </span>
+                <StatusBadge
+                  variant={
+                    manager.agent.running
+                      ? "success"
+                      : manager.agent.error
+                        ? "error"
+                        : "muted"
+                  }
+                >
+                  {manager.agent.running
+                    ? t("agw.service.running")
+                    : manager.agent.error
+                      ? t("agw.service.error")
+                      : t("agw.service.stopped")}
+                </StatusBadge>
+              </div>
+              <p className="mt-2 font-mono text-[11px] text-text-muted">
+                {manager.agent.service_version ??
+                  manager.agent.error ??
+                  t("agw.common.none")}
+              </p>
+              <label className="mt-2 flex items-center gap-2 text-xs text-text-secondary">
+                <input
+                  type="checkbox"
+                  checked={manager.agent_auto_start}
+                  disabled={busy !== null}
+                  onChange={(event) => setAgentAutoStart(event.target.checked)}
+                />
+                {t("agw.gateway.auto_start")}
+              </label>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {!manager.agent.running && (
+                  <button
+                    className="btn-secondary"
+                    onClick={startService}
+                    disabled={busy !== null || !manager.agent.installed}
+                  >
+                    {busy === "service:start" ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Play className="h-3.5 w-3.5" />
+                    )}
+                    {t("agw.service.start")}
+                  </button>
+                )}
+                {manager.agent.running && (
+                  <button
+                    className="btn-secondary"
+                    onClick={() => askService("stop")}
+                    disabled={busy !== null}
+                  >
+                    <Square className="h-3.5 w-3.5" />
+                    {t("agw.service.stop")}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {cliMissing && (
         <div className="surface-panel border-warning/30 bg-warning-soft/40 p-4">

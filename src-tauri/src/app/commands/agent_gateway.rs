@@ -135,12 +135,13 @@ pub async fn remove_agent_gateway_mcp(
 
 #[tauri::command]
 #[specta::specta]
-pub fn get_agent_gateway_mcp_copy(
+pub async fn get_agent_gateway_mcp_copy(
     client: String,
     state: State<'_, AppState>,
 ) -> Result<management::AgentGatewayMcpCopy, AppError> {
-    let serve = management::load_serve_setting(&state.db)?;
-    management::mcp_copy(&client, serve.as_deref())
+    let setting = management::load_serve_setting(&state.db)?;
+    let cli = management::probe_serve(setting.as_deref()).await;
+    management::mcp_copy(&client, cli.path.as_deref())
 }
 
 #[tauri::command]

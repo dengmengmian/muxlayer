@@ -61,6 +61,9 @@ jobs:
           workspaces: src-tauri
           key: preflight-fixture
 
+      - name: Prepare bundled Agent Gateway CLI
+        run: bash scripts/prepare-desktop-cli.sh
+
       - name: Offline capability + protocol fixture tests
         working-directory: src-tauri
         run: |
@@ -220,6 +223,15 @@ jobs:
             echo "::error::TAURI_SIGNING_PRIVATE_KEY secret is required because createUpdaterArtifacts is enabled"
             exit 1
           fi
+
+      - name: Prepare bundled Agent Gateway CLI
+        shell: bash
+        run: |
+          TARGET="${{ matrix.rust_target }}"
+          if [ -z "$TARGET" ]; then
+            TARGET="$(rustc -vV | sed -n 's/^host: //p')"
+          fi
+          bash scripts/prepare-desktop-cli.sh "$TARGET"
 
       # 这一步 env 里有签名私钥 / Apple 证书密码 / 公证 key,action 必须钉死 commit SHA。
       # 传 releaseId 后 tauri-action 只往这个草稿上传,不再自己建 release。

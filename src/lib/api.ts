@@ -73,6 +73,7 @@ export type {
   ProviderTestResult,
   ProviderSpeedReport,
   GatewayStatus,
+  GatewayManagerStatus,
   GatewaySettings,
   UpdateGatewaySettingsInput,
   WakeStatus,
@@ -244,6 +245,10 @@ export const getWakeStatus = () => unwrap(bindings.getWakeStatus());
 export const startGateway = () => unwrap(bindings.startGateway());
 export const stopGateway = () => unwrap(bindings.stopGateway());
 export const restartGateway = () => unwrap(bindings.restartGateway());
+export const getGatewayManagerStatus = () =>
+  unwrap(bindings.getGatewayManagerStatus());
+export const setAgentGatewayAutoStart = (enabled: boolean) =>
+  unwrap(bindings.setAgentGatewayAutoStart(enabled));
 
 // ── Logs ───────────────────────────────────────────────────────
 

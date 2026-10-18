@@ -65,3 +65,5 @@ openspec/
 
 # 本地开发笔记，不提交
 lessons.md
+
+src-tauri/binaries/

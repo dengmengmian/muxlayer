@@ -116,6 +116,14 @@ describe("AgentGateway", () => {
     localStorage.clear();
     localStorage.setItem("agentgate_locale", "en");
     vi.mocked(api.getAgentGatewayOverview).mockResolvedValue(overview());
+    vi.mocked(api.getGatewayManagerStatus).mockResolvedValue({
+      model: null,
+      model_error: null,
+      model_auto_start: true,
+      agent: overview().service,
+      agent_auto_start: true,
+      bundled_cli: "/Users/me/.muxlayer/bin/agentgate-serve",
+    });
     vi.mocked(api.setAgentGatewayAgentPath).mockResolvedValue({
       status: agent("codex-native", { configured_path: "/new/codex" }),
       requires_service_restart: false,
@@ -123,6 +131,7 @@ describe("AgentGateway", () => {
     vi.mocked(api.setAgentGatewayServePath).mockResolvedValue(
       overview().cli
     );
+    vi.mocked(api.setAgentGatewayAutoStart).mockResolvedValue(true);
     vi.mocked(api.testAgentGatewayAgent).mockResolvedValue({
       success: true,
       agent: "codex-native",
@@ -228,6 +237,44 @@ describe("AgentGateway", () => {
         "codeleveler",
         true
       )
+    );
+  });
+
+  it("shows Model Gateway and Agent Gateway status independently", async () => {
+    vi.mocked(api.getGatewayManagerStatus).mockResolvedValue({
+      model: {
+        running: true,
+        host: "127.0.0.1",
+        port: 9090,
+        active_provider: "DeepSeek",
+        input_protocol: "responses",
+        output_protocol: "chat",
+        started_at: "2026-10-18T00:00:00Z",
+      },
+      model_error: null,
+      model_auto_start: true,
+      agent: {
+        ...overview().service,
+        running: true,
+        error: null,
+      },
+      agent_auto_start: false,
+      bundled_cli: "/Users/me/.muxlayer/bin/agentgate-serve",
+    });
+
+    renderWithProviders(<AgentGateway />, { route: "/agent-gateway" });
+
+    expect(await screen.findByText("Gateway")).toBeInTheDocument();
+    expect(screen.getByText("Model Gateway")).toBeInTheDocument();
+    expect(screen.getAllByText("Agent Gateway").length).toBeGreaterThan(0);
+    expect(screen.getByText("127.0.0.1:9090")).toBeInTheDocument();
+    const autoStart = screen.getByLabelText(
+      "Start Agent Gateway with Desktop"
+    );
+    expect(autoStart).not.toBeChecked();
+    fireEvent.click(autoStart);
+    await waitFor(() =>
+      expect(api.setAgentGatewayAutoStart).toHaveBeenCalledWith(true)
     );
   });
 

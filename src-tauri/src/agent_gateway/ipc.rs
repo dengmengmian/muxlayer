@@ -85,6 +85,7 @@ fn short_hash(text: &str) -> String {
 impl ServicePaths {
     /// True when something is actually accepting connections on the service socket.
     /// A leftover socket file after shutdown must not be reported as a service error.
+    #[cfg(feature = "desktop")]
     pub(crate) fn is_live(&self) -> bool {
         transport::probe(&self.socket)
     }

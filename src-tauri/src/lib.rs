@@ -160,6 +160,8 @@ fn build_specta() -> tauri_specta::Builder<tauri::Wry> {
             commands::start_gateway,
             commands::stop_gateway,
             commands::restart_gateway,
+            commands::get_gateway_manager_status,
+            commands::set_agent_gateway_auto_start,
             // Logs
             commands::list_request_logs,
             commands::list_log_models,
@@ -694,21 +696,30 @@ pub fn run() {
             // ── System Tray ──
             setup_tray(app)?;
 
-            // ── Auto-start Gateway if enabled ──
+            // ── Unified Gateway startup ──
+            // The bundled CLI is installed to a stable per-user path first, then
+            // the two independent gateways are started according to their own
+            // settings. A failure in one never blocks the other.
             {
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    // Small delay to let app fully initialize
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                    let state: tauri::State<'_, AppState> = app_handle.state();
-                    let should_start = state.db.get()
-                        .ok()
-                        .and_then(|conn| storage::gateway_settings::get(&conn).ok())
-                        .map(|s| s.auto_start)
-                        .unwrap_or(false);
-                    if should_start {
-                        let _ = commands::start_gateway(app_handle.clone(), state).await;
+                    match tauri::async_runtime::spawn_blocking(
+                        crate::app::bundled_cli::ensure_for_startup,
+                    )
+                    .await
+                    {
+                        Ok(Ok(Some(path))) => {
+                            eprintln!("[gateway-manager] managed CLI: {}", path.display())
+                        }
+                        Ok(Ok(None)) => {}
+                        Ok(Err(error)) => {
+                            eprintln!("[gateway-manager] managed CLI unavailable: {error}")
+                        }
+                        Err(error) => eprintln!("[gateway-manager] managed CLI task failed: {error}"),
                     }
+                    // Small delay to let app fully initialize.
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    crate::app::gateway_manager::start_enabled(app_handle).await;
                 });
             }
 
