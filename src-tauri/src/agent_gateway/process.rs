@@ -131,7 +131,9 @@ kill -KILL 0
             .process_group(0);
         #[cfg(target_os = "macos")]
         supervisor.stderr(std::process::Stdio::inherit());
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(all(not(target_os = "macos"), test))]
+        supervisor.stderr(std::process::Stdio::inherit());
+        #[cfg(all(not(target_os = "macos"), not(test)))]
         supervisor.stderr(std::process::Stdio::null());
         unsafe {
             supervisor.pre_exec(move || {

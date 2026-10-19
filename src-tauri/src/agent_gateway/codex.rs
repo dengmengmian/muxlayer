@@ -986,7 +986,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("codex");
-        std::fs::write(&script,r##"#!/usr/bin/env python3
+        std::fs::write(&script,r##"#!/usr/bin/python3
 import sys,json,os,time
 args=sys.argv[1:]; conf={}
 for n,x in enumerate(args):

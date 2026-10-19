@@ -1767,7 +1767,7 @@ pub(crate) async fn diagnostics(
 ) -> Result<String, AppError> {
     let overview = overview(db_dir, serve_setting).await?;
     let mut lines = vec![
-        format!("MuxLayer Agent Gateway diagnostics"),
+        "MuxLayer Agent Gateway diagnostics".to_string(),
         format!("data_dir: {}", overview.data_dir),
         format!(
             "cli: {} ({})",
