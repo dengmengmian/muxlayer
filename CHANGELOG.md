@@ -1,5 +1,16 @@
 # Changelog / 更新日志
 
+## [2.0.10] - 2026-10-19
+
+### Fixed / 修复
+
+- **Linux Agent Gateway 启动修复 / Linux Agent Gateway startup** —— On Linux, `/bin/sh` is dash, which redirects a background job's stdin to `/dev/null`. Codex and Claude Code children exited immediately after launch. The supervisor now preserves stdin through a dedicated fd. Linux 下 `/bin/sh` 是 dash，后台任务的 stdin 会被接到 `/dev/null`，Codex / Claude Code 子进程启动后立即退出。Supervisor 现在通过独立 fd 传递 stdin。
+- **依赖安全更新 / Dependency security updates** —— Upgraded `zip` to 9.0.5, `rustls` to 0.23.46, and `tauri-plugin-updater` to 2.14.0, fixing known RustSec vulnerabilities. 升级 `zip`、`rustls` 和 `tauri-plugin-updater`，修复已知 RustSec 漏洞。
+
+### Notes / 说明
+
+- Agent Gateway is still a test feature: interfaces and behavior may change, and it is not recommended for production-critical workflows. Agent Gateway 仍是测试性功能：接口和行为可能调整，不建议用于关键生产流程。
+
 ## [2.0.9] - 2026-10-19
 
 ### Added / 新增
