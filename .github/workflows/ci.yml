@@ -158,6 +158,11 @@ jobs:
         working-directory: src-tauri
         run: cargo test --no-default-features --features cli --lib
 
+      # 下面的 fixture 用默认 desktop feature 编译，tauri.conf.json 的 externalBin
+      # 要求构建前存在 host 平台 sidecar。
+      - name: Prepare bundled Agent Gateway CLI
+        run: bash scripts/prepare-desktop-cli.sh
+
       - name: Run capability + protocol fixture tests
         working-directory: src-tauri
         run: |
