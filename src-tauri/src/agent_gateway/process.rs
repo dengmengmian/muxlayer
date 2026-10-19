@@ -97,8 +97,12 @@ pub(crate) fn spawn(command: &mut Command) -> std::io::Result<OwnedChild> {
             .arg("-c")
             .arg(
                 r#"
-"$@" <&0 3<&- &
+# dash 会把后台任务的 stdin 强制接到 /dev/null，先把调用方 stdin 存到 fd 4，
+# 子进程再从 fd 4 取，避免 Linux 上 CLI 一启动就收到 EOF。
+exec 4<&0
+"$@" <&4 4<&- 3<&- &
 agent=$!
+exec 4<&-
 (
     trap '' TERM
     IFS= read -r signal <&3
