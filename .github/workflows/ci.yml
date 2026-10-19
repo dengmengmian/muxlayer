@@ -194,6 +194,11 @@ jobs:
           workspaces: src-tauri
           key: desktop-tests
 
+      # tauri.conf.json 的 externalBin 要求构建前存在 host 平台的 sidecar；
+      # 桌面构建脚本在 clippy / test 阶段也会检查这个资源。
+      - name: Prepare bundled Agent Gateway CLI
+        run: bash scripts/prepare-desktop-cli.sh
+
       # fixture-tests 的 clippy / lib test 只覆盖 cli feature,桌面代码(src-tauri/src/app/**、lib.rs、
       # #[tauri::command])之前从没被 lint / 测过。这里用默认 desktop feature 再跑一遍。
       - name: Clippy (desktop, all targets)

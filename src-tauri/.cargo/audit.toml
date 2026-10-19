@@ -4,4 +4,13 @@
 # 上游发版后应删除本豁免并 cargo update -p plist。
 # 实际暴露面低:plist 只解析本机 tauri 打包产物/系统配置,不接收攻击者可控 XML。
 # (另一条链 tauri-winrt-notification 已升 0.7.3 修复。)
-ignore = ["RUSTSEC-2026-0194", "RUSTSEC-2026-0195"]
+# tauri-plugin-updater 2.14.0 的 Windows 专用 zip 4.6.1 仍固定 ^4，三个 RUSTSEC 只在
+# 解压不可信 zip 时触发。更新包先经过 Tauri 签名校验且只来自官方 Release，不对公网输入解压。
+# 直接依赖 zip 已升 9.0.5；上游 updater 切换 zip 9 后删除这三条豁免。
+ignore = [
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+    "RUSTSEC-2026-0367",
+    "RUSTSEC-2026-0368",
+    "RUSTSEC-2026-0369",
+]

@@ -21,7 +21,8 @@ function agent(
       id === "codex-native"
         ? "/opt/homebrew/bin/codex"
         : "/Users/me/.local/bin/claude",
-    version: id === "codex-native" ? "codex-cli 0.162.1" : "2.1.302 (Claude Code)",
+    version:
+      id === "codex-native" ? "codex-cli 0.162.1" : "2.1.302 (Claude Code)",
     state: "available",
     available: true,
     auth_state: "authenticated",
@@ -51,7 +52,9 @@ function client(
     version: id === "pi" ? "1.3.0" : "1.0.16",
     executable: id === "pi" ? "/usr/local/bin/pi" : "/opt/homebrew/bin/leveler",
     config_path:
-      id === "pi" ? "/Users/me/.pi/agent/mcp.json" : "/Users/me/.leveler/config.toml",
+      id === "pi"
+        ? "/Users/me/.pi/agent/mcp.json"
+        : "/Users/me/.leveler/config.toml",
     config_exists: true,
     mcp_name: "muxlayer",
     config_status: "not_configured",
@@ -238,7 +241,9 @@ describe("AgentGateway product flow", () => {
     expect(screen.queryByText("codex-cli 0.162.1")).not.toBeInTheDocument();
     fireEvent.click(screen.getAllByText("Details")[0]);
     expect(await screen.findByText("codex-cli 0.162.1")).toBeInTheDocument();
-    expect(screen.getAllByText("/opt/homebrew/bin/codex").length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText("/opt/homebrew/bin/codex").length
+    ).toBeGreaterThan(0);
   });
 
   it("saves a manual agent path from details", async () => {
@@ -294,7 +299,9 @@ describe("AgentGateway product flow", () => {
 
     renderWithProviders(<AgentGateway />, { route: "/agent-gateway" });
 
-    expect(await screen.findByText("Verification required")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Verification required")
+    ).toBeInTheDocument();
     expect(screen.getAllByText("Test connection")[0]).toBeEnabled();
   });
 
@@ -357,7 +364,9 @@ describe("AgentGateway product flow", () => {
       screen.getByText(/This does not necessarily mean the account is invalid/)
     ).toBeInTheDocument();
     expect(screen.getByText("Technical details")).toBeInTheDocument();
-    expect(screen.getAllByText(/unexpected status 401/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/unexpected status 401/).length).toBeGreaterThan(
+      0
+    );
   });
 
   it("distinguishes a configured client from a client that cannot run", async () => {
@@ -428,11 +437,17 @@ describe("AgentGateway product flow", () => {
 
     renderWithProviders(<AgentGateway />, { route: "/agent-gateway" });
 
-    expect(await screen.findByText("Agent service is healthy")).toBeInTheDocument();
-    expect(screen.queryByText("ERROR: database is locked")).not.toBeInTheDocument();
+    expect(
+      await screen.findByText("Agent service is healthy")
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("ERROR: database is locked")
+    ).not.toBeInTheDocument();
     fireEvent.click(screen.getByText("Advanced settings and diagnostics"));
     expect(
-      screen.getByText("Historical error (current status above takes precedence)")
+      screen.getByText(
+        "Historical error (current status above takes precedence)"
+      )
     ).toBeInTheDocument();
     expect(screen.getByText("ERROR: database is locked")).toBeInTheDocument();
   });

@@ -71,7 +71,9 @@ export function Topbar({ onOpenCmdK }: { onOpenCmdK?: () => void }) {
           <div
             role="status"
             aria-label={
-              status.running ? t("topbar.model_running") : t("topbar.model_stopped")
+              status.running
+                ? t("topbar.model_running")
+                : t("topbar.model_stopped")
             }
             className={`flex items-center gap-2 rounded-full border px-3 py-1 text-xs ${
               status.running
@@ -85,7 +87,9 @@ export function Topbar({ onOpenCmdK }: { onOpenCmdK?: () => void }) {
               }`}
             />
             <span className="font-medium">
-              {status.running ? t("topbar.model_running") : t("topbar.model_stopped")}
+              {status.running
+                ? t("topbar.model_running")
+                : t("topbar.model_stopped")}
             </span>
             {status.running && (
               <span className="font-mono text-text-secondary">

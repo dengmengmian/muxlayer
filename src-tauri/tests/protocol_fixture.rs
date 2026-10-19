@@ -1004,13 +1004,10 @@ async fn raw_http(harness: &GatewayHarness, request: &str) -> String {
         .await
         .expect("write request");
     let mut buf = vec![0u8; 8192];
-    let n = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        stream.read(&mut buf),
-    )
-    .await
-    .expect("gateway must answer without waiting for the request body")
-    .expect("read response");
+    let n = tokio::time::timeout(std::time::Duration::from_secs(5), stream.read(&mut buf))
+        .await
+        .expect("gateway must answer without waiting for the request body")
+        .expect("read response");
     String::from_utf8_lossy(&buf[..n]).into_owned()
 }
 

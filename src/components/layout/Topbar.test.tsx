@@ -82,7 +82,9 @@ describe("Topbar", () => {
 
     renderWithProviders(<Topbar />, { route: "/" });
 
-    const indicator = await screen.findByRole("status", { name: "Model Gateway running" });
+    const indicator = await screen.findByRole("status", {
+      name: "Model Gateway running",
+    });
     expect(indicator).toHaveClass("text-info");
     expect(indicator).not.toHaveClass("text-success");
   });
@@ -99,7 +101,9 @@ describe("Topbar", () => {
 
     renderWithProviders(<Topbar />, { route: "/" });
 
-    expect(await screen.findByText("Model Gateway not started")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Model Gateway not started")
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /Diagnostics/i })
     ).toBeInTheDocument();

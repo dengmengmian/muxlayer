@@ -1403,24 +1403,30 @@ export const zh: Record<TranslationKey, string> = {
   // ── Agent Gateway ──
   "nav.agent_gateway": "Agent Gateway",
   "agw.ux.headline": "让你的 AI 助手使用 Codex 和 Claude Code",
-  "agw.ux.intro": "CodeLeveler 或 Pi 通过 MCP 调用本机的 Codex / Claude Code，完成只读代码分析。按下面三步完成配置即可使用。",
+  "agw.ux.intro":
+    "CodeLeveler 或 Pi 通过 MCP 调用本机的 Codex / Claude Code，完成只读代码分析。按下面三步完成配置即可使用。",
   "agw.ux.service_healthy": "Agent 服务运行正常",
   "agw.ux.service_stopped": "Agent 服务未运行",
   "agw.ux.service_error": "Agent 服务需要处理",
-  "agw.ux.service_note": "Agent 服务负责在本机执行任务，关闭窗口不会中断正在运行的任务。",
+  "agw.ux.service_note":
+    "Agent 服务负责在本机执行任务，关闭窗口不会中断正在运行的任务。",
   "agw.ux.cli_missing_title": "未找到 Agent Gateway CLI",
-  "agw.ux.cli_missing_desc": "Desktop 通常已内置 CLI。如果这里没有找到，请使用内置版本或手动指定路径。",
+  "agw.ux.cli_missing_desc":
+    "Desktop 通常已内置 CLI。如果这里没有找到，请使用内置版本或手动指定路径。",
   "agw.ux.cli_missing_short": "尚未找到 CLI",
   "agw.ux.cli_placeholder": "Agent Gateway CLI 绝对路径",
   "agw.ux.cli_title": "Agent Gateway CLI",
   "agw.ux.step1_title": "① 选择可用 Agent",
-  "agw.ux.step1_desc": "先确认 Codex 或 Claude Code 能在这台 Mac 上真实执行。检测到 CLI 不等于已经可用。",
+  "agw.ux.step1_desc":
+    "先确认 Codex 或 Claude Code 能在这台 Mac 上真实执行。检测到 CLI 不等于已经可用。",
   "agw.ux.step2_title": "② 连接到你的应用",
-  "agw.ux.step2_desc": "把 MuxLayer 的 MCP 配置写入 CodeLeveler 或 Pi。配置完成后，客户端即可调用 Agent。",
+  "agw.ux.step2_desc":
+    "把 MuxLayer 的 MCP 配置写入 CodeLeveler 或 Pi。配置完成后，客户端即可调用 Agent。",
   "agw.ux.step3_title": "③ 开始使用",
   "agw.ux.step3_desc": "打开已连接的客户端，用一句自然语言指令调用 Agent。",
   "agw.ux.no_agent_title": "尚未检测到可用的 Agent",
-  "agw.ux.no_agent_desc": "请先安装 Codex 或 Claude Code，安装后回到本页点击「重新检测」。如果已经安装但未找到，可以在详细信息中手动指定可执行路径。",
+  "agw.ux.no_agent_desc":
+    "请先安装 Codex 或 Claude Code，安装后回到本页点击「重新检测」。如果已经安装但未找到，可以在详细信息中手动指定可执行路径。",
   "agw.ux.install_codex": "安装 Codex",
   "agw.ux.install_claude": "安装 Claude Code",
   "agw.ux.install_guide": "查看安装方式",
@@ -1441,15 +1447,21 @@ export const zh: Record<TranslationKey, string> = {
   "agw.ux.tasks": "运行中的任务",
   "agw.ux.data_dir": "数据目录",
   "agw.ux.unknown_source": "尚未识别模型来源",
-  "agw.ux.agent.configured_hint": "配置检查通过，尚未进行真实调用。建议先测试连接。",
+  "agw.ux.agent.configured_hint":
+    "配置检查通过，尚未进行真实调用。建议先测试连接。",
   "agw.ux.agent.verified_hint": "真实调用已通过，当前可以开始使用。",
   "agw.ux.agent.available_hint": "Agent 已就绪，可以接受真实测试或开始使用。",
-  "agw.ux.agent.unverified_hint": "检测到 CLI，但认证状态无法确认。建议先点击「测试连接」做一次真实调用。",
-  "agw.ux.agent.not_configured_hint": "尚未配置模型或认证。请先完成 Codex / Claude Code 的登录或 API 配置。",
-  "agw.ux.agent.not_executable_hint": "已经找到文件，但当前环境无法执行。请检查安装方式或手动指定可执行路径。",
-  "agw.ux.agent.not_installed_hint": "未检测到可执行文件。安装后点击「重新检测」。",
+  "agw.ux.agent.unverified_hint":
+    "检测到 CLI，但认证状态无法确认。建议先点击「测试连接」做一次真实调用。",
+  "agw.ux.agent.not_configured_hint":
+    "尚未配置模型或认证。请先完成 Codex / Claude Code 的登录或 API 配置。",
+  "agw.ux.agent.not_executable_hint":
+    "已经找到文件，但当前环境无法执行。请检查安装方式或手动指定可执行路径。",
+  "agw.ux.agent.not_installed_hint":
+    "未检测到可执行文件。安装后点击「重新检测」。",
   "agw.ux.agent.error_hint": "当前状态无法确认，请查看详细信息或重新检测。",
-  "agw.ux.agent.test_failed_hint": "最近一次真实调用未通过，请根据下方提示处理后重试。",
+  "agw.ux.agent.test_failed_hint":
+    "最近一次真实调用未通过，请根据下方提示处理后重试。",
   "agw.ux.agent_state.configured": "配置就绪",
   "agw.ux.agent_state.available": "可用",
   "agw.ux.agent_state.unverified": "需要验证",
@@ -1460,37 +1472,52 @@ export const zh: Record<TranslationKey, string> = {
   "agw.ux.agent_state.test_failed": "测试未通过",
   "agw.ux.test_passed": "测试通过",
   "agw.ux.test_failed": "测试未通过",
-  "agw.ux.test_error_auth_hint": "这不一定代表账号失效，可能是当前环境没有提供有效凭据。请检查 Codex / Claude Code 的登录状态和模型配置。",
+  "agw.ux.test_error_auth_hint":
+    "这不一定代表账号失效，可能是当前环境没有提供有效凭据。请检查 Codex / Claude Code 的登录状态和模型配置。",
   "agw.ux.technical_details": "技术详情",
-  "agw.ux.client.configured_hint": "MCP 配置已写入。配置文件存在不等于客户端在线，请在客户端内确认连接。",
-  "agw.ux.client.stale_hint": "配置仍在，但指向旧的 CLI 路径。请重新配置以使用当前版本。",
-  "agw.ux.client.conflict_hint": "发现同名 MCP 条目，但不是本应用写入的。为避免覆盖其它配置，未做修改。",
-  "agw.ux.client.unavailable_hint": "已安装客户端，但当前环境无法执行。请检查运行环境或安装方式。",
+  "agw.ux.client.configured_hint":
+    "MCP 配置已写入。配置文件存在不等于客户端在线，请在客户端内确认连接。",
+  "agw.ux.client.stale_hint":
+    "配置仍在，但指向旧的 CLI 路径。请重新配置以使用当前版本。",
+  "agw.ux.client.conflict_hint":
+    "发现同名 MCP 条目，但不是本应用写入的。为避免覆盖其它配置，未做修改。",
+  "agw.ux.client.unavailable_hint":
+    "已安装客户端，但当前环境无法执行。请检查运行环境或安装方式。",
   "agw.ux.client.not_installed_hint": "尚未检测到客户端。安装后重新检测。",
   "agw.ux.client.not_configured_hint": "尚未写入 MuxLayer MCP 配置。",
-  "agw.ux.client.old_codeleveler": "当前 CodeLeveler 版本较旧，部分 Agent 调用错误可能无法正确显示。建议升级到兼容版本。",
+  "agw.ux.client.old_codeleveler":
+    "当前 CodeLeveler 版本较旧，部分 Agent 调用错误可能无法正确显示。建议升级到兼容版本。",
   "agw.ux.view_upgrade": "查看升级说明",
   "agw.ux.reconfigure": "重新配置",
   "agw.ux.copy_check_command": "复制检查命令",
-  "agw.ux.client.leveler_verify_note": "该命令只检查 Leveler 的配置文件；真实连接请在 CodeLeveler 内发一次请求确认。",
-  "agw.ux.client.old_codeleveler_detail": "需要升级到包含 MCP 错误处理修复的正式 CodeLeveler 版本；MuxLayer 不能原地修复该客户端缺陷。",
+  "agw.ux.client.leveler_verify_note":
+    "该命令只检查 Leveler 的配置文件；真实连接请在 CodeLeveler 内发一次请求确认。",
+  "agw.ux.client.old_codeleveler_detail":
+    "需要升级到包含 MCP 错误处理修复的正式 CodeLeveler 版本；MuxLayer 不能原地修复该客户端缺陷。",
   "agw.ux.copy_verify_command": "复制验证命令",
-  "agw.ux.client.verify_note": "可在对应客户端中运行上面的命令确认 MCP 是否连接成功；只有真实成功才视为验证通过。",
+  "agw.ux.client.verify_note":
+    "可在对应客户端中运行上面的命令确认 MCP 是否连接成功；只有真实成功才视为验证通过。",
   "agw.ux.start_no_agent": "还没有可用的 Agent。请先完成第①步的安装和测试。",
   "agw.ux.start_no_client": "Agent 已就绪。请先在第②步连接 CodeLeveler 或 Pi。",
-  "agw.ux.start_stale_client": "客户端配置需要更新。请先在第②步重新配置，再开始使用。",
-  "agw.ux.start_ready": "现在可以在 CodeLeveler 或 Pi 中使用 Agent Gateway。打开对应客户端后输入：",
-  "agw.ux.start_note": "示例使用 muxlayer 的 agent_list / agent_run；Agent 只做只读分析，不会修改文件。",
-  "agw.ux.start_codeleveler_warning": "CodeLeveler 版本较旧，部分错误可能无法正确显示；建议先升级。",
+  "agw.ux.start_stale_client":
+    "客户端配置需要更新。请先在第②步重新配置，再开始使用。",
+  "agw.ux.start_ready":
+    "现在可以在 CodeLeveler 或 Pi 中使用 Agent Gateway。打开对应客户端后输入：",
+  "agw.ux.start_note":
+    "示例使用 muxlayer 的 agent_list / agent_run；Agent 只做只读分析，不会修改文件。",
+  "agw.ux.start_codeleveler_warning":
+    "CodeLeveler 版本较旧，部分错误可能无法正确显示；建议先升级。",
   "agw.ux.copy_example": "复制指令",
   "agw.ux.advanced_title": "高级设置与诊断",
   "agw.ux.service_title": "Agent Service",
   "agw.ux.historical_error": "历史错误记录（当前状态以上方为准）",
   "agw.ux.diagnostics_title": "诊断信息",
   "agw.ux.custom_mcp_title": "自定义 MCP 配置",
-  "agw.ux.error.node": "检测到 Pi，但当前环境没有找到 Node.js。请确认 Node 可用，或使用手动路径。",
+  "agw.ux.error.node":
+    "检测到 Pi，但当前环境没有找到 Node.js。请确认 Node 可用，或使用手动路径。",
   "agw.ux.diagnostics_copied": "诊断信息已复制。",
-  "agw.ux.error.auth": "认证未通过。请检查 Codex / Claude Code 的登录状态和模型配置。",
+  "agw.ux.error.auth":
+    "认证未通过。请检查 Codex / Claude Code 的登录状态和模型配置。",
   "agw.ux.error.permission": "没有权限完成操作。请检查文件或目录权限。",
   "agw.ux.error.rate": "请求过于频繁，请稍后再试。",
   "agw.ux.error.timeout": "操作等待超时，请稍后重试。",
@@ -1499,11 +1526,13 @@ export const zh: Record<TranslationKey, string> = {
   "agw.ux.error.db": "服务暂时无法访问数据，请稍后重试。",
   "agw.ux.error.service_start": "Agent 服务启动失败，请查看诊断信息后重试。",
   "agw.ux.error.already_running": "服务已经在运行。",
-  "agw.ux.error.generic": "操作未完成，请重试；需要时可展开诊断信息查看技术原因。",
+  "agw.ux.error.generic":
+    "操作未完成，请重试；需要时可展开诊断信息查看技术原因。",
   "agw.connections.error": "配置错误",
   "agw.title": "Agent Gateway",
   "agw.gateway.title": "Gateway",
-  "agw.gateway.desc": "Model Gateway 与 Agent Gateway 独立运行，由 Desktop 统一协调启动。",
+  "agw.gateway.desc":
+    "Model Gateway 与 Agent Gateway 独立运行，由 Desktop 统一协调启动。",
   "agw.gateway.model": "Model Gateway",
   "agw.gateway.agent": "Agent Gateway",
   "agw.gateway.auto_start": "随 Desktop 启动 Agent Gateway",
@@ -1511,19 +1540,22 @@ export const zh: Record<TranslationKey, string> = {
   "agw.gateway.no_bundled_cli": "未找到内置 CLI",
   "agw.gateway.model_started": "Model Gateway 已启动。",
   "agw.gateway.model_stopped": "Model Gateway 已停止。",
-  "agw.subtitle": "管理 Codex / Claude Code，接入 MCP 客户端，并查看本地 Agent Service 状态。",
+  "agw.subtitle":
+    "管理 Codex / Claude Code，接入 MCP 客户端，并查看本地 Agent Service 状态。",
   "agw.tab.agents": "Agents",
   "agw.tab.connections": "Connections",
   "agw.tab.settings": "Settings",
   "agw.loading": "正在检测本机 Agent…",
   "agw.reload": "重新检测",
   "agw.cli_missing_title": "未找到 Agent Gateway CLI",
-  "agw.cli_missing_desc": "请先安装 headless agentgate-serve CLI。Desktop 只展示真实状态，不会伪造服务，也不会自动安装。",
+  "agw.cli_missing_desc":
+    "请先安装 headless agentgate-serve CLI。Desktop 只展示真实状态，不会伪造服务，也不会自动安装。",
   "agw.download": "打开下载页面",
   "agw.set_manual_path": "手动设置 CLI 路径",
   "agw.auto_detect": "自动检测",
   "agw.agents.title": "本机 Agent",
-  "agw.agents.desc": "以下均为本机真实检测结果。找到 CLI 不代表可用，必须能正常执行并具备有效配置。",
+  "agw.agents.desc":
+    "以下均为本机真实检测结果。找到 CLI 不代表可用，必须能正常执行并具备有效配置。",
   "agw.agent.installed": "安装",
   "agw.agent.not_installed": "未安装",
   "agw.agent.version": "版本",
@@ -1536,7 +1568,8 @@ export const zh: Record<TranslationKey, string> = {
   "agw.agent.status": "状态",
   "agw.agent.test": "测试连接",
   "agw.agent.test_title": "测试该 Agent？",
-  "agw.agent.test_message": "这会通过 Agent Service 发送一次真实只读请求，可能产生模型费用。继续？",
+  "agw.agent.test_message":
+    "这会通过 Agent Service 发送一次真实只读请求，可能产生模型费用。继续？",
   "agw.agent.test_running": "正在执行真实只读测试…",
   "agw.agent.test_success": "连接测试通过。",
   "agw.agent.test_failed": "连接测试失败。",
@@ -1545,10 +1578,12 @@ export const zh: Record<TranslationKey, string> = {
   "agw.agent.path_placeholder": "CLI 绝对路径（留空 = 自动检测）",
   "agw.agent.save_path": "保存路径",
   "agw.agent.reset_path": "恢复自动检测",
-  "agw.agent.restart_required": "Agent Service 正在运行，重启后才会应用新路径。",
+  "agw.agent.restart_required":
+    "Agent Service 正在运行，重启后才会应用新路径。",
   "agw.agent.path_saved": "Agent 路径已保存。",
   "agw.agent.no_agents": "未检测到 Agent。",
-  "agw.agent.no_cli_hint": "请安装官方 Codex 或 Claude Code CLI，或在此指定可执行文件路径。",
+  "agw.agent.no_cli_hint":
+    "请安装官方 Codex 或 Claude Code CLI，或在此指定可执行文件路径。",
   "agw.agent.state.available": "可用",
   "agw.agent.state.unverified": "需验证",
   "agw.agent.state.not_installed": "未安装",
@@ -1556,7 +1591,8 @@ export const zh: Record<TranslationKey, string> = {
   "agw.agent.state.not_executable": "不可执行",
   "agw.agent.state.error": "错误",
   "agw.connections.title": "接入 MCP 客户端",
-  "agw.connections.desc": "在支持的客户端中配置真实的 agentgate-serve mcp-agent。配置文件存在不代表客户端在线。",
+  "agw.connections.desc":
+    "在支持的客户端中配置真实的 agentgate-serve mcp-agent。配置文件存在不代表客户端在线。",
   "agw.connections.configured": "已配置",
   "agw.connections.not_configured": "未配置",
   "agw.connections.conflict": "同名冲突",
@@ -1573,18 +1609,23 @@ export const zh: Record<TranslationKey, string> = {
   "agw.connections.copy_json": "复制 JSON",
   "agw.connections.copy_toml": "复制 TOML",
   "agw.connections.confirm_configure_title": "配置 MCP？",
-  "agw.connections.confirm_configure_message": "只会通过客户端官方配置命令写入 muxlayer 条目，不会覆盖其它 MCP Server。",
+  "agw.connections.confirm_configure_message":
+    "只会通过客户端官方配置命令写入 muxlayer 条目，不会覆盖其它 MCP Server。",
   "agw.connections.confirm_remove_title": "移除 MCP？",
-  "agw.connections.confirm_remove_message": "只会移除由本应用管理的 MuxLayer 条目，其它 MCP Server 保持不变。",
+  "agw.connections.confirm_remove_message":
+    "只会移除由本应用管理的 MuxLayer 条目，其它 MCP Server 保持不变。",
   "agw.connections.configured_ok": "MCP 配置已保存。",
   "agw.connections.removed_ok": "MCP 配置已移除。",
-  "agw.connections.online_note": "“已配置”不等于“已连接”，请在客户端内确认实时连接。",
+  "agw.connections.online_note":
+    "“已配置”不等于“已连接”，请在客户端内确认实时连接。",
   "agw.connections.compatibility": "兼容性",
   "agw.connections.custom_title": "自定义 MCP 客户端",
-  "agw.connections.custom_desc": "把下面的配置复制到支持 stdio MCP 的客户端。内容不包含任何 Token。",
+  "agw.connections.custom_desc":
+    "把下面的配置复制到支持 stdio MCP 的客户端。内容不包含任何 Token。",
   "agw.connections.copy_command": "复制命令",
   "agw.settings.title": "Agent Service",
-  "agw.settings.desc": "Service 是唯一任务 Owner；Desktop 只通过现有 IPC 契约查询和控制它。",
+  "agw.settings.desc":
+    "Service 是唯一任务 Owner；Desktop 只通过现有 IPC 契约查询和控制它。",
   "agw.service.running": "运行中",
   "agw.service.starting": "启动中",
   "agw.service.stopped": "已停止",
@@ -1602,16 +1643,19 @@ export const zh: Record<TranslationKey, string> = {
   "agw.service.copy_diagnostics": "复制诊断信息",
   "agw.service.diagnostics_title": "诊断信息",
   "agw.service.stop_confirm_title": "停止 Agent Service？",
-  "agw.service.stop_confirm_message": "停止会中断正在执行的任务。不会手动删除数据库、Socket 或 Lock 文件。",
+  "agw.service.stop_confirm_message":
+    "停止会中断正在执行的任务。不会手动删除数据库、Socket 或 Lock 文件。",
   "agw.service.stop_confirm_tasks": "当前有 {count} 个任务正在运行。",
   "agw.service.restart_confirm_title": "重启 Agent Service？",
-  "agw.service.restart_confirm_message": "重启会中断正在执行的任务，请确认后继续。",
+  "agw.service.restart_confirm_message":
+    "重启会中断正在执行的任务，请确认后继续。",
   "agw.service.started": "Agent Service 已启动。",
   "agw.service.stopped_msg": "Agent Service 已停止。",
   "agw.service.restarted": "Agent Service 已重启。",
   "agw.service.path_saved": "Agent Gateway CLI 路径已保存。",
   "agw.service.cli_path": "CLI 路径",
-  "agw.service.cli_path_placeholder": "agentgate-serve 绝对路径（留空 = 自动检测）",
+  "agw.service.cli_path_placeholder":
+    "agentgate-serve 绝对路径（留空 = 自动检测）",
   "agw.service.data_dir_note": "与 headless agentgate-serve 共用。",
   "agw.service.detection": "发现方式",
   "agw.service.tasks_none": "无",

@@ -138,23 +138,6 @@ pub async fn manager_status(app_handle: tauri::AppHandle) -> GatewayManagerStatu
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn agent_auto_start_defaults_true_and_round_trips() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = crate::storage::db::init_database(&dir.path().to_path_buf()).unwrap();
-
-        assert!(load_agent_auto_start(&db).unwrap());
-        save_agent_auto_start(&db, false).unwrap();
-        assert!(!load_agent_auto_start(&db).unwrap());
-        save_agent_auto_start(&db, true).unwrap();
-        assert!(load_agent_auto_start(&db).unwrap());
-    }
-}
-
 /// Called once from Desktop setup. Each gateway starts independently; a failure
 /// in one is logged and never blocks the other or the UI.
 pub async fn start_enabled(app_handle: tauri::AppHandle) {
@@ -219,4 +202,21 @@ pub async fn start_enabled(app_handle: tauri::AppHandle) {
         }
     }
     AGENT_STARTING.store(false, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_auto_start_defaults_true_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::storage::db::init_database(&dir.path().to_path_buf()).unwrap();
+
+        assert!(load_agent_auto_start(&db).unwrap());
+        save_agent_auto_start(&db, false).unwrap();
+        assert!(!load_agent_auto_start(&db).unwrap());
+        save_agent_auto_start(&db, true).unwrap();
+        assert!(load_agent_auto_start(&db).unwrap());
+    }
 }

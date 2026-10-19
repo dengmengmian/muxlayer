@@ -748,10 +748,8 @@ export const setAgentGatewayAgentPath = (
 ) => unwrap(bindings.setAgentGatewayAgentPath(agentId, path));
 export const setAgentGatewayServePath = (path: string | null) =>
   unwrap(bindings.setAgentGatewayServePath(path));
-export const testAgentGatewayAgent = (
-  agentId: string,
-  confirmed: boolean
-) => unwrap(bindings.testAgentGatewayAgent(agentId, confirmed));
+export const testAgentGatewayAgent = (agentId: string, confirmed: boolean) =>
+  unwrap(bindings.testAgentGatewayAgent(agentId, confirmed));
 export const getAgentGatewayServiceStatus = () =>
   unwrap(bindings.getAgentGatewayServiceStatus());
 export const startAgentGatewayService = () =>
@@ -760,14 +758,10 @@ export const stopAgentGatewayService = (force: boolean) =>
   unwrap(bindings.stopAgentGatewayService(force));
 export const restartAgentGatewayService = (force: boolean) =>
   unwrap(bindings.restartAgentGatewayService(force));
-export const configureAgentGatewayMcp = (
-  client: string,
-  confirmed: boolean
-) => unwrap(bindings.configureAgentGatewayMcp(client, confirmed));
-export const removeAgentGatewayMcp = (
-  client: string,
-  confirmed: boolean
-) => unwrap(bindings.removeAgentGatewayMcp(client, confirmed));
+export const configureAgentGatewayMcp = (client: string, confirmed: boolean) =>
+  unwrap(bindings.configureAgentGatewayMcp(client, confirmed));
+export const removeAgentGatewayMcp = (client: string, confirmed: boolean) =>
+  unwrap(bindings.removeAgentGatewayMcp(client, confirmed));
 export const getAgentGatewayMcpCopy = (client: string) =>
   unwrap(bindings.getAgentGatewayMcpCopy(client));
 export const getAgentGatewayDiagnostics = () =>

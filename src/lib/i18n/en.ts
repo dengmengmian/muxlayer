@@ -1455,24 +1455,31 @@ export const en = {
   // ── Agent Gateway ──
   "nav.agent_gateway": "Agent Gateway",
   "agw.ux.headline": "Let your AI assistant use Codex and Claude Code",
-  "agw.ux.intro": "CodeLeveler or Pi calls local Codex / Claude Code through MCP for read-only code analysis. Follow the three steps below.",
+  "agw.ux.intro":
+    "CodeLeveler or Pi calls local Codex / Claude Code through MCP for read-only code analysis. Follow the three steps below.",
   "agw.ux.service_healthy": "Agent service is healthy",
   "agw.ux.service_stopped": "Agent service is not running",
   "agw.ux.service_error": "Agent service needs attention",
-  "agw.ux.service_note": "The Agent service runs tasks locally; closing the window does not interrupt running tasks.",
+  "agw.ux.service_note":
+    "The Agent service runs tasks locally; closing the window does not interrupt running tasks.",
   "agw.ux.cli_missing_title": "Agent Gateway CLI not found",
-  "agw.ux.cli_missing_desc": "Desktop normally bundles the CLI. If it is missing, use the bundled copy or choose a path manually.",
+  "agw.ux.cli_missing_desc":
+    "Desktop normally bundles the CLI. If it is missing, use the bundled copy or choose a path manually.",
   "agw.ux.cli_missing_short": "CLI not found",
   "agw.ux.cli_placeholder": "Absolute path to the Agent Gateway CLI",
   "agw.ux.cli_title": "Agent Gateway CLI",
   "agw.ux.step1_title": "① Choose an available Agent",
-  "agw.ux.step1_desc": "First confirm that Codex or Claude Code can actually run on this Mac. Finding a CLI does not mean it is ready.",
+  "agw.ux.step1_desc":
+    "First confirm that Codex or Claude Code can actually run on this Mac. Finding a CLI does not mean it is ready.",
   "agw.ux.step2_title": "② Connect your app",
-  "agw.ux.step2_desc": "Write the MuxLayer MCP entry into CodeLeveler or Pi. Once configured, the client can call the Agent.",
+  "agw.ux.step2_desc":
+    "Write the MuxLayer MCP entry into CodeLeveler or Pi. Once configured, the client can call the Agent.",
   "agw.ux.step3_title": "③ Start using it",
-  "agw.ux.step3_desc": "Open a connected client and ask it to use the Agent in plain language.",
+  "agw.ux.step3_desc":
+    "Open a connected client and ask it to use the Agent in plain language.",
   "agw.ux.no_agent_title": "No usable Agent detected yet",
-  "agw.ux.no_agent_desc": "Install Codex or Claude Code, then return to this page and click Reload. If it is installed but not found, specify the executable path in Details.",
+  "agw.ux.no_agent_desc":
+    "Install Codex or Claude Code, then return to this page and click Reload. If it is installed but not found, specify the executable path in Details.",
   "agw.ux.install_codex": "Install Codex",
   "agw.ux.install_claude": "Install Claude Code",
   "agw.ux.install_guide": "Installation guide",
@@ -1493,15 +1500,23 @@ export const en = {
   "agw.ux.tasks": "Running tasks",
   "agw.ux.data_dir": "Data directory",
   "agw.ux.unknown_source": "Model source not identified",
-  "agw.ux.agent.configured_hint": "Configuration check passed, but no real call has been made. Test the connection first.",
-  "agw.ux.agent.verified_hint": "A real call passed; this Agent is ready to use.",
+  "agw.ux.agent.configured_hint":
+    "Configuration check passed, but no real call has been made. Test the connection first.",
+  "agw.ux.agent.verified_hint":
+    "A real call passed; this Agent is ready to use.",
   "agw.ux.agent.available_hint": "The Agent is ready for a real test or use.",
-  "agw.ux.agent.unverified_hint": "The CLI was found, but authentication could not be verified. Run Test connection first.",
-  "agw.ux.agent.not_configured_hint": "No model or authentication is configured. Sign in to Codex / Claude Code or configure an API first.",
-  "agw.ux.agent.not_executable_hint": "The file exists but cannot run in this environment. Check the installation or set the executable path manually.",
-  "agw.ux.agent.not_installed_hint": "Executable not found. Install it, then click Reload.",
-  "agw.ux.agent.error_hint": "Status cannot be confirmed. Check Details or reload.",
-  "agw.ux.agent.test_failed_hint": "The last real call did not pass. Follow the hint below and retry.",
+  "agw.ux.agent.unverified_hint":
+    "The CLI was found, but authentication could not be verified. Run Test connection first.",
+  "agw.ux.agent.not_configured_hint":
+    "No model or authentication is configured. Sign in to Codex / Claude Code or configure an API first.",
+  "agw.ux.agent.not_executable_hint":
+    "The file exists but cannot run in this environment. Check the installation or set the executable path manually.",
+  "agw.ux.agent.not_installed_hint":
+    "Executable not found. Install it, then click Reload.",
+  "agw.ux.agent.error_hint":
+    "Status cannot be confirmed. Check Details or reload.",
+  "agw.ux.agent.test_failed_hint":
+    "The last real call did not pass. Follow the hint below and retry.",
   "agw.ux.agent_state.configured": "Configured",
   "agw.ux.agent_state.available": "Available",
   "agw.ux.agent_state.unverified": "Verification required",
@@ -1512,50 +1527,77 @@ export const en = {
   "agw.ux.agent_state.test_failed": "Test failed",
   "agw.ux.test_passed": "Test passed",
   "agw.ux.test_failed": "Test failed",
-  "agw.ux.test_error_auth_hint": "This does not necessarily mean the account is invalid; the current environment may not have valid credentials. Check the Codex / Claude Code login and model configuration.",
+  "agw.ux.test_error_auth_hint":
+    "This does not necessarily mean the account is invalid; the current environment may not have valid credentials. Check the Codex / Claude Code login and model configuration.",
   "agw.ux.technical_details": "Technical details",
-  "agw.ux.client.configured_hint": "The MCP entry is written. A config file does not mean the client is online; confirm inside the client.",
-  "agw.ux.client.stale_hint": "The entry exists but points to an old CLI path. Reconfigure to use the current version.",
-  "agw.ux.client.conflict_hint": "A same-name MCP entry exists but was not created by this app; it was left unchanged.",
-  "agw.ux.client.unavailable_hint": "The client is installed but cannot run in this environment. Check its runtime or installation.",
-  "agw.ux.client.not_installed_hint": "Client not detected. Install it and reload.",
-  "agw.ux.client.not_configured_hint": "The MuxLayer MCP entry has not been written yet.",
-  "agw.ux.client.old_codeleveler": "This CodeLeveler version is old; some Agent errors may not display correctly. Upgrade to a compatible release.",
+  "agw.ux.client.configured_hint":
+    "The MCP entry is written. A config file does not mean the client is online; confirm inside the client.",
+  "agw.ux.client.stale_hint":
+    "The entry exists but points to an old CLI path. Reconfigure to use the current version.",
+  "agw.ux.client.conflict_hint":
+    "A same-name MCP entry exists but was not created by this app; it was left unchanged.",
+  "agw.ux.client.unavailable_hint":
+    "The client is installed but cannot run in this environment. Check its runtime or installation.",
+  "agw.ux.client.not_installed_hint":
+    "Client not detected. Install it and reload.",
+  "agw.ux.client.not_configured_hint":
+    "The MuxLayer MCP entry has not been written yet.",
+  "agw.ux.client.old_codeleveler":
+    "This CodeLeveler version is old; some Agent errors may not display correctly. Upgrade to a compatible release.",
   "agw.ux.view_upgrade": "View upgrade notes",
   "agw.ux.reconfigure": "Reconfigure",
   "agw.ux.copy_check_command": "Copy check command",
-  "agw.ux.client.leveler_verify_note": "This command only checks Leveler's config file; confirm the real connection with a request inside CodeLeveler.",
-  "agw.ux.client.old_codeleveler_detail": "Upgrade to an official CodeLeveler release containing the MCP error-handling fix; MuxLayer cannot fix that client defect in place.",
+  "agw.ux.client.leveler_verify_note":
+    "This command only checks Leveler's config file; confirm the real connection with a request inside CodeLeveler.",
+  "agw.ux.client.old_codeleveler_detail":
+    "Upgrade to an official CodeLeveler release containing the MCP error-handling fix; MuxLayer cannot fix that client defect in place.",
   "agw.ux.copy_verify_command": "Copy verify command",
-  "agw.ux.client.verify_note": "Run the command in the client to confirm the MCP connection; only a real success counts as verified.",
-  "agw.ux.start_no_agent": "No usable Agent yet. Complete installation and testing in step ①.",
-  "agw.ux.start_no_client": "The Agent is ready. Connect CodeLeveler or Pi in step ② first.",
-  "agw.ux.start_stale_client": "The client configuration needs updating. Reconfigure it in step ② before using it.",
-  "agw.ux.start_ready": "You can now use Agent Gateway from CodeLeveler or Pi. Open the client and enter:",
-  "agw.ux.start_note": "The example uses the muxlayer agent_list / agent_run tools; Agents analyze read-only and do not modify files.",
-  "agw.ux.start_codeleveler_warning": "This CodeLeveler version is old; some errors may not display correctly. Upgrade first.",
+  "agw.ux.client.verify_note":
+    "Run the command in the client to confirm the MCP connection; only a real success counts as verified.",
+  "agw.ux.start_no_agent":
+    "No usable Agent yet. Complete installation and testing in step ①.",
+  "agw.ux.start_no_client":
+    "The Agent is ready. Connect CodeLeveler or Pi in step ② first.",
+  "agw.ux.start_stale_client":
+    "The client configuration needs updating. Reconfigure it in step ② before using it.",
+  "agw.ux.start_ready":
+    "You can now use Agent Gateway from CodeLeveler or Pi. Open the client and enter:",
+  "agw.ux.start_note":
+    "The example uses the muxlayer agent_list / agent_run tools; Agents analyze read-only and do not modify files.",
+  "agw.ux.start_codeleveler_warning":
+    "This CodeLeveler version is old; some errors may not display correctly. Upgrade first.",
   "agw.ux.copy_example": "Copy instruction",
   "agw.ux.advanced_title": "Advanced settings and diagnostics",
   "agw.ux.service_title": "Agent Service",
-  "agw.ux.historical_error": "Historical error (current status above takes precedence)",
+  "agw.ux.historical_error":
+    "Historical error (current status above takes precedence)",
   "agw.ux.diagnostics_title": "Diagnostics",
   "agw.ux.custom_mcp_title": "Custom MCP configuration",
-  "agw.ux.error.node": "Pi was detected, but Node.js is not available in this environment. Make sure Node is installed and resolvable, or set a manual path.",
+  "agw.ux.error.node":
+    "Pi was detected, but Node.js is not available in this environment. Make sure Node is installed and resolvable, or set a manual path.",
   "agw.ux.diagnostics_copied": "Diagnostics copied.",
-  "agw.ux.error.auth": "Authentication failed. Check the Codex / Claude Code login and model configuration.",
-  "agw.ux.error.permission": "Permission denied. Check the file or directory permissions.",
+  "agw.ux.error.auth":
+    "Authentication failed. Check the Codex / Claude Code login and model configuration.",
+  "agw.ux.error.permission":
+    "Permission denied. Check the file or directory permissions.",
   "agw.ux.error.rate": "Too many requests. Try again later.",
   "agw.ux.error.timeout": "The operation timed out. Try again",
-  "agw.ux.error.write": "Cannot write the configuration. Check its file permissions.",
-  "agw.ux.error.missing": "Executable or runtime not found. Check the installation and path.",
-  "agw.ux.error.db": "The service cannot access data right now. Try again later.",
-  "agw.ux.error.service_start": "Agent service failed to start. Check diagnostics and retry.",
+  "agw.ux.error.write":
+    "Cannot write the configuration. Check its file permissions.",
+  "agw.ux.error.missing":
+    "Executable or runtime not found. Check the installation and path.",
+  "agw.ux.error.db":
+    "The service cannot access data right now. Try again later.",
+  "agw.ux.error.service_start":
+    "Agent service failed to start. Check diagnostics and retry.",
   "agw.ux.error.already_running": "The service is already running.",
-  "agw.ux.error.generic": "The operation did not complete. Retry, or expand diagnostics for technical details.",
+  "agw.ux.error.generic":
+    "The operation did not complete. Retry, or expand diagnostics for technical details.",
   "agw.connections.error": "Configuration error",
   "agw.title": "Agent Gateway",
   "agw.gateway.title": "Gateway",
-  "agw.gateway.desc": "Model Gateway and Agent Gateway run independently and are started together by Desktop.",
+  "agw.gateway.desc":
+    "Model Gateway and Agent Gateway run independently and are started together by Desktop.",
   "agw.gateway.model": "Model Gateway",
   "agw.gateway.agent": "Agent Gateway",
   "agw.gateway.auto_start": "Start Agent Gateway with Desktop",
@@ -1563,19 +1605,22 @@ export const en = {
   "agw.gateway.no_bundled_cli": "Bundled CLI not found",
   "agw.gateway.model_started": "Model Gateway started.",
   "agw.gateway.model_stopped": "Model Gateway stopped.",
-  "agw.subtitle": "Manage Codex and Claude Code, connect MCP clients, and check the local Agent Service.",
+  "agw.subtitle":
+    "Manage Codex and Claude Code, connect MCP clients, and check the local Agent Service.",
   "agw.tab.agents": "Agents",
   "agw.tab.connections": "Connections",
   "agw.tab.settings": "Settings",
   "agw.loading": "Checking local agents…",
   "agw.reload": "Re-check",
   "agw.cli_missing_title": "Agent Gateway CLI not found",
-  "agw.cli_missing_desc": "Install the headless agentgate-serve CLI first. Desktop shows its real state; it does not install or fake the service.",
+  "agw.cli_missing_desc":
+    "Install the headless agentgate-serve CLI first. Desktop shows its real state; it does not install or fake the service.",
   "agw.download": "Open download page",
   "agw.set_manual_path": "Set CLI path manually",
   "agw.auto_detect": "Auto-detect",
   "agw.agents.title": "Local agents",
-  "agw.agents.desc": "These are real local CLI detections. A found binary is not marked available until its configuration can support a run.",
+  "agw.agents.desc":
+    "These are real local CLI detections. A found binary is not marked available until its configuration can support a run.",
   "agw.agent.installed": "Installed",
   "agw.agent.not_installed": "Not installed",
   "agw.agent.version": "Version",
@@ -1588,19 +1633,23 @@ export const en = {
   "agw.agent.status": "Status",
   "agw.agent.test": "Test connection",
   "agw.agent.test_title": "Test this agent?",
-  "agw.agent.test_message": "This sends a real read-only request through Agent Service and may consume model usage. Continue?",
+  "agw.agent.test_message":
+    "This sends a real read-only request through Agent Service and may consume model usage. Continue?",
   "agw.agent.test_running": "Running a real read-only test…",
   "agw.agent.test_success": "Connection test passed.",
   "agw.agent.test_failed": "Connection test failed.",
   "agw.agent.test_result": "Result",
   "agw.agent.edit_path": "Edit path",
-  "agw.agent.path_placeholder": "Absolute path to the CLI (empty = auto-detect)",
+  "agw.agent.path_placeholder":
+    "Absolute path to the CLI (empty = auto-detect)",
   "agw.agent.save_path": "Save path",
   "agw.agent.reset_path": "Use auto-detect",
-  "agw.agent.restart_required": "The Agent Service is running; restart it to apply this path.",
+  "agw.agent.restart_required":
+    "The Agent Service is running; restart it to apply this path.",
   "agw.agent.path_saved": "Agent path saved.",
   "agw.agent.no_agents": "No agents detected.",
-  "agw.agent.no_cli_hint": "Install the official Codex or Claude Code CLI, or set its executable path here.",
+  "agw.agent.no_cli_hint":
+    "Install the official Codex or Claude Code CLI, or set its executable path here.",
   "agw.agent.state.available": "Available",
   "agw.agent.state.unverified": "Verification required",
   "agw.agent.state.not_installed": "Not installed",
@@ -1608,7 +1657,8 @@ export const en = {
   "agw.agent.state.not_executable": "Not executable",
   "agw.agent.state.error": "Error",
   "agw.connections.title": "Connect MCP clients",
-  "agw.connections.desc": "Configure the real agentgate-serve mcp-agent command in supported clients. Configuration presence is not an online status.",
+  "agw.connections.desc":
+    "Configure the real agentgate-serve mcp-agent command in supported clients. Configuration presence is not an online status.",
   "agw.connections.configured": "Configured",
   "agw.connections.not_configured": "Not configured",
   "agw.connections.conflict": "Name conflict",
@@ -1625,18 +1675,23 @@ export const en = {
   "agw.connections.copy_json": "Copy JSON",
   "agw.connections.copy_toml": "Copy TOML",
   "agw.connections.confirm_configure_title": "Configure MCP?",
-  "agw.connections.confirm_configure_message": "This writes only the muxlayer entry using the client's official config command. Other MCP servers are preserved.",
+  "agw.connections.confirm_configure_message":
+    "This writes only the muxlayer entry using the client's official config command. Other MCP servers are preserved.",
   "agw.connections.confirm_remove_title": "Remove MCP?",
-  "agw.connections.confirm_remove_message": "This removes only the MuxLayer-managed entry. Other MCP servers are preserved.",
+  "agw.connections.confirm_remove_message":
+    "This removes only the MuxLayer-managed entry. Other MCP servers are preserved.",
   "agw.connections.configured_ok": "MCP configuration saved.",
   "agw.connections.removed_ok": "MCP configuration removed.",
-  "agw.connections.online_note": "Configured is not connected. Verify the live connection inside the client.",
+  "agw.connections.online_note":
+    "Configured is not connected. Verify the live connection inside the client.",
   "agw.connections.compatibility": "Compatibility",
   "agw.connections.custom_title": "Custom MCP client",
-  "agw.connections.custom_desc": "Copy this configuration into any MCP client that supports stdio servers. No tokens are included.",
+  "agw.connections.custom_desc":
+    "Copy this configuration into any MCP client that supports stdio servers. No tokens are included.",
   "agw.connections.copy_command": "Copy command",
   "agw.settings.title": "Agent Service",
-  "agw.settings.desc": "The service is the only task owner. Desktop only queries and controls it through the existing IPC contract.",
+  "agw.settings.desc":
+    "The service is the only task owner. Desktop only queries and controls it through the existing IPC contract.",
   "agw.service.running": "Running",
   "agw.service.starting": "Starting",
   "agw.service.stopped": "Stopped",
@@ -1654,16 +1709,19 @@ export const en = {
   "agw.service.copy_diagnostics": "Copy diagnostics",
   "agw.service.diagnostics_title": "Diagnostics",
   "agw.service.stop_confirm_title": "Stop Agent Service?",
-  "agw.service.stop_confirm_message": "Stopping interrupts running tasks. No database, socket, or lock file will be deleted manually.",
+  "agw.service.stop_confirm_message":
+    "Stopping interrupts running tasks. No database, socket, or lock file will be deleted manually.",
   "agw.service.stop_confirm_tasks": "{count} task(s) are currently running.",
   "agw.service.restart_confirm_title": "Restart Agent Service?",
-  "agw.service.restart_confirm_message": "Restarting interrupts running tasks. Confirm before continuing.",
+  "agw.service.restart_confirm_message":
+    "Restarting interrupts running tasks. Confirm before continuing.",
   "agw.service.started": "Agent Service started.",
   "agw.service.stopped_msg": "Agent Service stopped.",
   "agw.service.restarted": "Agent Service restarted.",
   "agw.service.path_saved": "Agent Gateway CLI path saved.",
   "agw.service.cli_path": "CLI path",
-  "agw.service.cli_path_placeholder": "Absolute path to agentgate-serve (empty = auto-detect)",
+  "agw.service.cli_path_placeholder":
+    "Absolute path to agentgate-serve (empty = auto-detect)",
   "agw.service.data_dir_note": "Shared with headless agentgate-serve.",
   "agw.service.detection": "Detected by",
   "agw.service.tasks_none": "None",

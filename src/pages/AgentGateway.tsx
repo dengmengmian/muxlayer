@@ -26,8 +26,6 @@ interface ConfirmState {
   run: () => Promise<void> | void;
 }
 
-
-
 function errorMessage(error: unknown): string {
   return (error as api.AppError)?.message ?? String(error);
 }
@@ -35,7 +33,10 @@ function errorMessage(error: unknown): string {
 function redactSecrets(text: string): string {
   return text
     .replace(/(bearer\s+)[^\s,;]+/gi, "$1[redacted]")
-    .replace(/((?:api[_-]?key|token|authorization|auth)\s*[:=]\s*)[^\s,;]+/gi, "$1[redacted]")
+    .replace(
+      /((?:api[_-]?key|token|authorization|auth)\s*[:=]\s*)[^\s,;]+/gi,
+      "$1[redacted]"
+    )
     .replace(/sk-[A-Za-z0-9_-]{8,}/g, "[redacted]");
 }
 
@@ -49,14 +50,21 @@ function isAuthError(message: string): boolean {
   );
 }
 
-function friendlyMessage(message: string, t: (key: string, fallback?: string) => string): string {
+function friendlyMessage(
+  message: string,
+  t: (key: string, fallback?: string) => string
+): string {
   if (!message.trim()) return t("agw.ux.error.generic");
   const value = message.toLowerCase();
   if (isAuthError(message)) return t("agw.ux.error.auth");
-  if (value.includes("403") || value.includes("forbidden")) return t("agw.ux.error.permission");
-  if (value.includes("429") || value.includes("rate limit")) return t("agw.ux.error.rate");
-  if (value.includes("timed out") || value.includes("timeout")) return t("agw.ux.error.timeout");
-  if (value.includes("permission denied") || value.includes("not writable")) return t("agw.ux.error.write");
+  if (value.includes("403") || value.includes("forbidden"))
+    return t("agw.ux.error.permission");
+  if (value.includes("429") || value.includes("rate limit"))
+    return t("agw.ux.error.rate");
+  if (value.includes("timed out") || value.includes("timeout"))
+    return t("agw.ux.error.timeout");
+  if (value.includes("permission denied") || value.includes("not writable"))
+    return t("agw.ux.error.write");
   if (value.includes("env: node") || value.includes("node: no such file")) {
     return t("agw.ux.error.node");
   }
@@ -68,9 +76,12 @@ function friendlyMessage(message: string, t: (key: string, fallback?: string) =>
   ) {
     return t("agw.ux.error.missing");
   }
-  if (value.includes("database is locked") || value.includes("db lock")) return t("agw.ux.error.db");
-  if (value.includes("did not become ready")) return t("agw.ux.error.service_start");
-  if (value.includes("already running")) return t("agw.ux.error.already_running");
+  if (value.includes("database is locked") || value.includes("db lock"))
+    return t("agw.ux.error.db");
+  if (value.includes("did not become ready"))
+    return t("agw.ux.error.service_start");
+  if (value.includes("already running"))
+    return t("agw.ux.error.already_running");
   return t("agw.ux.error.generic");
 }
 
@@ -95,14 +106,18 @@ function InfoRow({
   );
 }
 
-function agentVariant(state: string): "success" | "warning" | "error" | "muted" {
+function agentVariant(
+  state: string
+): "success" | "warning" | "error" | "muted" {
   if (state === "available") return "success";
   if (state === "unverified" || state === "not_configured") return "warning";
   if (state === "not_installed") return "muted";
   return "error";
 }
 
-function clientVariant(status: string): "success" | "warning" | "error" | "muted" {
+function clientVariant(
+  status: string
+): "success" | "warning" | "error" | "muted" {
   if (status === "configured") return "success";
   if (status === "conflict" || status === "error") return "error";
   if (status === "not_installed") return "muted";
@@ -184,7 +199,9 @@ function PathEditor({
 
 export function AgentGateway() {
   const { t } = useI18n();
-  const [overview, setOverview] = useState<api.AgentGatewayOverview | null>(null);
+  const [overview, setOverview] = useState<api.AgentGatewayOverview | null>(
+    null
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -199,7 +216,9 @@ export function AgentGateway() {
   const [manager, setManager] = useState<api.GatewayManagerStatus | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set());
-  const [expandedClients, setExpandedClients] = useState<Set<string>>(new Set());
+  const [expandedClients, setExpandedClients] = useState<Set<string>>(
+    new Set()
+  );
   const [exampleAgent, setExampleAgent] = useState("codex-native");
   const [verifiedAgents, setVerifiedAgents] = useState<Set<string>>(new Set());
 
@@ -330,10 +349,7 @@ export function AgentGateway() {
         perform(
           `mcp:${client.id}`,
           async () => {
-            const result = await api.configureAgentGatewayMcp(
-              client.id,
-              true
-            );
+            const result = await api.configureAgentGatewayMcp(client.id, true);
             toast("success", result.message);
           },
           t("agw.connections.configured_ok")
@@ -520,11 +536,12 @@ export function AgentGateway() {
     (client) => client.config_status === "stale"
   );
   const activeExample =
-    exampleAgent === "claude-code" && usableAgents.some((agent) => agent.id === "claude-code")
+    exampleAgent === "claude-code" &&
+    usableAgents.some((agent) => agent.id === "claude-code")
       ? "claude-code"
       : usableAgents.some((agent) => agent.id === "codex-native")
         ? "codex-native"
-        : usableAgents[0]?.id ?? "codex-native";
+        : (usableAgents[0]?.id ?? "codex-native");
   const exampleText =
     activeExample === "claude-code"
       ? "请调用 muxlayer 的 agent_list，然后使用 agent_run，agent 选择 claude-code，对当前项目做只读架构审计，列出主要问题和代码证据；不要修改任何文件。"
@@ -572,7 +589,9 @@ export function AgentGateway() {
             onClick={load}
             disabled={loading || busy !== null}
           >
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+            <RefreshCw
+              className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`}
+            />
             {t("agw.reload")}
           </button>
         </div>
@@ -654,7 +673,9 @@ export function AgentGateway() {
           <h2 className="text-sm font-semibold text-text-primary">
             {t("agw.ux.step1_title")}
           </h2>
-          <p className="mt-1 text-xs text-text-muted">{t("agw.ux.step1_desc")}</p>
+          <p className="mt-1 text-xs text-text-muted">
+            {t("agw.ux.step1_desc")}
+          </p>
         </div>
         {overview.agents.filter((agent) => agent.installed).length === 0 ? (
           <div className="surface-panel p-5">
@@ -665,13 +686,27 @@ export function AgentGateway() {
               {t("agw.ux.no_agent_desc")}
             </p>
             <div className="mt-3 flex flex-wrap gap-2">
-              <a className="btn-secondary" href="https://developers.openai.com/codex/cli/" target="_blank" rel="noreferrer">
+              <a
+                className="btn-secondary"
+                href="https://developers.openai.com/codex/cli/"
+                target="_blank"
+                rel="noreferrer"
+              >
                 {t("agw.ux.install_codex")}
               </a>
-              <a className="btn-secondary" href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noreferrer">
+              <a
+                className="btn-secondary"
+                href="https://docs.anthropic.com/en/docs/claude-code"
+                target="_blank"
+                rel="noreferrer"
+              >
                 {t("agw.ux.install_claude")}
               </a>
-              <button className="btn-secondary" onClick={load} disabled={loading}>
+              <button
+                className="btn-secondary"
+                onClick={load}
+                disabled={loading}
+              >
                 {t("agw.reload")}
               </button>
             </div>
@@ -683,8 +718,7 @@ export function AgentGateway() {
                 testResult?.agent === agent.id && !testResult.success;
               const verified =
                 testResult?.agent === agent.id && testResult.success;
-              const configured =
-                !verified && agent.state === "available";
+              const configured = !verified && agent.state === "available";
               const state = failed
                 ? "test_failed"
                 : verified
@@ -706,19 +740,22 @@ export function AgentGateway() {
                   : configured
                     ? t("agw.ux.agent.configured_hint")
                     : agent.state === "available"
-                  ? t("agw.ux.agent.available_hint")
-                  : agent.state === "unverified"
-                    ? t("agw.ux.agent.unverified_hint")
-                    : agent.state === "not_configured"
-                      ? t("agw.ux.agent.not_configured_hint")
-                      : agent.state === "not_executable"
-                        ? t("agw.ux.agent.not_executable_hint")
-                        : agent.state === "not_installed"
-                          ? t("agw.ux.agent.not_installed_hint")
-                          : t("agw.ux.agent.error_hint");
+                      ? t("agw.ux.agent.available_hint")
+                      : agent.state === "unverified"
+                        ? t("agw.ux.agent.unverified_hint")
+                        : agent.state === "not_configured"
+                          ? t("agw.ux.agent.not_configured_hint")
+                          : agent.state === "not_executable"
+                            ? t("agw.ux.agent.not_executable_hint")
+                            : agent.state === "not_installed"
+                              ? t("agw.ux.agent.not_installed_hint")
+                              : t("agw.ux.agent.error_hint");
               const detailsOpen = expandedAgents.has(agent.id);
               return (
-                <div key={agent.id} className="surface-panel flex flex-col gap-3 p-4">
+                <div
+                  key={agent.id}
+                  className="surface-panel flex flex-col gap-3 p-4"
+                >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <h3 className="text-sm font-semibold text-text-primary">
@@ -733,7 +770,9 @@ export function AgentGateway() {
                       {t(`agw.ux.agent_state.${state}`, state)}
                     </StatusBadge>
                   </div>
-                  <p className="text-xs leading-relaxed text-text-muted">{hint}</p>
+                  <p className="text-xs leading-relaxed text-text-muted">
+                    {hint}
+                  </p>
 
                   {testResult?.agent === agent.id && (
                     <div
@@ -811,7 +850,9 @@ export function AgentGateway() {
                       className="btn-secondary"
                       onClick={() => toggleAgentDetails(agent.id)}
                     >
-                      {detailsOpen ? t("agw.ux.hide_details") : t("agw.ux.details")}
+                      {detailsOpen
+                        ? t("agw.ux.hide_details")
+                        : t("agw.ux.details")}
                       <ChevronDown
                         className={`h-3.5 w-3.5 transition-transform ${detailsOpen ? "rotate-180" : ""}`}
                       />
@@ -821,16 +862,44 @@ export function AgentGateway() {
                   {detailsOpen && (
                     <div className="space-y-2 border-t border-border pt-3">
                       <div className="divide-y divide-border/60">
-                        <InfoRow label={t("agw.ux.version")} value={agent.version ?? t("agw.common.none")} mono />
-                        <InfoRow label={t("agw.ux.executable")} value={agent.executable ?? t("agw.common.none")} mono />
-                        <InfoRow label={t("agw.ux.auth")} value={agent.auth_detail || agent.auth_state} />
-                        <InfoRow label={t("agw.ux.model")} value={agent.model ?? t("agw.common.none")} mono />
-                        <InfoRow label={t("agw.ux.source")} value={agent.source} />
-                        <InfoRow label={t("agw.ux.config")} value={agent.config_path ?? t("agw.common.none")} mono />
-                        <InfoRow label={t("agw.ux.detection")} value={agent.detection} />
+                        <InfoRow
+                          label={t("agw.ux.version")}
+                          value={agent.version ?? t("agw.common.none")}
+                          mono
+                        />
+                        <InfoRow
+                          label={t("agw.ux.executable")}
+                          value={agent.executable ?? t("agw.common.none")}
+                          mono
+                        />
+                        <InfoRow
+                          label={t("agw.ux.auth")}
+                          value={agent.auth_detail || agent.auth_state}
+                        />
+                        <InfoRow
+                          label={t("agw.ux.model")}
+                          value={agent.model ?? t("agw.common.none")}
+                          mono
+                        />
+                        <InfoRow
+                          label={t("agw.ux.source")}
+                          value={agent.source}
+                        />
+                        <InfoRow
+                          label={t("agw.ux.config")}
+                          value={agent.config_path ?? t("agw.common.none")}
+                          mono
+                        />
+                        <InfoRow
+                          label={t("agw.ux.detection")}
+                          value={agent.detection}
+                        />
                       </div>
                       {agent.warnings.map((warning) => (
-                        <p key={warning} className="text-xs leading-relaxed text-warning">
+                        <p
+                          key={warning}
+                          className="text-xs leading-relaxed text-warning"
+                        >
                           {warning}
                         </p>
                       ))}
@@ -872,7 +941,9 @@ export function AgentGateway() {
           <h2 className="text-sm font-semibold text-text-primary">
             {t("agw.ux.step2_title")}
           </h2>
-          <p className="mt-1 text-xs text-text-muted">{t("agw.ux.step2_desc")}</p>
+          <p className="mt-1 text-xs text-text-muted">
+            {t("agw.ux.step2_desc")}
+          </p>
         </div>
         <div className="grid gap-4 lg:grid-cols-2">
           {overview.clients.map((client) => {
@@ -890,7 +961,10 @@ export function AgentGateway() {
                         ? t("agw.ux.client.not_installed_hint")
                         : t("agw.ux.client.not_configured_hint");
             return (
-              <div key={client.id} className="surface-panel flex flex-col gap-3 p-4">
+              <div
+                key={client.id}
+                className="surface-panel flex flex-col gap-3 p-4"
+              >
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <h3 className="text-sm font-semibold text-text-primary">
@@ -899,7 +973,10 @@ export function AgentGateway() {
                     <p className="mt-1 text-xs text-text-secondary">{hint}</p>
                   </div>
                   <StatusBadge variant={clientVariant(client.config_status)}>
-                    {t(`agw.connections.${client.config_status}`, client.config_status)}
+                    {t(
+                      `agw.connections.${client.config_status}`,
+                      client.config_status
+                    )}
                   </StatusBadge>
                 </div>
                 {client.requires_upgrade && (
@@ -946,7 +1023,9 @@ export function AgentGateway() {
                     className="btn-secondary"
                     onClick={() => toggleClientDetails(client.id)}
                   >
-                    {detailsOpen ? t("agw.ux.hide_details") : t("agw.ux.details")}
+                    {detailsOpen
+                      ? t("agw.ux.hide_details")
+                      : t("agw.ux.details")}
                     <ChevronDown
                       className={`h-3.5 w-3.5 transition-transform ${detailsOpen ? "rotate-180" : ""}`}
                     />
@@ -955,11 +1034,32 @@ export function AgentGateway() {
                 {detailsOpen && (
                   <div className="space-y-2 border-t border-border pt-3">
                     <div className="divide-y divide-border/60">
-                      <InfoRow label={t("agw.ux.version")} value={client.version ?? t("agw.common.none")} mono />
-                      <InfoRow label={t("agw.ux.config")} value={client.config_path} mono />
-                      <InfoRow label={t("agw.ux.command")} value={client.copy_command} mono />
-                      <InfoRow label={t("agw.ux.args")} value={client.copy_args.join(" ") || t("agw.common.none")} mono />
-                      <InfoRow label={t("agw.ux.compatibility")} value={client.compatibility} />
+                      <InfoRow
+                        label={t("agw.ux.version")}
+                        value={client.version ?? t("agw.common.none")}
+                        mono
+                      />
+                      <InfoRow
+                        label={t("agw.ux.config")}
+                        value={client.config_path}
+                        mono
+                      />
+                      <InfoRow
+                        label={t("agw.ux.command")}
+                        value={client.copy_command}
+                        mono
+                      />
+                      <InfoRow
+                        label={t("agw.ux.args")}
+                        value={
+                          client.copy_args.join(" ") || t("agw.common.none")
+                        }
+                        mono
+                      />
+                      <InfoRow
+                        label={t("agw.ux.compatibility")}
+                        value={client.compatibility}
+                      />
                     </div>
                     {client.warning && (
                       <p className="text-xs leading-relaxed text-warning">
@@ -978,8 +1078,16 @@ export function AgentGateway() {
                     )}
                     <div className="flex flex-wrap gap-2">
                       <CopyAction
-                        text={client.id === "codeleveler" ? client.copy_toml : client.copy_json}
-                        label={client.id === "codeleveler" ? t("agw.connections.copy_toml") : t("agw.connections.copy_json")}
+                        text={
+                          client.id === "codeleveler"
+                            ? client.copy_toml
+                            : client.copy_json
+                        }
+                        label={
+                          client.id === "codeleveler"
+                            ? t("agw.connections.copy_toml")
+                            : t("agw.connections.copy_json")
+                        }
                       />
                       <CopyAction
                         text={
@@ -1019,15 +1127,23 @@ export function AgentGateway() {
           <h2 className="text-sm font-semibold text-text-primary">
             {t("agw.ux.step3_title")}
           </h2>
-          <p className="mt-1 text-xs text-text-muted">{t("agw.ux.step3_desc")}</p>
+          <p className="mt-1 text-xs text-text-muted">
+            {t("agw.ux.step3_desc")}
+          </p>
         </div>
         <div className="surface-panel p-4">
           {usableAgents.length === 0 ? (
-            <p className="text-sm text-text-secondary">{t("agw.ux.start_no_agent")}</p>
+            <p className="text-sm text-text-secondary">
+              {t("agw.ux.start_no_agent")}
+            </p>
           ) : readyClients.length === 0 && staleClients.length > 0 ? (
-            <p className="text-sm text-text-secondary">{t("agw.ux.start_stale_client")}</p>
+            <p className="text-sm text-text-secondary">
+              {t("agw.ux.start_stale_client")}
+            </p>
           ) : readyClients.length === 0 ? (
-            <p className="text-sm text-text-secondary">{t("agw.ux.start_no_client")}</p>
+            <p className="text-sm text-text-secondary">
+              {t("agw.ux.start_no_client")}
+            </p>
           ) : (
             <div className="space-y-3">
               <p className="text-sm text-text-secondary">
@@ -1035,7 +1151,9 @@ export function AgentGateway() {
               </p>
               <div className="flex flex-wrap gap-1.5">
                 {overview.agents.map((agent) => {
-                  const usable = usableAgents.some((item) => item.id === agent.id);
+                  const usable = usableAgents.some(
+                    (item) => item.id === agent.id
+                  );
                   return (
                     <button
                       key={agent.id}
@@ -1056,7 +1174,10 @@ export function AgentGateway() {
                 {exampleText}
               </pre>
               <div className="flex flex-wrap items-center gap-2">
-                <CopyAction text={exampleText} label={t("agw.ux.copy_example")} />
+                <CopyAction
+                  text={exampleText}
+                  label={t("agw.ux.copy_example")}
+                />
                 <span className="text-[11px] text-text-muted">
                   {t("agw.ux.start_note")}
                 </span>
@@ -1100,7 +1221,11 @@ export function AgentGateway() {
                 </div>
                 <StatusBadge
                   variant={
-                    serviceHealthy ? "success" : serviceError ? "error" : "muted"
+                    serviceHealthy
+                      ? "success"
+                      : serviceError
+                        ? "error"
+                        : "muted"
                   }
                 >
                   {serviceHealthy
@@ -1111,9 +1236,25 @@ export function AgentGateway() {
                 </StatusBadge>
               </div>
               <div className="mt-3 divide-y divide-border/60">
-                <InfoRow label={t("agw.ux.version")} value={service.service_version ?? t("agw.common.none")} mono />
-                <InfoRow label={t("agw.ux.tasks")} value={service.running_tasks.length ? service.running_tasks.join(", ") : t("agw.service.tasks_none")} mono />
-                <InfoRow label={t("agw.ux.data_dir")} value={service.data_dir} mono />
+                <InfoRow
+                  label={t("agw.ux.version")}
+                  value={service.service_version ?? t("agw.common.none")}
+                  mono
+                />
+                <InfoRow
+                  label={t("agw.ux.tasks")}
+                  value={
+                    service.running_tasks.length
+                      ? service.running_tasks.join(", ")
+                      : t("agw.service.tasks_none")
+                  }
+                  mono
+                />
+                <InfoRow
+                  label={t("agw.ux.data_dir")}
+                  value={service.data_dir}
+                  mono
+                />
               </div>
               <label className="mt-3 flex items-center gap-2 text-xs text-text-secondary">
                 <input
@@ -1125,15 +1266,27 @@ export function AgentGateway() {
                 {t("agw.gateway.auto_start")}
               </label>
               <div className="mt-3 flex flex-wrap gap-2">
-                <button className="btn-primary" onClick={startService} disabled={busy !== null || service.running || cliMissing}>
+                <button
+                  className="btn-primary"
+                  onClick={startService}
+                  disabled={busy !== null || service.running || cliMissing}
+                >
                   <Play className="h-3.5 w-3.5" />
                   {t("agw.service.start")}
                 </button>
-                <button className="btn-secondary" onClick={() => askService("stop")} disabled={busy !== null || !service.running}>
+                <button
+                  className="btn-secondary"
+                  onClick={() => askService("stop")}
+                  disabled={busy !== null || !service.running}
+                >
                   <Square className="h-3.5 w-3.5" />
                   {t("agw.service.stop")}
                 </button>
-                <button className="btn-secondary" onClick={() => askService("restart")} disabled={busy !== null || !service.running || cliMissing}>
+                <button
+                  className="btn-secondary"
+                  onClick={() => askService("restart")}
+                  disabled={busy !== null || !service.running || cliMissing}
+                >
                   {t("agw.service.restart")}
                 </button>
               </div>
@@ -1190,7 +1343,11 @@ export function AgentGateway() {
                 <h3 className="text-sm font-semibold text-text-primary">
                   {t("agw.ux.diagnostics_title")}
                 </h3>
-                <button className="btn-secondary" onClick={copyDiagnostics} disabled={busy !== null}>
+                <button
+                  className="btn-secondary"
+                  onClick={copyDiagnostics}
+                  disabled={busy !== null}
+                >
                   <Copy className="h-3.5 w-3.5" />
                   {t("agw.service.copy_diagnostics")}
                 </button>
@@ -1210,7 +1367,10 @@ export function AgentGateway() {
                 {customJson}
               </pre>
               <div className="mt-2">
-                <CopyAction text={customJson} label={t("agw.connections.copy_json")} />
+                <CopyAction
+                  text={customJson}
+                  label={t("agw.connections.copy_json")}
+                />
               </div>
             </div>
           </div>

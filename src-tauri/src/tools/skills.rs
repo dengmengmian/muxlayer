@@ -298,17 +298,21 @@ pub fn import_skill_from_zip(source: &str, bytes: &[u8]) -> Result<Skill, AppErr
         if file.is_dir() {
             continue;
         }
+        let name = file
+            .name()
+            .map(|name| name.into_owned())
+            .unwrap_or_else(|_| "<invalid>".to_string());
         let safe = file.enclosed_name().ok_or_else(|| {
             AppError::new(
                 crate::errors::codes::SKILL_ZIP_UNSAFE,
-                format!("unsafe path in zip: {}", file.name()),
+                format!("unsafe path in zip: {name}"),
             )
         })?;
         let rel = safe.to_string_lossy().replace('\\', "/");
         if safe_rel_path(&rel).is_none() {
             return Err(AppError::new(
                 crate::errors::codes::SKILL_ZIP_UNSAFE,
-                format!("unsafe path in zip: {}", file.name()),
+                format!("unsafe path in zip: {name}"),
             ));
         }
         let mut buf = Vec::new();
@@ -841,7 +845,7 @@ mod tests {
         let mut buf = Vec::new();
         {
             let mut writer = zip::ZipWriter::new(Cursor::new(&mut buf));
-            let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
+            let opts: zip::write::FileOptions<'_, '_, ()> = zip::write::FileOptions::default()
                 .compression_method(zip::CompressionMethod::Deflated);
             for (path, content) in entries {
                 use std::io::Write as _;
