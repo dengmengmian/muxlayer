@@ -1,16 +1,6 @@
-# Agent Gateway Desktop 使用说明与验收记录
+# Agent Gateway Desktop 使用说明
 
 > Agent Gateway 在 2.0.9 中仍是测试性功能（Beta），接口和行为可能调整，不建议用于关键生产流程。
-
-实现提交：
-
-- Phase 5：`43c4e888519563f2151e9a303c4493f98b817c5a`
-- Phase 6 异常修复：`5259efa51bb9ed8e195c475fb6dab653af030271`
-- Phase 6 统一启动与内置 CLI：`d6dab0f648000320525fce0f197ba322714ae58a`
-- Phase 6 启动状态与错误：`5881b5e3c1a7bcf055cc7ef3d0b4ea32d1cdd285`
-- 产品交互重构：`8e93eebca582a80b8a53eb7d852276fcaa15a27a`
-
-本轮增加 Desktop 统一启动管理、内置 CLI 和稳定 MCP 路径；未改动 Model Gateway 业务、Codex / Claude Adapter、Agent Service 任务语义或 MCP 协议。
 
 ## 页面结构
 
@@ -260,94 +250,7 @@ CLI 发现优先级：
 | Service 所有权 | 仍是独立进程 + SQLite 单实例锁 |
 | Desktop 更新 | 只更新稳定路径的托管副本，不删除 SQLite |
 | 用户已有 CLI | 无托管 marker 时不覆盖；显式路径优先 |
-| 签名/公证 | Desktop 与嵌套 sidecar 一起签名；本轮只做本地 ad-hoc 构建验证 |
+| 签名/公证 | Desktop 与嵌套 sidecar 一起签名；2.0.9 由 CI 完成签名、公证和发布 |
 
 未新增 `agentgate-serve start`：现有 `serve`、`agent-service`、`mcp-agent` 已分别覆盖 Model Gateway、常驻 Agent Service 和 MCP 自动拉起；新增 `start` 会需要额外的前台/后台 Supervisor 语义，收益不足。Desktop 的统一入口由 Gateway Manager 承担，headless 保持原命令兼容。
 
-## macOS GUI 验收
-
-环境：本地真实 release `.app`（ad-hoc，未签名/未公证）从隔离 HOME 启动，`PATH=/usr/bin:/bin` 模拟 Finder；独立 Desktop DB / CLI DB；真实 Codex / Claude / CodeLeveler / Pi CLI。未使用生产数据，未修改真实 MCP 配置。
-
-| 场景 | 结果 |
-| --- | --- |
-| 首次使用、CLI 未安装 | PASS：显示未找到 CLI、下载说明、手动设置路径；不崩溃 |
-| 手动设置 Agent Gateway CLI | PASS：保存后显示版本与绝对路径 |
-| Codex 状态 | PASS：`codex-cli 0.162.1`，`/opt/homebrew/bin/codex`，ChatGPT 登录，OpenAI Native，`gpt-6.1-sol` |
-| Codex 认证无法确认 | PASS：显示「需验证」，不伪装成「可用」，测试连接仍可用 |
-| 新首页用途与步骤 | PASS：真实 `.app` 首屏直接说明用途，并显示「① 选择可用 Agent / ② 连接到你的应用 / ③ 开始使用」 |
-| 技术信息层级 | PASS：版本、路径、配置文件默认不显示，展开「详细信息」才出现 |
-| Codex 认证未知 | PASS：显示「需要验证」并引导测试；测试成功后才提升为可用 |
-| 真实 401 | PASS：显示「测试未通过」和中文认证说明，原始 401 只在「技术详情」 |
-| Claude 模型来源 | PASS：显示 DeepSeek，不显示 Anthropic 官方 |
-| CodeLeveler 旧版本 | PASS：主文案只提示升级，不再暴露 `e4510fa / UNTRUSTED / dirty` |
-| 开始使用指令 | PASS：有可用 Agent + 已配置客户端时显示可复制指令；缺少条件时只显示下一步 |
-| 高级设置 | PASS：默认折叠；服务、CLI、数据目录、历史错误、诊断和原始 MCP 配置在内部 |
-| 窄窗口 | PASS：960×600 下状态、按钮和文案不横向溢出 |
-| Model Gateway 停止 | PASS：顶部显示「模型网关未启动」，Agent 服务仍显示正常，不混淆 |
-| Desktop 重启恢复 | PASS：重建并重开 `.app` 后页面恢复真实 Agent / 客户端 / Service 状态 |
-| Claude 认证缺失 | PASS：显示「未配置」、来源 Unknown，并提示配置 Claude Code 或测试真实请求 |
-| Claude 状态 | PASS：`2.1.302`，第三方 token 已配置，DeepSeek，`deepseek-flash[1m]`；未显示 Token |
-| 测试 Codex 连接 | PASS：确认费用提示后真实执行，`AGENTGATE_OK`，约 6.6s |
-| 测试 Claude 连接 | PASS：确认费用提示后真实执行，`AGENTGATE_OK`，约 5.0s |
-| 无效 Agent 路径 | PASS：保存被拒绝并显示错误，旧路径不变 |
-| 无效 CLI 路径 | PASS：保存被拒绝；启动失败显示 `Agent Service did not become ready`，不崩溃 |
-| Service 启动 / 停止 / 重启 | PASS：状态、版本、任务数正确；残留 Socket 显示已停止 |
-| 有运行任务时停止 | PASS：确认框显示 `当前有 1 个任务正在运行`，未静默杀死 |
-| Desktop 重启后 Service 状态 | PASS：终止 Desktop 后 Service 继续运行，重开后显示「运行中」 |
-| 一次安装、无独立 CLI | PASS：release `.app` 内含 sidecar，首次启动复制到 `~/.muxlayer/bin` 并自动启动 Agent Service |
-| 双 Gateway 自动启动 | PASS：Model Gateway 按 auto_start 启动，Agent Gateway 默认启动；两个状态独立显示 |
-| 已运行 Service 复用 | PASS：重开 Desktop 后 Service PID 不变，未创建第二个实例 |
-| 两个 MCP 客户端并发 | PASS：两个客户端都连接同一个 Service PID，工具调用成功 |
-| 关闭 Desktop 后任务持续 | PASS：Desktop 终止后 task 仍 running；新 MCP 客户端可查询并取消 |
-| Model Gateway 启动失败 | PASS：端口被占用时 Agent Gateway 仍启动并 ready |
-| Agent Gateway 启动失败 | PASS：CLI 数据目录不可用时 Model Gateway 仍启动并监听 |
-| 用户已有 CLI | PASS：无托管 marker 的同名文件未被覆盖，校验和不变 |
-| Desktop 更新后 MCP 配置 | PASS：重建 `.app` 后 CodeLeveler 配置仍指向同一稳定 CLI，Service 未重启 |
-| Pi 受限 PATH + nvm | PASS：版本 1.3.0、`pi mcp list` connected / 5 tools、真实 `pi -p` 调用 `agent_list` |
-| CodeLeveler 受限 PATH + 稳定 CLI | PASS：配置写入稳定路径，`leveler mcp list` 正常；真实调用成功 |
-| CodeLeveler MCP 配置 | PASS：`leveler mcp list` 显示 `muxlayer`；旧版兼容性警告存在 |
-| CodeLeveler MCP 移除 | PASS：只删除托管条目，状态回到未配置 |
-| Phase 6 staging 写入 | PASS：CodeLeveler 配置 / 移除均通过 staging + 原子安装；`leveler mcp list` 结果与 UI 一致 |
-| CodeLeveler MCP 端到端 | PASS（Phase 6 复验）：真实 `leveler run` 调用 `mcp__muxlayer__agent_list` 并返回两个 Agent |
-| 托管条目指向旧 CLI | PASS：显示「需要更新」，可直接重新配置或移除，不再误判为冲突 |
-| MCP 同名冲突 | PASS：`/bin/echo` 同名条目显示「同名冲突」，原配置未覆盖 |
-| 配置不可写 | PASS：staging 成功但原子替换被拒绝，真实配置未改动，UI 显示 Permission denied |
-| Pi 通过 nvm + 受限 PATH | PASS：Desktop 子进程补齐同目录 Node 后，检测、配置和真实 MCP 调用均成功 |
-| Pi 未安装 | PASS：显示「客户端未安装」，配置按钮不可用 |
-| Pi 已安装但不可执行 | PASS：显示「客户端不可用」和 Permission denied，不误报为未安装 |
-| Pi MCP 配置 | PASS：`pi mcp list` 显示 connected、5 tools |
-| Pi MCP 端到端 | PASS（Phase 6 复验）：真实 `pi -p` 调用 `agent_list` 并返回两个 Agent |
-| Pi MCP 移除 | PASS：移除托管条目；验收后已恢复原 `mcp.json` |
-| GUI 受限 PATH | PASS：Codex / Claude 通过 common 目录发现；版本、模型、模型来源正常 |
-| MCP 客户端未安装 | NOT_TESTED（GUI）：受限 PATH 下 Pi 显示「客户端不可用」及真实 `env: node` 错误；没有通过移动系统客户端来制造「完全未安装」 |
-
-认证失效场景没有做破坏性测试：本阶段禁止修改认证文件，因此没有删除或伪造 Codex / Claude 凭据。
-
-## 未完成与风险
-
-- CodeLeveler 当前安装版 1.0.16 不包含 `e4510fa`；1.0.18 源码通过但尚未发布。页面保留升级警告，MCP 协议未做兼容性改写。最低兼容版本应为「第一个包含修复的正式发布」，本阶段没有把尚未发布的 1.0.18 写成正式最低版本。
-- 仅 CodeLeveler 缺失的 GUI 场景未单独测试：本机 CodeLeveler 固定安装在 `/opt/homebrew/bin`，没有在不移动系统安装的前提下可靠隐藏；Pi 缺失场景已通过隔离 HOME 验证。
-- 只验收 macOS；Windows / Linux GUI 与 sidecar 打包未测试。
-- 未生成签名 DMG，未执行公开发布、Tag、推送；本轮 `.app` 是 ad-hoc 本地构建。正式发布必须验证嵌套 `agentgate-serve` 的 Developer ID 签名与公证，以及从 `~/.muxlayer/bin` 复制后的 Gatekeeper 行为。
-- Desktop 更新替换稳定 CLI 时，不强制重启正在运行的 Agent Service；旧进程继续持有旧 inode，直到用户主动重启或服务退出。期间 MCP 客户端连接的是旧运行实例，可能出现新 CLI 文件与旧 Service 并存的版本窗口，这是为了不打断运行中任务的有意取舍。
-- 用户自行放置在 `~/.muxlayer/bin/agentgate-serve` 且没有托管 marker 的文件不会被更新；如果版本过旧，页面会显示真实版本和错误，不会静默覆盖。
-- Agent Service 启动失败最长等待 20 秒；已分别验证 Model 失败不影响 Agent、Agent 失败不影响 Model。
-- 最近错误来自 Service 日志；只显示级别和 message，不展示内部模块路径。
-- 外部并发修改检查是「写入前比较 + 原子替换」，覆盖实际竞态窗口；macOS 没有可移植的 compare-and-swap rename，极端毫秒级竞态仍只能通过写入前比较降低，不能数学上消除。
-
-## 测试结果
-
-| 项目 | 结果 |
-| --- | --- |
-| `cargo test --features desktop --lib` | 1816 passed / 0 failed / 3 ignored |
-| `cargo test --features desktop --test agent_gateway_phase_three_cli` | 2 passed |
-| `cargo check --features desktop` | PASS |
-| `cargo clippy --features desktop --lib` | 无 warning |
-| `tsc --noEmit` | PASS |
-| `vitest run` | 62 files / 495 tests passed |
-| `tauri build --bundles app --target aarch64-apple-darwin` | PASS，`.app` 内含 `Contents/MacOS/agentgate-serve` |
-| `vite build` | PASS |
-
-Phase 6 新增覆盖：Node 客户端子进程 PATH、staging 布局、外部并发修改拒绝、原子安装、新配置文件 `0600`、旧托管条目迁移 / 移除、未托管冲突、非可执行客户端、Codex 认证未知状态、前端「需验证」「需要更新」「客户端不可用」交互；统一启动新增内置 CLI 安装 / 用户安装不覆盖 / marker 更新、显式路径不回退内置 CLI、Agent auto-start 默认值与读写、双 Gateway 状态卡片。
-
-完整测试首轮曾出现两个与并发/环境相关的既有测试波动（`health_check_fails_when_db_lock_unavailable`、`interrupt_after_process_exit_reports_process_exited`），单独复跑和第二次全量跑均通过；本轮没有修改这两个测试。
