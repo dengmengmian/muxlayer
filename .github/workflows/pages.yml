@@ -30,7 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           # site 独立 lockfile 暂留 pnpm 10:pnpm 11 装 site 依赖会因 @parcel/watcher 的
           # build script 未审批报 ERR_PNPM_IGNORED_BUILDS,需先给 site 配 allowBuilds 再升级。
