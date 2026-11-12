@@ -6,15 +6,16 @@ use crate::security::local_token;
 use crate::tools::client_files as cf;
 use crate::tools::toml_merge;
 use serde::Serialize;
+use toml_edit::{DocumentMut, Item, Table};
 
-/// apply 写入的顶层 key 及其字面量。restore 只撤销「当前值仍等于这里」的 key。
-const OWNED_TOP_LEVEL_KEYS: &[(&str, &str)] = &[
-    ("model_provider", "\"OpenAI\""),
-    ("model_context_window", "1000000"),
-    ("model_auto_compact_token_limit", "9000000"),
+const OPENAI_PROVIDER: &str = "OpenAI";
+const DEEPSEEK_PROVIDER: &str = "deepseek";
+const RELAY_PROVIDERS: [&str; 2] = [OPENAI_PROVIDER, DEEPSEEK_PROVIDER];
+/// apply 写入的上下文参数。restore 只撤销当前值仍等于这里的参数。
+const OWNED_CONTEXT_KEYS: &[(&str, i64)] = &[
+    ("model_context_window", 1000000),
+    ("model_auto_compact_token_limit", 9000000),
 ];
-/// apply 接管的 provider 段。
-const PROVIDER_SECTION: &str = "model_providers.OpenAI";
 /// 旧版 AgentGate 写的 provider 段(`model_provider = "agentgate"`)。
 const LEGACY_PROVIDER_SECTION: &str = "model_providers.agentgate";
 
@@ -135,7 +136,7 @@ pub struct CodexConfigStatus {
     pub current_model: Option<String>,
     pub auth_mode: String,
     pub token_path: String,
-    /// Whether the provider is currently set to "agentgate" (active) or something else.
+    /// Whether the selected provider routes through MuxLayer.
     pub is_agentgate_active: bool,
     /// True if OPENAI_API_KEY in auth.json was overwritten with ag_local_ by old AgentGate.
     pub openai_key_polluted: bool,
@@ -156,12 +157,56 @@ pub struct ApplyConfigResult {
     pub warnings: Vec<String>,
 }
 
-/// `[model_providers.OpenAI]` 段里是否是我们的 `experimental_bearer_token = "ag_local_…"`。
-/// 行级解析,不依赖整份 TOML 合法,也不会被注释里的同名文本骗到。
-fn has_our_bearer(content: &str) -> bool {
-    toml_merge::section_body(content, PROVIDER_SECTION)
-        .and_then(|body| toml_merge::top_level_raw_value(&body, "experimental_bearer_token"))
-        .is_some_and(|raw| cf::is_local_token(raw.trim_matches('"')))
+fn provider_item<'a>(doc: &'a DocumentMut, provider: &str) -> Option<&'a Item> {
+    doc.get("model_providers")?.get(provider)
+}
+
+fn has_our_bearer(doc: &DocumentMut, provider: &str) -> bool {
+    provider_item(doc, provider)
+        .and_then(|item| item.get("experimental_bearer_token"))
+        .and_then(Item::as_str)
+        .is_some_and(cf::is_local_token)
+}
+
+fn set_provider(
+    doc: &mut DocumentMut,
+    provider: &str,
+    replacement: Option<Item>,
+    code: &'static str,
+) -> Result<(), AppError> {
+    if doc.get("model_providers").is_none() && replacement.is_some() {
+        let mut providers = Table::new();
+        providers.set_implicit(true);
+        doc.insert("model_providers", Item::Table(providers));
+    }
+    if let Some(providers) = doc.get_mut("model_providers") {
+        let providers = providers.as_table_like_mut().ok_or_else(|| {
+            AppError::new(code, "Codex config field model_providers must be a table")
+        })?;
+        if let Some(replacement) = replacement {
+            providers.insert(provider, replacement);
+        } else {
+            providers.remove(provider);
+        }
+    }
+    Ok(())
+}
+
+fn parse_config(content: &str, code: &'static str) -> Result<DocumentMut, AppError> {
+    content
+        .parse()
+        .map_err(|_| AppError::new(code, "Codex config.toml is invalid TOML"))
+}
+
+fn set_config_value(doc: &mut DocumentMut, key: &str, mut item: Item) {
+    if let Some(current) = doc.get_mut(key) {
+        if let (Some(previous), Some(replacement)) = (current.as_value(), item.as_value_mut()) {
+            *replacement.decor_mut() = previous.decor().clone();
+        }
+        *current = item;
+    } else {
+        doc.insert(key, item);
+    }
 }
 
 fn has_legacy_section(content: &str) -> bool {
@@ -179,20 +224,26 @@ pub fn detect() -> CodexConfigStatus {
     let exists = path.is_file();
     let auth_json_exists = auth_path.is_file();
 
-    // The "hijack OpenAI provider" config has `model_provider = "OpenAI"` with
-    // the OpenAI provider's bearer being our `ag_local_` token. The legacy
-    // `[model_providers.agentgate]` shape is still recognised so users
-    // upgrading from older builds see correct status before re-apply.
-    // 只认结构化标记(段 + key),注释 / MCP 名里出现同样文本不算。
     let content = if exists {
         std::fs::read_to_string(&path).unwrap_or_default()
     } else {
         String::new()
     };
-    let current_provider = toml_merge::lookup_str(&content, &["model_provider"]);
-    let current_model = toml_merge::lookup_str(&content, &["model"]);
-    let openai_hijack = has_our_bearer(&content);
-    let has_agentgate = openai_hijack || has_legacy_section(&content);
+    let doc = content.parse::<DocumentMut>().ok();
+    let read = |key: &str| {
+        doc.as_ref()
+            .and_then(|doc| doc.get(key))
+            .and_then(Item::as_str)
+            .map(str::to_owned)
+    };
+    let current_provider = read("model_provider");
+    let current_model = read("model");
+    let managed = |provider: &str| {
+        doc.as_ref()
+            .is_some_and(|doc| has_our_bearer(doc, provider))
+    };
+    let legacy = has_legacy_section(&content);
+    let has_agentgate = RELAY_PROVIDERS.into_iter().any(managed) || legacy;
 
     let (has_agentgate_auth, openai_key_polluted) = if auth_json_exists {
         let auth_content = std::fs::read_to_string(&auth_path).unwrap_or_default();
@@ -216,9 +267,10 @@ pub fn detect() -> CodexConfigStatus {
         (false, false)
     };
 
-    // "AgentGate active" now means: our hijack snippet has been written
-    // (we can tell from the ag_local_ bearer token).
-    let is_agentgate_active = openai_hijack || current_provider.as_deref() == Some("agentgate"); // legacy
+    let is_agentgate_active = current_provider.as_deref().is_some_and(|provider| {
+        (RELAY_PROVIDERS.contains(&provider) && managed(provider))
+            || (provider == "agentgate" && legacy)
+    });
 
     CodexConfigStatus {
         config_path: path_str,
@@ -237,7 +289,26 @@ pub fn detect() -> CodexConfigStatus {
     }
 }
 
-pub fn generate_snippet(host: &str, port: i64, bearer_token: &str) -> String {
+pub fn generate_snippet(
+    host: &str,
+    port: i64,
+    bearer_token: &str,
+    legacy_deepseek: bool,
+) -> String {
+    let provider = if legacy_deepseek {
+        DEEPSEEK_PROVIDER
+    } else {
+        OPENAI_PROVIDER
+    };
+    generate_snippet_for_provider(host, port, bearer_token, provider)
+}
+
+fn generate_snippet_for_provider(
+    host: &str,
+    port: i64,
+    bearer_token: &str,
+    provider: &str,
+) -> String {
     // The "hijack OpenAI provider + requires_openai_auth" pattern:
     //
     //   model_provider = "OpenAI"   ← official provider name, NOT a custom one
@@ -277,11 +348,11 @@ pub fn generate_snippet(host: &str, port: i64, bearer_token: &str) -> String {
     // to route Codex through a custom base_url while preserving the
     // official ChatGPT IDE features.
     format!(
-        r#"model_provider = "OpenAI"
+        r#"model_provider = "{provider}"
 model_context_window = 1000000
 model_auto_compact_token_limit = 9000000
 
-[model_providers.OpenAI]
+[model_providers.{provider}]
 name = "OpenAI"
 base_url = "http://{host}:{port}/v1"
 wire_api = "responses"
@@ -290,7 +361,11 @@ requires_openai_auth = true"#,
     )
 }
 
-pub fn apply(host: &str, port: i64) -> Result<ApplyConfigResult, AppError> {
+pub fn apply(
+    host: &str,
+    port: i64,
+    legacy_deepseek: Option<bool>,
+) -> Result<ApplyConfigResult, AppError> {
     // 整个读 → 改 → 写期间持有客户端配置锁,防止并发命令互相覆盖(见 fsutil)。
     let _config_lock = crate::fsutil::lock_client_configs();
     let token = local_token::ensure_token()?;
@@ -305,13 +380,51 @@ pub fn apply(host: &str, port: i64) -> Result<ApplyConfigResult, AppError> {
 
     // 先读当前配置:读不出来(权限 / 编码)直接失败,绝不拿空内容覆盖。
     let existing = cf::read_for_update(&path, codes::CODEX_CONFIG_WRITE_FAILED)?;
+    let mut merged = parse_config(&existing, codes::CODEX_CONFIG_WRITE_FAILED)?;
+    let managed_deepseek = merged.get("model_provider").and_then(Item::as_str)
+        == Some(DEEPSEEK_PROVIDER)
+        && has_our_bearer(&merged, DEEPSEEK_PROVIDER);
+    let provider = if legacy_deepseek.unwrap_or(managed_deepseek) {
+        DEEPSEEK_PROVIDER
+    } else {
+        OPENAI_PROVIDER
+    };
+    let taking_over = !has_our_bearer(&merged, provider);
+    let already_configured = RELAY_PROVIDERS
+        .into_iter()
+        .any(|id| has_our_bearer(&merged, id))
+        || has_legacy_section(&existing);
 
-    // Save original config.toml + auth.json the FIRST time we touch them, so
-    // a future "switch back to official" knows the values apply overwrote.
-    // Skipped when we're already pointing at AgentGate (the saved copy
-    // would otherwise overwrite the user's true original with our config).
-    if !detect().is_agentgate_active {
+    let snippet = generate_snippet_for_provider(host, port, &token, provider);
+    let relay = parse_config(&snippet, codes::CODEX_CONFIG_WRITE_FAILED)?;
+    set_provider(
+        &mut merged,
+        provider,
+        provider_item(&relay, provider).cloned(),
+        codes::CODEX_CONFIG_WRITE_FAILED,
+    )?;
+    set_config_value(&mut merged, "model_provider", toml_edit::value(provider));
+    for &(key, value) in OWNED_CONTEXT_KEYS {
+        set_config_value(&mut merged, key, toml_edit::value(value));
+    }
+    let merged = merged.to_string();
+    parse_config(&merged, codes::CODEX_CONFIG_WRITE_FAILED)?;
+
+    if !already_configured {
         save_official_files()?;
+    } else if taking_over {
+        // 在代理模式下接管第二个 ID 时，保留用户后来加入的同名 provider，
+        // 同时从原快照恢复已接管的配置，避免把中转 token 写进官方备份。
+        let snapshot = cf::read_optional(&saved_config_path(), codes::CODEX_SAVE_FAILED)?;
+        let original = restore_content(&existing, snapshot.as_deref())?;
+        if !original.is_empty() && snapshot.as_deref() != Some(original.as_str()) {
+            cf::write_verified(
+                &saved_config_path(),
+                original.as_bytes(),
+                Some(cf::SECRET_FILE_MODE),
+                codes::CODEX_SAVE_FAILED,
+            )?;
+        }
     }
 
     // === Repair: if a previous AgentGate version stripped auth.json down to
@@ -326,21 +439,6 @@ pub fn apply(host: &str, port: i64) -> Result<ApplyConfigResult, AppError> {
         changed_keys.push("auth.json (restored)".to_string());
     }
 
-    // === Surgical merge into config.toml. auth.json is intentionally left
-    // alone — the bearer travels via config.toml's [model_providers.OpenAI]
-    // table. Only the owned top-level keys and the `[model_providers.OpenAI]`
-    // table body move; everything else is preserved byte-for-byte.
-    let mut merged = existing;
-    for (key, raw) in OWNED_TOP_LEVEL_KEYS {
-        merged = toml_merge::upsert_top_level_key(&merged, key, raw);
-    }
-    // name 保持 "OpenAI":插件市场/IDE 门控只认 name=="OpenAI";compaction 由
-    // 上面的大 window 挡住,不靠改 name(改了会丢插件市场)。
-    let section_body = format!(
-        "name = \"OpenAI\"\nbase_url = \"http://{host}:{port}/v1\"\nwire_api = \"responses\"\nexperimental_bearer_token = \"{token}\"\nrequires_openai_auth = true\n"
-    );
-    merged = toml_merge::upsert_section(&merged, PROVIDER_SECTION, &section_body);
-
     // config.toml 里带着 gateway token → 0600。
     cf::write_verified(
         &path,
@@ -353,18 +451,8 @@ pub fn apply(host: &str, port: i64) -> Result<ApplyConfigResult, AppError> {
         warnings.push("已备份原始 config.toml，可随时切换回官方配置。".to_string());
     }
 
-    // Heads-up about the hijack-OpenAI design choice. `model_provider =
-    // "OpenAI"` + `requires_openai_auth = true` keeps the IDE plugin entries
-    // (Browser, Computer-Use, Mobile, quota query) alive because Codex.app
-    // sees the official provider name and still demands a valid ChatGPT
-    // login. Conversation requests, however, hit AgentGate's localhost
-    // endpoint instead of api.openai.com. The user should know that they
-    // need to keep `codex login` valid for the IDE bits to keep working.
     warnings.push(
-        "已切换到代理模式：对话请求走 MuxLayer，但 Codex.app 内嵌插件（Browser / \
-         Computer-Use / Mobile / 配额查询）仍走 ChatGPT 官方登录态 —— 都可用。\
-         如果之前没登录过 Codex，请先执行 `codex login` 完成 ChatGPT 认证。"
-            .to_string(),
+        "Codex 对话请求已配置为通过 MuxLayer 中转。Codex 的 ChatGPT 登录信息已保留。".to_string(),
     );
 
     Ok(ApplyConfigResult {
@@ -379,47 +467,55 @@ pub fn apply(host: &str, port: i64) -> Result<ApplyConfigResult, AppError> {
     })
 }
 
-/// 「切回官方」的纯函数核心:只撤销 apply 写过的东西。
-///
-/// - 顶层 key:当前值仍等于 apply 写入的值才处理;快照(apply 前的官方配置)里
-///   有原值就写回原值,没有就删除。用户在 apply 之后改过的值不动。
-/// - `[model_providers.OpenAI]`:只有段里是我们的 `ag_local_` bearer 才处理;
-///   快照里有用户自己的同名段就写回,否则整段删除。
-/// - 旧版 `[model_providers.agentgate]` + `model_provider = "agentgate"` 同理。
-///
-/// 其它内容(apply 之后用户加的 MCP server / projects 信任 / 注释)逐字节保留。
-/// 快照缺失时照样删除我们的 key——得到的就是 Codex 默认的官方配置。
-pub(crate) fn restore_content(current: &str, snapshot: Option<&str>) -> String {
-    let snapshot = snapshot.filter(|s| !has_our_bearer(s) && !has_legacy_section(s));
-    let mut out = current.to_string();
-
-    let mut owned: Vec<(&str, &str)> = OWNED_TOP_LEVEL_KEYS.to_vec();
-    if has_legacy_section(&out) {
-        owned.push(("model_provider", "\"agentgate\""));
+/// 只恢复带中转 token 的 provider 和仍保留 MuxLayer 设置的顶层键。
+pub(crate) fn restore_content(current: &str, snapshot: Option<&str>) -> Result<String, AppError> {
+    let code = codes::CODEX_RESTORE_FAILED;
+    let mut out = parse_config(current, code)?;
+    let managed: Vec<_> = RELAY_PROVIDERS
+        .into_iter()
+        .filter(|provider| has_our_bearer(&out, provider))
+        .collect();
+    let legacy = has_legacy_section(current);
+    if managed.is_empty() && !legacy {
+        return Ok(current.to_string());
     }
-    for (key, ours) in owned {
-        if toml_merge::top_level_raw_value(&out, key).as_deref() != Some(ours) {
-            continue;
+    let snapshot = snapshot
+        .filter(|saved| !has_legacy_section(saved))
+        .map(|saved| parse_config(saved, code))
+        .transpose()?
+        .filter(|doc| {
+            !RELAY_PROVIDERS
+                .into_iter()
+                .any(|id| has_our_bearer(doc, id))
+        });
+    let selected_managed = out
+        .get("model_provider")
+        .and_then(Item::as_str)
+        .is_some_and(|provider| managed.contains(&provider) || (provider == "agentgate" && legacy));
+    let keys = OWNED_CONTEXT_KEYS
+        .iter()
+        .filter(|(key, value)| out.get(key).and_then(Item::as_integer) == Some(*value))
+        .map(|(key, _)| *key)
+        .chain(selected_managed.then_some("model_provider"))
+        .collect::<Vec<_>>();
+    for key in keys {
+        if let Some(original) = snapshot.as_ref().and_then(|doc| doc.get(key)) {
+            set_config_value(&mut out, key, original.clone());
+        } else {
+            out.remove(key);
         }
-        // 快照已排除被我们污染的情况;用户原值恰好等于我们的值(如本来就是
-        // model_provider = "OpenAI" 指向自己的代理)时也照原样写回,不能删。
-        let original = snapshot.and_then(|s| toml_merge::top_level_raw_value(s, key));
-        out = match original {
-            Some(orig) => toml_merge::upsert_top_level_key(&out, key, &orig),
-            None => toml_merge::remove_top_level_key(&out, key),
-        };
     }
-
-    if has_our_bearer(&out) {
-        out = match snapshot.and_then(|s| toml_merge::section_body(s, PROVIDER_SECTION)) {
-            Some(body) => toml_merge::upsert_section(&out, PROVIDER_SECTION, &body),
-            None => toml_merge::remove_section(&out, PROVIDER_SECTION),
-        };
+    for provider in managed {
+        let original = snapshot
+            .as_ref()
+            .and_then(|doc| provider_item(doc, provider))
+            .cloned();
+        set_provider(&mut out, provider, original, code)?;
     }
-    if has_legacy_section(&out) {
-        out = toml_merge::remove_section(&out, LEGACY_PROVIDER_SECTION);
+    if legacy {
+        set_provider(&mut out, "agentgate", None, code)?;
     }
-    out
+    Ok(out.to_string())
 }
 
 /// 读当前 config.toml + 官方备份,做 surgical restore 并写回。返回是否有改动。
@@ -427,7 +523,7 @@ fn restore_official_config() -> Result<bool, AppError> {
     let path = config_path()?;
     let current = cf::read_for_update(&path, codes::CODEX_RESTORE_FAILED)?;
     let snapshot = cf::read_optional(&saved_config_path(), codes::CODEX_RESTORE_FAILED)?;
-    let restored = restore_content(&current, snapshot.as_deref());
+    let restored = restore_content(&current, snapshot.as_deref())?;
     if restored == current {
         return Ok(false);
     }
@@ -472,7 +568,7 @@ pub fn toggle_provider(host: &str, port: i64) -> Result<ToggleResult, AppError> 
     } else {
         // Switching TO agentgate: same path as `apply()`. Defer to it so the
         // auth-repair safety net runs here too.
-        apply(host, port)?;
+        apply(host, port, None)?;
         Ok(ToggleResult {
             success: true,
             new_provider: "agentgate".to_string(),
@@ -516,11 +612,7 @@ pub fn disable() -> Result<ApplyConfigResult, AppError> {
         changed_keys.push("auth.json (restored)".to_string());
     }
 
-    warnings.push(
-        "已切回原生模式：Codex 直连 ChatGPT 官方，对话请求不再经过 MuxLayer。\
-         如需重新使用第三方模型路由，点击「应用配置」即可切回代理模式。"
-            .to_string(),
-    );
+    warnings.push("已恢复接入前的 Codex 供应商配置。".to_string());
 
     Ok(ApplyConfigResult {
         success: true,
@@ -598,7 +690,7 @@ mod tests {
         let _guard = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = setup_temp_home();
         write_cfg(OFFICIAL_WITH_OVERWRITTEN_VALUES);
-        apply("127.0.0.1", 9090).unwrap();
+        apply("127.0.0.1", 9090, None).unwrap();
         append_cfg(USER_ADDED);
         let result = toggle_provider("127.0.0.1", 9090).unwrap();
         assert!(result.success);
@@ -613,7 +705,7 @@ mod tests {
         let _guard = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = setup_temp_home();
         write_cfg(OFFICIAL_WITH_OVERWRITTEN_VALUES);
-        apply("127.0.0.1", 9090).unwrap();
+        apply("127.0.0.1", 9090, None).unwrap();
         append_cfg(USER_ADDED);
         disable().unwrap();
         let cfg = std::fs::read_to_string(cfg_path()).unwrap();
@@ -626,7 +718,7 @@ mod tests {
         let _guard = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = setup_temp_home();
         // 没有预先存在的 config.toml → 不会有官方备份
-        apply("127.0.0.1", 9090).unwrap();
+        apply("127.0.0.1", 9090, None).unwrap();
         append_cfg(USER_ADDED);
         std::fs::remove_dir_all(saved_dir()).ok();
         let result = disable().unwrap();
@@ -646,7 +738,7 @@ mod tests {
         let _guard = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = setup_temp_home();
         write_cfg(OFFICIAL_WITH_OVERWRITTEN_VALUES);
-        apply("127.0.0.1", 9090).unwrap();
+        apply("127.0.0.1", 9090, None).unwrap();
         let cur = std::fs::read_to_string(cfg_path()).unwrap();
         std::fs::write(
             cfg_path(),
@@ -688,10 +780,10 @@ mod tests {
         let original = "model_provider = \"OpenAI\"\n\n[model_providers.OpenAI]\nname = \"OpenAI\"\nbase_url = \"https://my-proxy/v1\"\n";
         let applied = toml_merge::upsert_section(
             original,
-            PROVIDER_SECTION,
+            "model_providers.OpenAI",
             "name = \"OpenAI\"\nbase_url = \"http://127.0.0.1:9090/v1\"\nexperimental_bearer_token = \"ag_local_x\"\n",
         );
-        let restored = restore_content(&applied, Some(original));
+        let restored = restore_content(&applied, Some(original)).unwrap();
         let doc = restored.parse::<toml_edit::DocumentMut>().unwrap();
         assert_eq!(doc["model_provider"].as_str(), Some("OpenAI"));
         assert_eq!(
@@ -708,7 +800,7 @@ mod tests {
         let temp = setup_temp_home();
         write_cfg("model = \"gpt-5\"\n");
         std::fs::set_permissions(cfg_path(), std::fs::Permissions::from_mode(0o644)).unwrap();
-        apply("127.0.0.1", 9090).unwrap();
+        apply("127.0.0.1", 9090, None).unwrap();
         let mode = std::fs::metadata(cfg_path()).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "config.toml carries the gateway token");
         cleanup(&temp);
@@ -716,7 +808,7 @@ mod tests {
 
     #[test]
     fn test_generate_snippet() {
-        let snippet = generate_snippet("127.0.0.1", 9090, "ag_local_abc123");
+        let snippet = generate_snippet("127.0.0.1", 9090, "ag_local_abc123", false);
 
         // The whole reason for this format: hijack the OpenAI provider so
         // the IDE plugins (which gate on `model_provider == openai/chatgpt`)
@@ -779,7 +871,7 @@ mod tests {
     fn test_apply_creates_config() {
         let _guard = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = setup_temp_home();
-        let result = apply("127.0.0.1", 9090).unwrap();
+        let result = apply("127.0.0.1", 9090, None).unwrap();
         assert!(result.success);
         assert!(config_path().unwrap().exists());
         // No pre-existing auth.json + nothing to repair → auth.json should
@@ -820,7 +912,7 @@ args = ["--port", "1234"]
 "#;
         std::fs::write(config_path().unwrap(), user_config).unwrap();
 
-        apply("127.0.0.1", 9090).unwrap();
+        apply("127.0.0.1", 9090, None).unwrap();
         let cfg = std::fs::read_to_string(config_path().unwrap()).unwrap();
 
         // 我们的改动落地
@@ -843,9 +935,9 @@ args = ["--port", "1234"]
         // 再次 apply 应该和首次完全一样，不会重复追加 section / 改字段。
         let _guard = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = setup_temp_home();
-        apply("127.0.0.1", 9090).unwrap();
+        apply("127.0.0.1", 9090, None).unwrap();
         let after_first = std::fs::read_to_string(config_path().unwrap()).unwrap();
-        apply("127.0.0.1", 9090).unwrap();
+        apply("127.0.0.1", 9090, None).unwrap();
         let after_second = std::fs::read_to_string(config_path().unwrap()).unwrap();
         assert_eq!(after_first, after_second, "second apply must be a no-op");
         cleanup(&temp);
@@ -868,7 +960,7 @@ args = ["--port", "1234"]
         let original_auth =
             r#"{"OPENAI_API_KEY":"sk-real","auth_mode":"chatgpt","tokens":{"access_token":"jwt"}}"#;
         std::fs::write(auth_json_path().unwrap(), original_auth).unwrap();
-        let result = apply("127.0.0.1", 9090).unwrap();
+        let result = apply("127.0.0.1", 9090, None).unwrap();
         assert!(result.success);
         let auth = std::fs::read_to_string(auth_json_path().unwrap()).unwrap();
         assert!(auth.contains("chatgpt"), "auth_mode must survive apply");
@@ -904,7 +996,7 @@ args = ["--port", "1234"]
         )
         .unwrap();
 
-        let result = apply("127.0.0.1", 9090).unwrap();
+        let result = apply("127.0.0.1", 9090, None).unwrap();
         assert!(result.success);
         let auth = std::fs::read_to_string(auth_json_path().unwrap()).unwrap();
         assert!(auth.contains("access_token"), "repair must restore tokens");
@@ -925,7 +1017,7 @@ args = ["--port", "1234"]
         let original_auth =
             r#"{"OPENAI_API_KEY":"sk-real","auth_mode":"chatgpt","tokens":{"access_token":"jwt"}}"#;
         std::fs::write(auth_json_path().unwrap(), original_auth).unwrap();
-        apply("127.0.0.1", 9090).unwrap();
+        apply("127.0.0.1", 9090, None).unwrap();
         assert!(detect().is_agentgate_active);
         // Toggle back to official
         let result = toggle_provider("127.0.0.1", 9090).unwrap();
@@ -969,7 +1061,7 @@ args = ["--port", "1234"]
         std::fs::write(auth_json_path().unwrap(), oauth_auth).unwrap();
 
         // Apply AgentGate config (compat mode).
-        apply("127.0.0.1", 9090).unwrap();
+        apply("127.0.0.1", 9090, None).unwrap();
         assert!(detect().is_agentgate_active);
 
         // Disable: should restore the official block.
@@ -1028,7 +1120,7 @@ args = ["--port", "1234"]
         let _guard = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = setup_temp_home();
         std::fs::create_dir_all(config_path().unwrap().parent().unwrap()).unwrap();
-        let snippet = generate_snippet("127.0.0.1", 9090, "ag_local_xyz");
+        let snippet = generate_snippet("127.0.0.1", 9090, "ag_local_xyz", false);
         std::fs::write(config_path().unwrap(), snippet).unwrap();
         let status = detect();
         assert!(status.exists);
@@ -1039,6 +1131,116 @@ args = ["--port", "1234"]
         assert!(status.is_agentgate_active);
         assert_eq!(status.current_provider, Some("OpenAI".to_string()));
         cleanup(&temp);
+    }
+
+    #[test]
+    fn detects_and_reapplies_active_deepseek_relay() {
+        let _guard = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let temp = setup_temp_home();
+        write_cfg(&generate_snippet("127.0.0.1", 9090, "ag_local_xyz", true));
+
+        let status = detect();
+        assert!(status.has_agentgate);
+        assert!(status.is_agentgate_active);
+        apply("127.0.0.1", 9191, None).unwrap();
+        let cfg = std::fs::read_to_string(cfg_path()).unwrap();
+        assert_eq!(
+            toml_merge::lookup_str(&cfg, &["model_provider"]).as_deref(),
+            Some("deepseek")
+        );
+        assert_eq!(
+            toml_merge::lookup_str(&cfg, &["model_providers", "deepseek", "base_url"]).as_deref(),
+            Some("http://127.0.0.1:9191/v1")
+        );
+        disable().unwrap();
+        assert!(!detect().has_agentgate);
+        cleanup(&temp);
+    }
+
+    #[test]
+    fn detects_only_the_selected_relay() {
+        let _guard = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let temp = setup_temp_home();
+        write_cfg(
+            &generate_snippet("127.0.0.1", 9090, "ag_local_xyz", false).replace(
+                "model_provider = \"OpenAI\"",
+                "model_provider = \"deepseek\"",
+            ),
+        );
+        append_cfg("\n\n[model_providers.deepseek]\nbase_url = \"https://example.com/v1\"\n");
+
+        let status = detect();
+        assert!(status.has_agentgate);
+        assert!(!status.is_agentgate_active);
+        cleanup(&temp);
+    }
+
+    #[test]
+    fn deepseek_relay_switches_back_and_restores_user_provider() {
+        let _guard = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let temp = setup_temp_home();
+        write_cfg(OFFICIAL_WITH_OVERWRITTEN_VALUES);
+        apply("127.0.0.1", 9090, None).unwrap();
+        append_cfg(
+            "\n[model_providers.\"deepseek\".auth]\ncommand = \"token-helper\"\n\n[model_providers.\"deepseek\"]\nbase_url = \"https://example.com/v1\"\n",
+        );
+
+        apply("127.0.0.1", 9090, Some(true)).unwrap();
+        let status = detect();
+        assert_eq!(status.current_provider.as_deref(), Some("deepseek"));
+        assert!(status.is_agentgate_active);
+        let cfg = std::fs::read_to_string(cfg_path()).unwrap();
+        let doc = cfg.parse::<DocumentMut>().unwrap();
+        assert!(doc["model_providers"]["deepseek"].get("auth").is_none());
+        assert_eq!(
+            doc["model_providers"]["deepseek"]["base_url"].as_str(),
+            Some("http://127.0.0.1:9090/v1")
+        );
+
+        apply("127.0.0.1", 9090, Some(false)).unwrap();
+        assert_eq!(detect().current_provider.as_deref(), Some("OpenAI"));
+        append_cfg(USER_ADDED);
+        disable().unwrap();
+        let cfg = std::fs::read_to_string(cfg_path()).unwrap();
+        assert_restored_surgically(&cfg);
+        let doc = cfg.parse::<DocumentMut>().unwrap();
+        assert_eq!(
+            doc["model_providers"]["deepseek"]["auth"]["command"].as_str(),
+            Some("token-helper")
+        );
+        assert_eq!(
+            doc["model_providers"]["deepseek"]["base_url"].as_str(),
+            Some("https://example.com/v1")
+        );
+        cleanup(&temp);
+    }
+
+    #[test]
+    fn deepseek_relay_restores_inline_and_dotted_providers() {
+        let _guard = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for providers in [
+            "model_providers = { deepseek = { base_url = \"https://example.com/v1\" }, other = { name = \"Other\" } }\n",
+            "model_providers.deepseek.base_url = \"https://example.com/v1\"\nmodel_providers.other.name = \"Other\"\n",
+        ] {
+            let temp = setup_temp_home();
+            write_cfg(&format!("model_provider = \"deepseek\"\n{providers}"));
+            apply("127.0.0.1", 9090, Some(true)).unwrap();
+            assert!(detect().is_agentgate_active);
+            disable().unwrap();
+            let cfg = std::fs::read_to_string(cfg_path()).unwrap();
+            let doc = cfg.parse::<DocumentMut>().unwrap();
+            assert_eq!(doc["model_provider"].as_str(), Some("deepseek"));
+            assert_eq!(
+                doc["model_providers"]["deepseek"]["base_url"].as_str(),
+                Some("https://example.com/v1")
+            );
+            assert_eq!(
+                doc["model_providers"]["other"]["name"].as_str(),
+                Some("Other")
+            );
+            assert!(!detect().has_agentgate);
+            cleanup(&temp);
+        }
     }
 
     #[test]

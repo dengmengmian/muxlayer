@@ -59,7 +59,7 @@ interface ApplyFlow {
   clientName: string;
   titleKey: string;
   messageKey: string;
-  apply: () => Promise<api.ApplyConfigResult>;
+  apply: (legacyDeepseek?: boolean) => Promise<api.ApplyConfigResult>;
 }
 
 const APPLY_FLOWS = {
@@ -68,7 +68,7 @@ const APPLY_FLOWS = {
     clientName: "Codex",
     titleKey: "tools.apply_codex_title",
     messageKey: "tools.apply_codex_msg",
-    apply: () => api.applyCodexConfig(),
+    apply: (legacyDeepseek?: boolean) => api.applyCodexConfig(legacyDeepseek),
   },
   claude_code: {
     clientId: "claude_code",
@@ -175,6 +175,7 @@ export function Tools() {
 
   /// 等待用户确认的「应用配置」流程；null = 没有确认弹窗。
   const [pendingApply, setPendingApply] = useState<ApplyFlow | null>(null);
+  const [legacyDeepseek, setLegacyDeepseek] = useState(false);
 
   /// Post-apply summary: shown once per apply with config path + running
   /// process warning. Null means "no dialog open right now". Detect failure
@@ -323,7 +324,9 @@ export function Tools() {
     const flow = pendingApply;
     if (!flow) return;
     try {
-      const result = await flow.apply();
+      const result = await flow.apply(
+        flow.clientId === "codex" ? legacyDeepseek : undefined
+      );
       setPendingApply(null);
       load();
       if (result.success) {
@@ -835,7 +838,10 @@ export function Tools() {
             <CodexDetail
               status={codexStatus}
               codexConfig={codexConfig}
-              onApply={() => setPendingApply(APPLY_FLOWS.codex)}
+              onApply={() => {
+                setLegacyDeepseek(codexStatus?.current_provider === "deepseek");
+                setPendingApply(APPLY_FLOWS.codex);
+              }}
               onToggle={handleToggleCodex}
               load={load}
               t={t}
@@ -999,7 +1005,28 @@ export function Tools() {
         variant="default"
         onConfirm={confirmPendingApply}
         onCancel={() => setPendingApply(null)}
-      />
+      >
+        {pendingApply?.clientId === "codex" && (
+          <div className="mb-5">
+            <label className="flex items-center gap-2 text-xs font-medium text-text-primary">
+              <input
+                type="checkbox"
+                className="accent-accent"
+                checked={legacyDeepseek}
+                aria-describedby="codex-legacy-deepseek-description"
+                onChange={(event) => setLegacyDeepseek(event.target.checked)}
+              />
+              {t("tools.codex_legacy_deepseek")}
+            </label>
+            <p
+              id="codex-legacy-deepseek-description"
+              className="mt-1.5 text-xs leading-relaxed text-text-secondary"
+            >
+              {t("tools.codex_legacy_deepseek_desc")}
+            </p>
+          </div>
+        )}
+      </ConfirmDialog>
 
       <PostApplyDialog
         open={postApply !== null}

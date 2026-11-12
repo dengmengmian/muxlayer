@@ -227,8 +227,18 @@ describe("API client", () => {
   it("applyCodexConfig invokes correct command", async () => {
     vi.mocked(invoke).mockResolvedValue({ success: true });
     const result = await applyCodexConfig();
-    expect(invoke).toHaveBeenCalledWith("apply_codex_config");
+    expect(invoke).toHaveBeenCalledWith("apply_codex_config", {
+      legacyDeepseek: null,
+    });
     expect(result).toEqual({ success: true });
+  });
+
+  it("applyCodexConfig passes the historical session option to Tauri", async () => {
+    vi.mocked(invoke).mockResolvedValue({ success: true });
+    await applyCodexConfig(true);
+    expect(invoke).toHaveBeenCalledWith("apply_codex_config", {
+      legacyDeepseek: true,
+    });
   });
 
   it("detectClaudeCodeEnv invokes correct command", async () => {

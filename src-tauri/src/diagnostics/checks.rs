@@ -329,12 +329,17 @@ pub fn codex_config_check(db: &crate::storage::db::DbPool) -> CheckReport {
     //   requires_openai_auth = true
     // 旧设计是 model_provider = "agentgate"，两种都算正确，都不该 warn。
     match status.current_provider.as_deref() {
-        Some("OpenAI") => checks.push(CheckItem::ok(
+        Some("OpenAI") if status.is_agentgate_active => checks.push(CheckItem::ok(
             "model_provider",
             "model_provider",
             "Set to OpenAI (hijack mode — IDE plugins compatible)",
         )),
-        Some("agentgate") => checks.push(CheckItem::ok(
+        Some("deepseek") if status.is_agentgate_active => checks.push(CheckItem::ok(
+            "model_provider",
+            "model_provider",
+            "Set to deepseek (historical session compatibility)",
+        )),
+        Some("agentgate") if status.is_agentgate_active => checks.push(CheckItem::ok(
             "model_provider",
             "model_provider",
             "Set to agentgate (legacy mode)",
@@ -388,7 +393,13 @@ pub fn codex_config_check(db: &crate::storage::db::DbPool) -> CheckReport {
             let content =
                 std::fs::read_to_string(crate::tools::codex::config_path().unwrap_or_default())
                     .unwrap_or_default();
-            if content.contains(&expected_url) {
+            let active_url = status.current_provider.as_deref().and_then(|provider| {
+                crate::tools::toml_merge::lookup_str(
+                    &content,
+                    &["model_providers", provider, "base_url"],
+                )
+            });
+            if active_url.as_deref() == Some(expected_url.as_str()) {
                 checks.push(CheckItem::ok(
                     "base_url",
                     "Base URL",

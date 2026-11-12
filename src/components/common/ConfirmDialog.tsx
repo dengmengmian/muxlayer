@@ -1,10 +1,12 @@
 import { AlertTriangle } from "lucide-react";
+import type { ReactNode } from "react";
 import { useI18n } from "@/lib/i18n";
 
 interface ConfirmDialogProps {
   open: boolean;
   title: string;
   message: string;
+  children?: ReactNode;
   confirmLabel?: string;
   cancelLabel?: string;
   variant?: "danger" | "default";
@@ -16,6 +18,7 @@ export function ConfirmDialog({
   open,
   title,
   message,
+  children,
   confirmLabel,
   cancelLabel,
   variant = "default",
@@ -48,6 +51,7 @@ export function ConfirmDialog({
             </p>
           </div>
         </div>
+        {children}
         <div className="flex justify-end gap-2">
           <button onClick={onCancel} className="btn-secondary">
             {cancelLabel || t("common.cancel")}

@@ -148,12 +148,46 @@ describe("Tools", () => {
     await act(async () => fireEvent.click(screen.getByText("common.apply")));
 
     expect(api.applyCodexConfig).toHaveBeenCalledTimes(1);
+    expect(api.applyCodexConfig).toHaveBeenCalledWith(false);
     expect(api.detectClientRunning).toHaveBeenCalledWith("codex");
     expect(
       await screen.findByText("/home/u/.codex/config.toml")
     ).toBeInTheDocument();
     expect(screen.queryByText("tools.apply_codex_title")).toBeNull();
   });
+
+  it.each([
+    { provider: "OpenAI", checked: false, selected: true },
+    { provider: "deepseek", checked: true, selected: false },
+  ])(
+    "can switch Codex session compatibility from $provider",
+    async ({ provider, checked, selected }) => {
+      vi.mocked(api.detectCodexConfig).mockResolvedValue({
+        exists: true,
+        current_provider: provider,
+        is_agentgate_active: true,
+      } as any);
+      vi.mocked(api.applyCodexConfig).mockResolvedValue({
+        success: true,
+        config_path: "/home/u/.codex/config.toml",
+      } as any);
+      render(
+        <MemoryRouter>
+          <Tools />
+        </MemoryRouter>
+      );
+
+      fireEvent.click(await screen.findByText("tools.apply_config"));
+      const option = screen.getByRole("checkbox", {
+        name: "tools.codex_legacy_deepseek",
+      });
+      expect(option).toHaveProperty("checked", checked);
+      fireEvent.click(option);
+      await act(async () => fireEvent.click(screen.getByText("common.apply")));
+
+      expect(api.applyCodexConfig).toHaveBeenCalledWith(selected);
+    }
+  );
 
   it("applies Gemini CLI config through its own confirmation", async () => {
     vi.mocked(api.applyGeminiConfig).mockResolvedValue({

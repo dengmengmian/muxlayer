@@ -147,7 +147,15 @@ pub fn list_tools() -> Result<Vec<ToolConfigView>, AppError> {
 pub fn generate_codex_config(state: State<'_, AppState>) -> Result<String, AppError> {
     let (host, port) = gateway_host_port(&state.db)?;
     let token = crate::security::local_token::ensure_token()?;
-    Ok(crate::tools::codex::generate_snippet(&host, port, &token))
+    let status = crate::tools::codex::detect();
+    let legacy_deepseek =
+        status.is_agentgate_active && status.current_provider.as_deref() == Some("deepseek");
+    Ok(crate::tools::codex::generate_snippet(
+        &host,
+        port,
+        &token,
+        legacy_deepseek,
+    ))
 }
 
 // ── Codex Config Commands ──────────────────────────────────────
@@ -162,6 +170,7 @@ pub async fn detect_codex_config() -> Result<crate::tools::codex::CodexConfigSta
 #[specta::specta]
 pub async fn apply_codex_config(
     state: State<'_, AppState>,
+    legacy_deepseek: Option<bool>,
 ) -> Result<crate::tools::codex::ApplyConfigResult, AppError> {
     let db = state.db.clone();
     run_blocking(move || {
@@ -176,7 +185,7 @@ pub async fn apply_codex_config(
             crate::tools::codex::snapshot_paths(),
             "apply",
         );
-        crate::tools::codex::apply(&host, port)
+        crate::tools::codex::apply(&host, port, legacy_deepseek)
     })
     .await
 }
@@ -1032,7 +1041,7 @@ mod tests {
         std::fs::create_dir_all(&codex_dir).unwrap();
         std::fs::write(
             codex_dir.join("config.toml"),
-            crate::tools::codex::generate_snippet("127.0.0.1", 9090, "ag_local_testtoken"),
+            crate::tools::codex::generate_snippet("127.0.0.1", 9090, "ag_local_testtoken", false),
         )
         .unwrap();
         let status = block_on(detect_codex_config()).unwrap();
@@ -1048,7 +1057,7 @@ mod tests {
         let _guard = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = setup_temp_home();
         let state = test_state();
-        let result = block_on(apply_codex_config(unsafe { as_state(&state) })).unwrap();
+        let result = block_on(apply_codex_config(unsafe { as_state(&state) }, None)).unwrap();
         assert!(result.success);
         assert!(crate::tools::codex::config_path().unwrap().exists());
         let cfg = std::fs::read_to_string(crate::tools::codex::config_path().unwrap()).unwrap();
@@ -1062,7 +1071,7 @@ mod tests {
         let _guard = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = setup_temp_home();
         let state = test_state();
-        let result = block_on(apply_codex_config(unsafe { as_state(&state) })).unwrap();
+        let result = block_on(apply_codex_config(unsafe { as_state(&state) }, None)).unwrap();
         assert!(result.success);
         let clients = clients_with_apply_history(unsafe { as_state(&state) }).unwrap();
         assert!(clients.contains(&"codex".to_string()));
@@ -1070,6 +1079,20 @@ mod tests {
             list_client_apply_history(unsafe { as_state(&state) }, "codex".to_string()).unwrap();
         assert!(!history.is_empty());
         assert_eq!(history[0].action, "apply");
+        cleanup(&temp);
+    }
+
+    #[test]
+    fn codex_config_copy_uses_active_deepseek_provider() {
+        let _guard = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let temp = setup_temp_home();
+        let state = test_state();
+        let state = unsafe { as_state(&state) };
+        block_on(apply_codex_config(state.clone(), Some(true))).unwrap();
+        let snippet = generate_codex_config(state).unwrap();
+        assert!(snippet.contains("model_provider = \"deepseek\""));
+        assert!(snippet.contains("[model_providers.deepseek]"));
+        assert!(snippet.contains("name = \"OpenAI\""));
         cleanup(&temp);
     }
 
@@ -1092,7 +1115,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = block_on(apply_codex_config(unsafe { as_state(&state) })).unwrap();
+        let result = block_on(apply_codex_config(unsafe { as_state(&state) }, None)).unwrap();
         assert!(result.success);
         assert!(crate::tools::codex::detect().is_agentgate_active);
 
@@ -1125,7 +1148,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = block_on(apply_codex_config(unsafe { as_state(&state) })).unwrap();
+        let result = block_on(apply_codex_config(unsafe { as_state(&state) }, None)).unwrap();
         assert!(result.success);
         assert!(crate::tools::codex::detect().is_agentgate_active);
 
@@ -1142,7 +1165,7 @@ mod tests {
         let _guard = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = setup_temp_home();
         let state = test_state();
-        let result = block_on(apply_codex_config(unsafe { as_state(&state) })).unwrap();
+        let result = block_on(apply_codex_config(unsafe { as_state(&state) }, None)).unwrap();
         assert!(result.success);
         let clients = clients_with_apply_history(unsafe { as_state(&state) }).unwrap();
         assert!(clients.contains(&"codex".to_string()));
@@ -1154,7 +1177,7 @@ mod tests {
         let _guard = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = setup_temp_home();
         let state = test_state();
-        let result = block_on(apply_codex_config(unsafe { as_state(&state) })).unwrap();
+        let result = block_on(apply_codex_config(unsafe { as_state(&state) }, None)).unwrap();
         assert!(result.success);
         let history =
             list_client_apply_history(unsafe { as_state(&state) }, "codex".to_string()).unwrap();
@@ -1168,10 +1191,10 @@ mod tests {
         let temp = setup_temp_home();
         let state = test_state();
         // First apply creates a protected initial snapshot.
-        let result = block_on(apply_codex_config(unsafe { as_state(&state) })).unwrap();
+        let result = block_on(apply_codex_config(unsafe { as_state(&state) }, None)).unwrap();
         assert!(result.success);
         // Second apply creates a deletable entry.
-        let result = block_on(apply_codex_config(unsafe { as_state(&state) })).unwrap();
+        let result = block_on(apply_codex_config(unsafe { as_state(&state) }, None)).unwrap();
         assert!(result.success);
         let history =
             list_client_apply_history(unsafe { as_state(&state) }, "codex".to_string()).unwrap();

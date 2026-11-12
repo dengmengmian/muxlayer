@@ -419,6 +419,9 @@ export const en = {
   "tools.claude_auth_desc":
     "Apply writes MuxLayer env vars into settings.json. Your original settings are saved and restored when toggling back to official.",
   "tools.apply_codex_title": "Apply MuxLayer Config to Codex",
+  "tools.codex_legacy_deepseek": "Resume DeepSeek sessions",
+  "tools.codex_legacy_deepseek_desc":
+    "Use the deepseek provider ID while routing requests through MuxLayer. To resume sessions bound to OpenAI, clear this option and apply again. Restart Codex after switching.",
   "tools.apply_codex_msg":
     "This will update ~/.codex/config.toml to use MuxLayer with command auth. Current config will be backed up.",
   "tools.apply_claude_title": "Apply MuxLayer Config to Claude Code",

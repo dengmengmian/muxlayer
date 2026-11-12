@@ -412,6 +412,9 @@ export const zh: Record<TranslationKey, string> = {
   "tools.apply_codex_title": "应用 MuxLayer 配置到 Codex",
   "tools.apply_codex_msg":
     "将更新 ~/.codex/config.toml 使用 MuxLayer。当前配置将自动备份。",
+  "tools.codex_legacy_deepseek": "兼容 DeepSeek 历史会话",
+  "tools.codex_legacy_deepseek_desc":
+    "勾选后，Codex 使用 deepseek 供应商 ID，模型请求仍走 MuxLayer。要续聊绑定 OpenAI 的会话，取消勾选后重新应用。切换后请重启 Codex。",
   "tools.apply_claude_title": "应用 MuxLayer 配置到 Claude Code",
   "tools.apply_claude_msg":
     "将更新 ~/.claude/settings.json 使用 MuxLayer。本地访问令牌将写入 settings.json。当前配置将自动备份。",

@@ -439,9 +439,9 @@ async detectCodexConfig() : Promise<Result<CodexConfigStatus, AppError>> {
     else return { status: "error", error: e  as any };
 }
 },
-async applyCodexConfig() : Promise<Result<CodexApplyConfigResult, AppError>> {
+async applyCodexConfig(legacyDeepseek: boolean | null) : Promise<Result<CodexApplyConfigResult, AppError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("apply_codex_config") };
+    return { status: "ok", data: await TAURI_INVOKE("apply_codex_config", { legacyDeepseek }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1772,7 +1772,7 @@ export type CodelevelerConfigStatus = { config_path: string; exists: boolean; ha
 export type CodexApplyConfigResult = { success: boolean; config_path: string; auth_json_path: string; backup_path: string | null; auth_backup_path: string | null; token_path: string; changed_keys: string[]; warnings: string[] }
 export type CodexConfigStatus = { config_path: string; auth_json_path: string; exists: boolean; auth_json_exists: boolean; has_agentgate: boolean; has_agentgate_auth: boolean; current_provider: string | null; current_model: string | null; auth_mode: string; token_path: string; 
 /**
- * Whether the provider is currently set to "agentgate" (active) or something else.
+ * Whether the selected provider routes through MuxLayer.
  */
 is_agentgate_active: boolean; 
 /**

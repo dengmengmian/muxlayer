@@ -331,8 +331,10 @@ export const openTokenFolder = () => unwrap(bindings.openTokenFolder());
 // ── Codex Config ───────────────────────────────────────────────
 
 export const detectCodexConfig = () => unwrap(bindings.detectCodexConfig());
-export const applyCodexConfig = (): Promise<ApplyConfigResult> =>
-  unwrap(bindings.applyCodexConfig());
+export const applyCodexConfig = (
+  legacyDeepseek?: boolean
+): Promise<ApplyConfigResult> =>
+  unwrap(bindings.applyCodexConfig(legacyDeepseek ?? null));
 export const toggleCodexProvider = (): Promise<ToggleResult> =>
   unwrap(bindings.toggleCodexProvider());
 /** Switch Codex back to native mode (official ChatGPT path). Used to bring
