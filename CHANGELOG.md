@@ -1,10 +1,11 @@
 # Changelog / 更新日志
 
-## [2.0.11] - 2026-11-12
+## [2.0.12] - 2026-11-12
 
 ### Fixed / 修复
 
 - **Codex 历史会话兼容 / Codex session compatibility** —— In Clients → Codex → Apply Config, enable Resume DeepSeek sessions to continue chats bound to `deepseek` through MuxLayer. Restart Codex after applying. Clear the option and apply again to resume chats bound to `OpenAI`. 在「客户端 → Codex → 应用配置」勾选「兼容 DeepSeek 历史会话」，应用后重启 Codex，即可通过 MuxLayer 续聊绑定 `deepseek` 的会话。要续聊绑定 `OpenAI` 的会话，取消勾选后重新应用并重启。
+- **macOS 安装包构建 / macOS installer builds** —— The release workflow builds Apple Silicon and Intel installers on GitHub's macOS 15 runner. Apple Silicon 和 Intel 安装包改用 GitHub 的 macOS 15 runner 构建。
 
 ## [2.0.10] - 2026-10-19
 

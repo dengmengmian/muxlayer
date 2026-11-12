@@ -126,11 +126,11 @@ No account yet? [Get an OrcaRouter API key](https://www.orcarouter.ai/ref/ref_01
 
 | Platform | Package |
 |---|---|
-| macOS Apple Silicon | [MuxLayer 2.0.11](https://github.com/dengmengmian/muxlayer/releases/download/v2.0.11/MuxLayer_2.0.11_aarch64.dmg) |
-| macOS Intel | [MuxLayer 2.0.11](https://github.com/dengmengmian/muxlayer/releases/download/v2.0.11/MuxLayer_2.0.11_x64.dmg) |
-| Windows 10 / 11 | [MuxLayer 2.0.11](https://github.com/dengmengmian/muxlayer/releases/download/v2.0.11/MuxLayer_2.0.11_x64-setup.exe) |
-| Debian / Ubuntu | [MuxLayer 2.0.11](https://github.com/dengmengmian/muxlayer/releases/download/v2.0.11/MuxLayer_2.0.11_amd64.deb) |
-| Other Linux distros | [MuxLayer 2.0.11](https://github.com/dengmengmian/muxlayer/releases/download/v2.0.11/MuxLayer_2.0.11_amd64.AppImage) |
+| macOS Apple Silicon | [MuxLayer 2.0.12](https://github.com/dengmengmian/muxlayer/releases/download/v2.0.12/MuxLayer_2.0.12_aarch64.dmg) |
+| macOS Intel | [MuxLayer 2.0.12](https://github.com/dengmengmian/muxlayer/releases/download/v2.0.12/MuxLayer_2.0.12_x64.dmg) |
+| Windows 10 / 11 | [MuxLayer 2.0.12](https://github.com/dengmengmian/muxlayer/releases/download/v2.0.12/MuxLayer_2.0.12_x64-setup.exe) |
+| Debian / Ubuntu | [MuxLayer 2.0.12](https://github.com/dengmengmian/muxlayer/releases/download/v2.0.12/MuxLayer_2.0.12_amd64.deb) |
+| Other Linux distros | [MuxLayer 2.0.12](https://github.com/dengmengmian/muxlayer/releases/download/v2.0.12/MuxLayer_2.0.12_amd64.AppImage) |
 
 On macOS:
 
